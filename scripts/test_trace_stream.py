@@ -2,6 +2,8 @@
 
 import io
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -212,6 +214,62 @@ class WindowSelectionTest(unittest.TestCase):
         self.assertEqual(window.start_ms, 101000.0)
         self.assertEqual(window.end_ms, 701000.0)
         self.assertEqual(window.network_bytes, 1200)
+
+
+class TraceCliTest(unittest.TestCase):
+    def test_cli_writes_first_slice_atomically(self):
+        with json_path(WINDOW_DOCUMENT) as source, tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "slice.json"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "find_window.py"),
+                    "slice-first",
+                    str(source),
+                    str(output),
+                    "--window-seconds",
+                    "60",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertTrue(output.is_file())
+            self.assertIn("window_start_ms=100000.000", completed.stdout)
+            self.assertEqual([path.name for path in Path(directory).iterdir()], ["slice.json"])
+
+    def test_validate_accepts_stdin(self):
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT_DIR / "find_window.py"), "validate", "-"],
+            input=json.dumps(VALID_DOCUMENT),
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("network_bytes=120", completed.stdout)
+
+    def test_two_pass_command_rejects_stdin(self):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_DIR / "find_window.py"),
+                "find-window",
+                "-",
+                "unused.json",
+            ],
+            input=json.dumps(WINDOW_DOCUMENT),
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("requires a reopenable JSON or RAR path", completed.stderr)
 
 
 if __name__ == "__main__":
