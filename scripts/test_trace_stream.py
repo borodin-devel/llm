@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from trace_stream import (
     TraceValidationError,
+    _WindowEventStore,
     find_first_window,
     find_high_load_window,
     open_trace_input,
@@ -165,8 +167,96 @@ class TraceValidationTest(unittest.TestCase):
 
             self.assertEqual(first_summary, second_summary)
 
+    def test_rejects_values_outside_cpp_integer_range(self):
+        oversized_agent = json.loads(json.dumps(VALID_DOCUMENT))
+        oversized_agent["traces"][0]["agentId"] = 2**31
+        with self.assertRaisesRegex(TraceValidationError, "agentId"):
+            validate_stream(self.make_stream(oversized_agent))
+
+        for byte_field in ("uplinkBytes", "downlinkBytes"):
+            with self.subTest(byte_field=byte_field):
+                oversized_bytes = json.loads(json.dumps(VALID_DOCUMENT))
+                oversized_bytes["traces"][0]["tasks"][0]["operations"][0][byte_field] = 2**31
+                with self.assertRaisesRegex(TraceValidationError, byte_field):
+                    validate_stream(self.make_stream(oversized_bytes))
+
+    def test_rejects_nonfinite_derived_operation_end(self):
+        document = json.loads(json.dumps(VALID_DOCUMENT))
+        operation_value = document["traces"][0]["tasks"][0]["operations"][0]
+        operation_value["startOffsetMs"] = 1e308
+        operation_value["durationMs"] = 1e308
+
+        with self.assertRaisesRegex(TraceValidationError, "operation end"):
+            validate_stream(self.make_stream(document))
+
+    def test_rar_stream_does_not_deadlock_on_large_stderr(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory_path = Path(directory)
+            trace_path = directory_path / "trace.json"
+            trace_path.write_text(json.dumps(VALID_DOCUMENT), encoding="utf-8")
+            archive_path = directory_path / "input.rar"
+            archive_path.touch()
+
+            fake_unrar = directory_path / "unrar"
+            fake_unrar.write_text(
+                "#!/usr/bin/env python3\n"
+                "import os, pathlib, sys\n"
+                "if sys.argv[1] == 'lb':\n"
+                "    print('trace.json')\n"
+                "else:\n"
+                "    sys.stderr.write('x' * 262144)\n"
+                "    sys.stderr.flush()\n"
+                "    sys.stdout.write(pathlib.Path(os.environ['FAKE_RAR_JSON']).read_text())\n",
+                encoding="utf-8",
+            )
+            fake_unrar.chmod(0o755)
+
+            environment = {
+                **os.environ,
+                "FAKE_RAR_JSON": str(trace_path),
+                "PATH": f"{directory}{os.pathsep}{os.environ['PATH']}",
+                "PYTHONPATH": str(SCRIPT_DIR),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "from pathlib import Path; "
+                    "from trace_stream import validate_path; "
+                    "print(validate_path(Path('input.rar')).trace_count)",
+                ],
+                cwd=directory,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            try:
+                stdout, stderr = process.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
+                self.fail("RAR validation deadlocked while unrar stderr filled")
+
+            self.assertEqual(process.returncode, 0, stderr)
+            self.assertEqual(stdout.strip(), "1")
+
 
 class WindowSelectionTest(unittest.TestCase):
+    def test_window_event_store_aggregates_boundaries_and_cleans_up(self):
+        with _WindowEventStore() as events:
+            database_path = events.path
+            events.add_interval(0.0, 10.0, 20)
+            events.add_interval(5.0, 15.0, 30)
+            events.add_interval(10.0, 10.0, 5)
+
+            self.assertEqual(events.find_best(), (10.0, 55))
+            self.assertTrue(database_path.is_file())
+
+        self.assertFalse(database_path.exists())
+
     def test_writes_first_active_minute_with_metadata_and_dependencies(self):
         with json_path(WINDOW_DOCUMENT) as source, tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "slice.json"

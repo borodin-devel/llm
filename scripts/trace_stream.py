@@ -8,8 +8,10 @@ import math
 import copy
 import json
 import os
+import sqlite3
 import subprocess
 import tempfile
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -18,6 +20,13 @@ from typing import Any, BinaryIO, Callable, ContextManager, Iterator
 
 import ijson
 from ijson.common import ObjectBuilder
+
+CPP_INT_MIN = -(2**31)
+CPP_INT_MAX = 2**31 - 1
+UNRAR_LIST_TIMEOUT_SECONDS = 60
+UNRAR_STREAM_TIMEOUT_SECONDS = 3600
+UNRAR_STOP_TIMEOUT_SECONDS = 10
+UNRAR_ERROR_TAIL_BYTES = 8192
 
 
 class TraceValidationError(ValueError):
@@ -57,6 +66,64 @@ class SliceSummary:
     network_bytes: int
 
 
+class _WindowEventStore:
+    """Disk-backed aggregation of weighted inclusive window-start intervals."""
+
+    def __init__(self) -> None:
+        temporary_file = tempfile.NamedTemporaryFile(
+            prefix="llm-window-events.", suffix=".sqlite3", delete=False
+        )
+        temporary_file.close()
+        self.path = Path(temporary_file.name)
+        self._connection = sqlite3.connect(self.path)
+        self._connection.execute("PRAGMA journal_mode=OFF")
+        self._connection.execute("PRAGMA synchronous=OFF")
+        self._connection.execute("PRAGMA temp_store=FILE")
+        self._connection.execute(
+            "CREATE TABLE events ("
+            "timestamp REAL PRIMARY KEY, "
+            "additions INTEGER NOT NULL DEFAULT 0, "
+            "removals INTEGER NOT NULL DEFAULT 0"
+            ") WITHOUT ROWID"
+        )
+
+    def __enter__(self) -> _WindowEventStore:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self._connection.close()
+        self.path.unlink(missing_ok=True)
+
+    def add_interval(self, first_start_ms: float, last_start_ms: float, weight: int) -> None:
+        self._connection.execute(
+            "INSERT INTO events(timestamp, additions) VALUES (?, ?) "
+            "ON CONFLICT(timestamp) DO UPDATE SET additions = additions + excluded.additions",
+            (first_start_ms, weight),
+        )
+        self._connection.execute(
+            "INSERT INTO events(timestamp, removals) VALUES (?, ?) "
+            "ON CONFLICT(timestamp) DO UPDATE SET removals = removals + excluded.removals",
+            (last_start_ms, weight),
+        )
+
+    def find_best(self) -> tuple[float, int]:
+        self._connection.commit()
+        active_bytes = 0
+        best_bytes = -1
+        best_start_ms = 0.0
+        for timestamp_ms, additions, removals in self._connection.execute(
+            "SELECT timestamp, additions, removals FROM events ORDER BY timestamp"
+        ):
+            active_bytes += additions
+            if active_bytes > best_bytes:
+                best_bytes = active_bytes
+                best_start_ms = timestamp_ms
+            active_bytes -= removals
+        if best_bytes < 0:
+            raise TraceValidationError("no network operation fits in the requested window")
+        return best_start_ms, best_bytes
+
+
 @contextmanager
 def open_trace_input(path: Path) -> Iterator[BinaryIO]:
     """Open a JSON path or stream the sole JSON member of a RAR path."""
@@ -76,27 +143,43 @@ def open_trace_input(path: Path) -> Iterator[BinaryIO]:
             check=True,
             capture_output=True,
             text=True,
+            timeout=UNRAR_LIST_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.CalledProcessError) as error:
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         raise TraceValidationError(f"cannot list {path}: {error}") from error
 
     members = [line for line in listing.stdout.splitlines() if line]
     if len(members) != 1 or not members[0].lower().endswith(".json"):
         raise TraceValidationError(f"{path} must contain exactly one JSON member")
 
+    error_stream = tempfile.TemporaryFile()
     try:
         process = subprocess.Popen(
             ["unrar", "p", "-inul", str(path), members[0]],
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=error_stream,
         )
     except OSError as error:
+        error_stream.close()
         raise TraceValidationError(f"cannot stream {path}: {error}") from error
 
     if process.stdout is None:
         process.kill()
+        error_stream.close()
         raise TraceValidationError(f"unrar did not provide a stream for {path}")
 
+    stream_timed_out = threading.Event()
+
+    def kill_stalled_stream() -> None:
+        stream_timed_out.set()
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+
+    watchdog = threading.Timer(UNRAR_STREAM_TIMEOUT_SECONDS, kill_stalled_stream)
+    watchdog.daemon = True
+    watchdog.start()
     consumer_failed = False
     try:
         yield process.stdout
@@ -107,12 +190,27 @@ def open_trace_input(path: Path) -> Iterator[BinaryIO]:
         process.stdout.close()
         if consumer_failed and process.poll() is None:
             process.terminate()
-        stderr = process.stderr.read() if process.stderr else b""
-        return_code = process.wait()
-        if process.stderr:
-            process.stderr.close()
+        try:
+            return_code = process.wait(timeout=UNRAR_STOP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            return_code = process.wait(timeout=UNRAR_STOP_TIMEOUT_SECONDS)
+        finally:
+            watchdog.cancel()
+
+        error_stream.flush()
+        error_stream.seek(0, os.SEEK_END)
+        error_size = error_stream.tell()
+        error_stream.seek(max(0, error_size - UNRAR_ERROR_TAIL_BYTES))
+        error_tail = error_stream.read()
+        error_stream.close()
+
+        if stream_timed_out.is_set() and not consumer_failed:
+            raise TraceValidationError(
+                f"unrar timed out after {UNRAR_STREAM_TIMEOUT_SECONDS}s for {path}"
+            )
         if return_code != 0 and not consumer_failed:
-            message = stderr.decode("utf-8", errors="replace").strip()
+            message = error_tail.decode("utf-8", errors="replace").strip()
             raise TraceValidationError(f"unrar failed for {path}: {message}")
 
 
@@ -224,8 +322,15 @@ def _require_nonnegative_number(value: Any, location: str) -> float:
 
 
 def _require_nonnegative_integer(value: Any, location: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise TraceValidationError(f"{location} must be a non-negative integer")
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 0
+        or value > CPP_INT_MAX
+    ):
+        raise TraceValidationError(
+            f"{location} must be an integer in [0, {CPP_INT_MAX}]"
+        )
     return value
 
 
@@ -255,8 +360,16 @@ def _summarize_stream(
         for field in ("agentId", "agentType", "tasks"):
             if field not in trace:
                 raise TraceValidationError(f"{trace_location}.{field} is required")
-        if isinstance(trace["agentId"], bool) or not isinstance(trace["agentId"], int):
-            raise TraceValidationError(f"{trace_location}.agentId must be an integer")
+        if (
+            isinstance(trace["agentId"], bool)
+            or not isinstance(trace["agentId"], int)
+            or trace["agentId"] < CPP_INT_MIN
+            or trace["agentId"] > CPP_INT_MAX
+        ):
+            raise TraceValidationError(
+                f"{trace_location}.agentId must be an integer in "
+                f"[{CPP_INT_MIN}, {CPP_INT_MAX}]"
+            )
         if not isinstance(trace["agentType"], str):
             raise TraceValidationError(f"{trace_location}.agentType must be a string")
 
@@ -293,10 +406,14 @@ def _summarize_stream(
                     operation["downlinkBytes"], f"{operation_location}.downlinkBytes"
                 )
 
+                operation_end_ms = start_ms + duration_ms
+                if not math.isfinite(operation_end_ms):
+                    raise TraceValidationError(
+                        f"{operation_location} operation end must be finite"
+                    )
+
                 operation_count += 1
-                maximum_operation_end_ms = max(
-                    maximum_operation_end_ms, start_ms + duration_ms
-                )
+                maximum_operation_end_ms = max(maximum_operation_end_ms, operation_end_ms)
                 if is_network_operation(operation):
                     network_operation_count += 1
                     total_network_bytes += uplink_bytes + downlink_bytes
@@ -364,34 +481,25 @@ def find_high_load_window(path: Path, window_ms: float) -> Window:
     """Find the earliest window with maximum fully contained network bytes."""
 
     window_ms = _require_window_ms(window_ms)
-    changes: dict[float, list[int]] = {}
     root_fields: dict[str, Any] = {}
 
-    def observe(operation: dict[str, Any], start_ms: float, duration_ms: float) -> None:
-        if not is_network_operation(operation) or duration_ms > window_ms:
-            return
-        first_start_ms = max(0.0, start_ms + duration_ms - window_ms)
-        last_start_ms = start_ms
-        weight = operation["uplinkBytes"] + operation["downlinkBytes"]
-        changes.setdefault(first_start_ms, [0, 0])[0] += weight
-        changes.setdefault(last_start_ms, [0, 0])[1] += weight
+    with _WindowEventStore() as changes:
 
-    with open_trace_input(path) as stream:
-        _summarize_stream(stream, observe, root_fields)
+        def observe(operation: dict[str, Any], start_ms: float, duration_ms: float) -> None:
+            if not is_network_operation(operation) or duration_ms > window_ms:
+                return
+            first_start_ms = max(0.0, start_ms + duration_ms - window_ms)
+            last_start_ms = start_ms
+            weight = operation["uplinkBytes"] + operation["downlinkBytes"]
+            changes.add_interval(first_start_ms, last_start_ms, weight)
 
-    if not changes:
-        raise TraceValidationError(f"{path}: no network operation fits in the requested window")
+        with open_trace_input(path) as stream:
+            _summarize_stream(stream, observe, root_fields)
 
-    active_bytes = 0
-    best_bytes = -1
-    best_start_ms = 0.0
-    for timestamp_ms in sorted(changes):
-        additions, removals = changes[timestamp_ms]
-        active_bytes += additions
-        if active_bytes > best_bytes:
-            best_bytes = active_bytes
-            best_start_ms = timestamp_ms
-        active_bytes -= removals
+        try:
+            best_start_ms, best_bytes = changes.find_best()
+        except TraceValidationError as error:
+            raise TraceValidationError(f"{path}: {error}") from error
 
     return Window(
         start_ms=best_start_ms,

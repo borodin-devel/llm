@@ -188,10 +188,11 @@ def open_trace_input(path: Path) -> Iterator[BinaryIO]:
     if len(members) != 1 or not members[0].lower().endswith(".json"):
         raise TraceValidationError(f"{path} must contain exactly one JSON member")
 
+    error_stream = tempfile.TemporaryFile()
     process = subprocess.Popen(
         ["unrar", "p", "-inul", str(path), members[0]],
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=error_stream,
     )
     if process.stdout is None:
         process.kill()
@@ -200,17 +201,22 @@ def open_trace_input(path: Path) -> Iterator[BinaryIO]:
         yield process.stdout
     finally:
         process.stdout.close()
-        stderr = process.stderr.read() if process.stderr else b""
-        return_code = process.wait()
-        if process.stderr:
-            process.stderr.close()
+        return_code = process.wait(timeout=10)
+        error_stream.seek(0, os.SEEK_END)
+        error_size = error_stream.tell()
+        error_stream.seek(max(0, error_size - 8192))
+        stderr = error_stream.read()
+        error_stream.close()
         if return_code != 0:
             raise TraceValidationError(
                 f"unrar failed for {path}: {stderr.decode('utf-8', errors='replace').strip()}"
             )
 ```
 
-Wrap `subprocess.CalledProcessError` and missing-file/tool errors as `TraceValidationError` with the input path.
+Wrap `subprocess.CalledProcessError`, timeout, and missing-file/tool errors as
+`TraceValidationError` with the input path. Use a one-hour daemon watchdog for
+streaming and terminate/wait/kill escalation on failure so an extractor cannot
+hang cleanup.
 
 - [ ] **Step 5: Implement strict streaming validation**
 
@@ -243,12 +249,16 @@ def require_nonnegative_number(value: Any, location: str) -> float:
 
 
 def require_nonnegative_integer(value: Any, location: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise TraceValidationError(f"{location} must be a non-negative integer")
+    if (isinstance(value, bool) or not isinstance(value, int)
+            or value < 0 or value > 2**31 - 1):
+        raise TraceValidationError(f"{location} is outside the C++ int range")
     return value
 ```
 
-Catch `ijson.JSONError` and raise `TraceValidationError` naming the input. `validate_path()` must open a fresh input through `open_trace_input()` and call `validate_stream()`.
+Require `agentId` in `[-2**31, 2**31 - 1]`. Reject a non-finite
+`startOffsetMs + durationMs`. Catch `ijson.JSONError` and raise
+`TraceValidationError` naming the input. `validate_path()` must open a fresh
+input through `open_trace_input()` and call `validate_stream()`.
 
 - [ ] **Step 6: Run validation tests**
 
@@ -304,6 +314,9 @@ find_first_window(path: Path, window_ms: float) -> Window
 find_high_load_window(path: Path, window_ms: float) -> Window
 write_window(path: Path, output_path: Path, window: Window) -> SliceSummary
 ```
+
+The implementation also produces `_WindowEventStore`, a context-managed
+temporary SQLite aggregator with `add_interval()` and `find_best()`.
 
 - [ ] **Step 1: Add failing first-window and filter tests**
 
@@ -444,6 +457,10 @@ def test_finds_exact_maximum_contained_bytes(self):
 
 This catches incorrect endpoint ordering, counting a duration larger than the window, and choosing the later edge of an equal-load plateau.
 
+Add a focused `_WindowEventStore` test with intervals `[0,10]=20`,
+`[5,15]=30`, and `[10,10]=5`. Assert `find_best()` returns `(10.0, 55)` and
+that its temporary database no longer exists after the context closes.
+
 - [ ] **Step 3: Run both tests and verify the red state**
 
 Run:
@@ -469,16 +486,23 @@ Window(
 )
 ```
 
-`find_high_load_window()` performs a fresh stream pass. For each network operation with `durationMs <= window_ms`, add the byte weight over the inclusive feasible interval:
+`find_high_load_window()` performs a fresh stream pass. Create a temporary
+SQLite table `events(timestamp REAL PRIMARY KEY, additions INTEGER, removals
+INTEGER) WITHOUT ROWID`. For each network operation with
+`durationMs <= window_ms`, aggregate the byte weight over the inclusive
+feasible interval with `INSERT ... ON CONFLICT DO UPDATE`:
 
 ```python
 first_start = max(0.0, operation_start + operation_duration - window_ms)
 last_start = operation_start
-changes.setdefault(first_start, [0, 0])[0] += operation_bytes
-changes.setdefault(last_start, [0, 0])[1] += operation_bytes
+events.add_interval(first_start, last_start, operation_bytes)
 ```
 
-Sweep sorted timestamps by applying additions, comparing against the best load with strict `>`, then applying removals. Strict comparison preserves the earliest start on ties. Reject an empty event map.
+Commit once after ingestion. Sweep `SELECT timestamp, additions, removals FROM
+events ORDER BY timestamp` by applying additions, comparing against the best
+load with strict `>`, then applying removals. Strict comparison preserves the
+earliest start on ties. Reject an empty table and delete the database in
+`__exit__`.
 
 - [ ] **Step 5: Implement streaming filtering and atomic output**
 
@@ -666,6 +690,11 @@ git commit -m "llm: Add streaming trace CLI"
 
 ### Task 4: Static archive validation and one-shot experiments
 
+> **Execution record:** This one-shot workflow completed successfully on
+> 2026-08-24 with exactly four simulations. Do not execute Step 2 again for
+> these archives. A future workflow requires an explicit operator checkpoint
+> and a new durable run record outside its cleanup directory.
+
 **Files:**
 - Read: `traces/*.rar`
 - Create temporarily: `/tmp/llm-trace-check.XXXXXX/*`
@@ -694,7 +723,11 @@ set -euo pipefail
 
 llm_root="$PWD/contrib/llm"
 trace_tmp="$(mktemp -d /tmp/llm-trace-check.XXXXXX)"
-trap 'rm -rf -- "$trace_tmp"' EXIT
+cleanup_trace_tmp() {
+  TRACE_TMP_TO_CLEAN="$trace_tmp" python3 -c \
+    'import os, shutil; path = os.environ["TRACE_TMP_TO_CLEAN"]; assert path.startswith("/tmp/llm-trace-check."); shutil.rmtree(path)'
+}
+trap cleanup_trace_tmp EXIT
 
 archives=(
   "$llm_root/traces/1W_端侧优先_tw6m_s42_w10000_st1000_mp_window_detailed_trace_w349000-359000.rar"
@@ -781,7 +814,8 @@ From `contrib/llm`, run:
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_trace_stream.py
 python3 -m py_compile scripts/trace_stream.py scripts/find_window.py
-rm -rf -- scripts/__pycache__
+BYTECODE_DIR="$PWD/scripts/__pycache__" python3 -c \
+  'import os, shutil; path = os.environ["BYTECODE_DIR"]; assert path.endswith("/scripts/__pycache__"); shutil.rmtree(path)'
 git diff --check
 ```
 

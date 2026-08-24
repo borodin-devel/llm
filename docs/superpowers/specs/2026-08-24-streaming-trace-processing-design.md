@@ -42,7 +42,7 @@ on a stream of individual trace items.
 - `python3-ijson`, installed through `apt`, incrementally parses
   `traces.item` objects from standard input or a file.
 - Python standard-library modules provide CLI parsing, temporary files,
-  atomic output replacement, and unit tests.
+  SQLite event aggregation, atomic output replacement, and unit tests.
 
 No Python packages are installed with `pip`.
 
@@ -67,7 +67,9 @@ Responsibilities:
    - array `tasks`;
    - array `operations` per task;
    - finite, non-negative `startOffsetMs` and `durationMs`;
-   - non-negative integer `uplinkBytes` and `downlinkBytes`.
+   - signed 32-bit integer `agentId`;
+   - `uplinkBytes` and `downlinkBytes` in `[0, INT_MAX]`;
+   - a finite derived operation end time.
 4. Report trace count, operation count, network-operation count, total network
    bytes, earliest network start, and maximum operation end.
 5. Stream a selected slice to JSON without accumulating the complete output in
@@ -100,8 +102,11 @@ temporary file.
 Unit tests use hand-derived fixtures to cover:
 
 - malformed required fields;
+- C++ integer bounds and derived-time overflow;
+- noisy RAR stderr without pipe deadlock;
 - earliest-active 60-second slicing;
 - exact weighted 10-minute window selection;
+- disk-backed boundary aggregation and cleanup;
 - exclusion of operations crossing a boundary;
 - inclusion of local operations belonging to a selected task;
 - timestamp rebasing;
@@ -141,15 +146,15 @@ operationEnd - 600000 <= s <= operationStart
 ```
 
 The operation therefore contributes its byte weight over that interval of
-possible window starts. The first streaming pass records weighted add/remove
-events at the interval boundaries. Sorting those boundaries and sweeping the
-cumulative weight yields the exact maximum total contained bytes. Ties choose
-the earliest window start.
+possible window starts. The first streaming pass aggregates weighted
+add/remove events in a temporary SQLite table keyed by boundary timestamp.
+Scanning its primary key in order and sweeping the cumulative weight yields
+the exact maximum total contained bytes. Ties choose the earliest window
+start. SQLite bounds memory independently of operation count, and its temporary
+database is deleted when selection finishes or fails.
 
-The specified 1W archive is the smallest archive (about 171 MB expanded), so
-the boundary map is bounded well below the memory required by a JSON DOM. The
-second pass writes the selected window using the filtering and rebasing rules
-above.
+The second pass writes the selected window using the filtering and rebasing
+rules above.
 
 The CLI prints the source window boundaries, retained operation count, agent
 count, and total network bytes. The generated document is validated again
@@ -188,6 +193,9 @@ removes all temporary slices, statistics, and logs.
 ## Failure Handling
 
 - RAR listing/extraction errors stop before simulation.
+- RAR stderr is redirected to an unlinked temporary file so it cannot fill a
+  pipe; diagnostics read only its final 8192 bytes.
+- RAR listing and streaming have explicit timeouts with terminate/kill cleanup.
 - Invalid JSON or trace fields identify the archive and exact trace/task/
   operation location.
 - An empty 60-second slice is a validation failure.
