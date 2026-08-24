@@ -1,20 +1,11 @@
-// model/traffic-sink.h
-//
-// Traffic Sink Application - TCP receiver for station
-// Based on ns3::PacketSink pattern (inherits SinkApplication)
-//
-
 #ifndef TRAFFIC_SINK_H
 #define TRAFFIC_SINK_H
 
 #include "ns3/sink-application.h"
-#include "ns3/event-id.h"
 #include "ns3/traced-callback.h"
-#include "ns3/traced-value.h"
 
-#include <map>
-#include <vector>
 #include <cstdint>
+#include <vector>
 
 namespace ns3
 {
@@ -25,23 +16,15 @@ class Packet;
 /**
  * @ingroup applications
  *
- * @brief TCP traffic sink that receives and logs agent payloads.
- *
- * Receives TCP connections from TrafficGenerator applications and logs
- * received bytes per agent. Tracks per-second throughput and channel
- * utilization metrics.
- *
- * Metrics tracked:
- *   - total bytes received
- *   - per-agent bytes received
- *   - per-second throughput (bps)
+ * TCP traffic sink that records received-packet timing.
  */
 class TrafficSink : public SinkApplication
 {
   public:
     /**
-     * @brief Get the type ID.
-     * @return the object TypeId
+     * Get the registered type identifier.
+     *
+     * @return Application TypeId.
      */
     static TypeId GetTypeId();
 
@@ -53,34 +36,36 @@ class TrafficSink : public SinkApplication
     void DoStartApplication() override;
     void DoStopApplication() override;
 
+    /**
+     * Consume received TCP payload.
+     *
+     * @param socket Socket with available data.
+     */
     void HandleRead(Ptr<Socket> socket);
-    void HandleAccept(Ptr<Socket> socket, const Address &from);
+
+    /**
+     * Configure one accepted TCP connection.
+     *
+     * @param socket Accepted socket.
+     * @param from Remote peer address.
+     */
+    void HandleAccept(Ptr<Socket> socket, const Address& from);
+
+    /** @param socket Socket closed by its peer. */
     void HandlePeerClose(Ptr<Socket> socket);
+
+    /** @param socket Socket reporting an error. */
     void HandleError(Ptr<Socket> socket);
-    void LogPerSecondMetrics();
-    void RecordInterArrivalTime(Time now);
 
-    // Accepted sockets (one per TCP connection)
-    std::vector<Ptr<Socket>> m_acceptedSockets;
+    /** @param receiveTime Current packet receive time. */
+    void RecordInterArrivalTime(Time receiveTime);
 
-    // Metrics: total bytes received
-    uint64_t m_totalReceived;
-
-    // Metrics: per-agent bytes received
-    std::map<int64_t, uint64_t> m_agentBytesReceived;
-
-    // Metrics: per-second tracking
-    std::map<int64_t, uint64_t> m_agentBytesThisSecond;
-    Time m_lastMetricCheckTime;
-
-    // Metrics: inter-arrival time samples (us)
-    std::vector<double> m_iatSamplesUs;
-    Time m_lastPacketTime;
-
-    // Traced callbacks
-    TracedCallback<uint64_t, Address> m_rxTraceCustom;
+    std::vector<Ptr<Socket>> m_acceptedSockets;        ///< Accepted TCP sockets.
+    std::vector<double> m_iatSamplesUs;                ///< Inter-arrival samples in microseconds.
+    Time m_lastPacketTime;                             ///< Previous packet receive time.
+    TracedCallback<uint64_t, Address> m_rxTraceCustom; ///< Received-payload trace.
 };
 
 } // namespace ns3
 
-#endif /* TRAFFIC_SINK_H */
+#endif // TRAFFIC_SINK_H

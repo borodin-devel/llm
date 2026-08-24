@@ -90,10 +90,7 @@ TraceStreamParserTestCase::DoRun()
 
     NS_TEST_ASSERT_MSG_EQ(parsed.agents.size(), 1, "Unexpected agent count");
     NS_TEST_ASSERT_MSG_EQ(parsed.agents[0].key, "7_worker", "Unexpected agent key");
-    NS_TEST_ASSERT_MSG_EQ_TOL(parsed.experimentDurationMs,
-                              20.0,
-                              1e-9,
-                              "Unexpected trace duration");
+    NS_TEST_ASSERT_MSG_EQ_TOL(parsed.experimentDurationMs, 20.0, 1e-9, "Unexpected trace duration");
 }
 
 } // namespace

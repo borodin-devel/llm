@@ -34,8 +34,7 @@ using DownlinkSchedulesByStation = std::map<Address, std::vector<ScheduledPayloa
  * @param operationsByAgent Legacy operations grouped by agent.
  * @return Ordered uplink payload schedule.
  */
-std::vector<ScheduledPayload> BuildUplinkSchedule(
-    const LegacyAgentOperations& operationsByAgent);
+std::vector<ScheduledPayload> BuildUplinkSchedule(const LegacyAgentOperations& operationsByAgent);
 
 /**
  * Build downlink schedules ordered by operation end offset.

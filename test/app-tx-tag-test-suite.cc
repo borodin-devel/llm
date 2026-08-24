@@ -50,9 +50,7 @@ AppTxTagTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(restored.GetAppPacketUid(), 42, "Wrong packet UID");
     NS_TEST_ASSERT_MSG_EQ(restored.GetAppTxTimeUs(), 123456, "Wrong transmit time");
     NS_TEST_ASSERT_MSG_EQ(restored.GetSource(), Ipv4Address("10.1.0.1"), "Wrong source");
-    NS_TEST_ASSERT_MSG_EQ(restored.GetDestination(),
-                          Ipv4Address("10.1.0.2"),
-                          "Wrong destination");
+    NS_TEST_ASSERT_MSG_EQ(restored.GetDestination(), Ipv4Address("10.1.0.2"), "Wrong destination");
     NS_TEST_ASSERT_MSG_EQ(restored.GetSourcePort(), 10000, "Wrong source port");
     NS_TEST_ASSERT_MSG_EQ(restored.GetDestinationPort(), 9000, "Wrong destination port");
     NS_TEST_ASSERT_MSG_EQ(restored.GetAppPayloadBytes(), 64, "Wrong payload size");

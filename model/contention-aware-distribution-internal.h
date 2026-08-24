@@ -22,13 +22,42 @@ struct AgentActivity
     int64_t totalBytes{0};           ///< Downlink plus uplink bytes.
 };
 
+/**
+ * Calculate the bidirectional payload total for one agent.
+ *
+ * @param operations Agent operations.
+ * @return Downlink plus uplink bytes.
+ */
 int64_t CalculateTotalBytes(const std::vector<Operation>& operations);
 
+/**
+ * Convert agent traces into uplink activity slots.
+ *
+ * @param agents Parsed agents.
+ * @param slotMs Activity-slot width in milliseconds.
+ * @return Slot-oriented agent activity.
+ */
 std::vector<AgentActivity> BuildAgentActivities(const std::vector<AgentInfo>& agents, int slotMs);
 
+/**
+ * Assign every activity to a BSS.
+ *
+ * @param activities Slot-oriented agent activity.
+ * @param config Distribution configuration.
+ * @return BSS index for every activity.
+ */
 std::vector<int> AssignAgentsToBss(const std::vector<AgentActivity>& activities,
                                    const ContentionAwareDistributionConfig& config);
 
+/**
+ * Assign activities in one BSS to physical stations.
+ *
+ * @param activities Slot-oriented agent activity.
+ * @param bssAssignment BSS index for every activity.
+ * @param bssIndex BSS to process.
+ * @param config Distribution configuration.
+ * @param stationAddressByAgent Output station address for each assigned agent.
+ */
 void AssignAgentsToStations(const std::vector<AgentActivity>& activities,
                             const std::vector<int>& bssAssignment,
                             int bssIndex,

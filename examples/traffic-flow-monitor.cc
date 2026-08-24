@@ -38,11 +38,7 @@ struct FlowKey
 
     bool operator<(const FlowKey& other) const
     {
-        return std::tie(sourceIp,
-                        sourcePort,
-                        destinationIp,
-                        destinationPort,
-                        payloadBytes) <
+        return std::tie(sourceIp, sourcePort, destinationIp, destinationPort, payloadBytes) <
                std::tie(other.sourceIp,
                         other.sourcePort,
                         other.destinationIp,
@@ -250,8 +246,7 @@ TrafficFlowMonitor::PrintTransmissionTimePerSender() const
         const double totalSec = static_cast<double>(totalDurationUs) / 1e6;
         const double totalBytesMb =
             static_cast<double>(totalBytesBySender[sender]) / (1024.0 * 1024.0);
-        NS_LOG_INFO("Sender " << sender << ": txTime=" << totalMs << " ms (" << totalSec
-                              << " s), "
+        NS_LOG_INFO("Sender " << sender << ": txTime=" << totalMs << " ms (" << totalSec << " s), "
                               << "PayloadOnly=" << totalBytesBySender[sender] << " ("
                               << totalBytesMb << " MB)"
                               << "effRate=" << totalBytesMb * 8 / totalSec << " mbps");

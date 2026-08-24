@@ -42,7 +42,6 @@ CalculateTotalBytes(const std::vector<Operation>& operations)
     return total;
 }
 
-
 /**
  * Convert ParsedResult into the slot-oriented representation used below.
  *
@@ -60,8 +59,8 @@ CalculateTotalBytes(const std::vector<Operation>& operations)
 std::vector<AgentActivity>
 BuildAgentActivities(const std::vector<AgentInfo>& agents, int slotMs)
 {
-    std::vector<AgentActivity> result;
-    result.reserve(agents.size());
+    std::vector<AgentActivity> activities;
+    activities.reserve(agents.size());
 
     for (const auto& agent : agents)
     {
@@ -80,14 +79,13 @@ BuildAgentActivities(const std::vector<AgentInfo>& agents, int slotMs)
             }
 
             activity.uplinkSlots.insert(static_cast<int>(
-                std::floor(operation.startOffsetMs /
-                           static_cast<double>(slotMs))));
+                std::floor(operation.startOffsetMs / static_cast<double>(slotMs))));
         }
 
-        result.push_back(std::move(activity));
+        activities.push_back(std::move(activity));
     }
 
-    return result;
+    return activities;
 }
 
 } // namespace llm_detail
@@ -100,200 +98,130 @@ using llm_detail::BuildAgentActivities;
 namespace
 {
 
-// ============================================================================
-// Configuration validation
-// ============================================================================
-
 void
-ValidateConfiguration(
-    const ParsedResult& parsed,
-    const ContentionAwareDistributionConfig& config)
+ValidateConfiguration(const ParsedResult& parsedTrace,
+                      const ContentionAwareDistributionConfig& config)
 {
     if (config.nAp <= 0)
     {
-        throw std::invalid_argument(
-            "DistributeAgentsContentionAware: nAp must be > 0");
+        throw std::invalid_argument("DistributeAgentsContentionAware: nAp must be > 0");
     }
 
     if (config.nStationsPerAp <= 0)
     {
-        throw std::invalid_argument(
-            "DistributeAgentsContentionAware: "
-            "nStationsPerAp must be > 0");
+        throw std::invalid_argument("DistributeAgentsContentionAware: "
+                                    "nStationsPerAp must be > 0");
     }
 
     if (config.maxAgentsPerStation < 0)
     {
-        throw std::invalid_argument(
-            "DistributeAgentsContentionAware: "
-            "maxAgentsPerStation must be >= 0 (0 means unlimited)");
+        throw std::invalid_argument("DistributeAgentsContentionAware: "
+                                    "maxAgentsPerStation must be >= 0 (0 means unlimited)");
     }
 
     if (config.slotMs <= 0)
     {
-        throw std::invalid_argument(
-            "DistributeAgentsContentionAware: slotMs must be > 0");
+        throw std::invalid_argument("DistributeAgentsContentionAware: slotMs must be > 0");
     }
 
     if (config.maxAgentsPerStation > 0)
     {
-        const int64_t totalCapacity =
-            static_cast<int64_t>(config.nAp) *
-            static_cast<int64_t>(config.nStationsPerAp) *
-            static_cast<int64_t>(config.maxAgentsPerStation);
+        const int64_t totalCapacity = static_cast<int64_t>(config.nAp) *
+                                      static_cast<int64_t>(config.nStationsPerAp) *
+                                      static_cast<int64_t>(config.maxAgentsPerStation);
 
-        if (static_cast<int64_t>(parsed.agents.size()) > totalCapacity)
+        if (static_cast<int64_t>(parsedTrace.agents.size()) > totalCapacity)
         {
-            throw std::invalid_argument(
-                "DistributeAgentsContentionAware: "
-                "agent count exceeds total BSS/STA capacity");
+            throw std::invalid_argument("DistributeAgentsContentionAware: "
+                                        "agent count exceeds total BSS/STA capacity");
         }
     }
 }
 
-} // anonymous namespace
-
-
-// ============================================================================
-// Public API
-// ============================================================================
+} // namespace
 
 DistributionResult
-DistributeAgentsContentionAware(
-    const ParsedResult& parsed,
-    const ContentionAwareDistributionConfig& config)
+DistributeAgentsContentionAware(const ParsedResult& parsedTrace,
+                                const ContentionAwareDistributionConfig& config)
 {
-    ValidateConfiguration(parsed, config);
+    ValidateConfiguration(parsedTrace, config);
 
-    NS_LOG_INFO(
-        "[Distribution] Starting contention-aware distribution:"
-        << " agents=" << parsed.agents.size()
-        << " BSS=" << config.nAp
-        << " stationsPerBss=" << config.nStationsPerAp
-        << " maxAgentsPerStation="
-        << (config.maxAgentsPerStation == 0
-                ? std::string("unlimited")
-                : std::to_string(config.maxAgentsPerStation))
-        << " lowContentionPriority="
-        << (config.lowContentionPriority ? "true" : "false")
-        << " slotMs=" << config.slotMs
-        << " experimentDurationMs=" << parsed.experimentDurationMs);
+    NS_LOG_INFO("[Distribution] Starting contention-aware distribution:"
+                << " agents=" << parsedTrace.agents.size() << " BSS=" << config.nAp
+                << " stationsPerBss=" << config.nStationsPerAp << " maxAgentsPerStation="
+                << (config.maxAgentsPerStation == 0 ? std::string("unlimited")
+                                                    : std::to_string(config.maxAgentsPerStation))
+                << " lowContentionPriority=" << (config.lowContentionPriority ? "true" : "false")
+                << " slotMs=" << config.slotMs
+                << " experimentDurationMs=" << parsedTrace.experimentDurationMs);
 
-    DistributionResult result;
+    DistributionResult distribution;
 
-    result.apAgentMaps.resize(config.nAp);
-    result.apStationMaps.resize(config.nAp);
-    result.apAddresses.resize(config.nAp);
-    result.stationBases.resize(config.nAp);
+    distribution.apAgentMaps.resize(config.nAp);
+    distribution.apStationMaps.resize(config.nAp);
+    distribution.apAddresses.resize(config.nAp);
+    distribution.stationBases.resize(config.nAp);
 
-    // ------------------------------------------------------------------------
-    // Preserve the exact addressing scheme expected by SetupApGroup().
-    // ------------------------------------------------------------------------
-
-    for (int bss = 0; bss < config.nAp; ++bss)
+    // SetupApGroup expects the AP to own 10.1.<bss>.1.
+    for (int bssIndex = 0; bssIndex < config.nAp; ++bssIndex)
     {
-        const std::string apIp =
-            "10.1." +
-            std::to_string(bss) +
-            ".1";
+        const std::string accessPointIp = "10.1." + std::to_string(bssIndex) + ".1";
 
-        result.apAddresses[bss] =
-            InetSocketAddress(
-                Ipv4Address(apIp.c_str()),
-                10000);
+        distribution.apAddresses[bssIndex] =
+            InetSocketAddress(Ipv4Address(accessPointIp.c_str()), 10000);
 
-        result.stationBases[bss] =
-            InetSocketAddress(
-                Ipv4Address(apIp.c_str()),
-                9000);
+        distribution.stationBases[bssIndex] =
+            InetSocketAddress(Ipv4Address(accessPointIp.c_str()), 9000);
     }
 
-    // ------------------------------------------------------------------------
-    // Convert trace operations into UL time-slot activity.
-    // ------------------------------------------------------------------------
-
     const std::vector<AgentActivity> activities =
-        BuildAgentActivities(
-            parsed.agents,
-            config.slotMs);
+        BuildAgentActivities(parsedTrace.agents, config.slotMs);
 
-    // ------------------------------------------------------------------------
-    // Phase 1:
-    // distribute application-level agents between independent BSSes.
-    // ------------------------------------------------------------------------
-
-    const std::vector<int> bssAssignment =
-        AssignAgentsToBss(
-            activities,
-            config);
+    const std::vector<int> bssAssignment = AssignAgentsToBss(activities, config);
 
     // Copy each agent's original operations into the corresponding BSS map.
     //
     // The traffic generators consume these operations later, therefore the
     // distribution algorithm must not modify their timestamps or byte counts.
-    for (int agentIndex = 0;
-         agentIndex < static_cast<int>(activities.size());
-         ++agentIndex)
+    for (int agentIndex = 0; agentIndex < static_cast<int>(activities.size()); ++agentIndex)
     {
-        const int bss = bssAssignment[agentIndex];
+        const int bssIndex = bssAssignment[agentIndex];
 
-        if (bss < 0 || bss >= config.nAp)
+        if (bssIndex < 0 || bssIndex >= config.nAp)
         {
-            throw std::runtime_error(
-                "DistributeAgentsContentionAware: "
-                "invalid BSS assignment");
+            throw std::runtime_error("DistributeAgentsContentionAware: "
+                                     "invalid BSS assignment");
         }
 
-        result.apAgentMaps[bss]
-                          [activities[agentIndex].agent->key] =
+        distribution.apAgentMaps[bssIndex][activities[agentIndex].agent->key] =
             activities[agentIndex].agent->operations;
     }
 
-    // ------------------------------------------------------------------------
-    // Phase 2:
-    // independently map agents to physical STAs inside every BSS.
-    // ------------------------------------------------------------------------
-
-    for (int bss = 0; bss < config.nAp; ++bss)
+    for (int bssIndex = 0; bssIndex < config.nAp; ++bssIndex)
     {
-        AssignAgentsToStations(
-            activities,
-            bssAssignment,
-            bss,
-            config,
-            result.apStationMaps[bss]);
+        AssignAgentsToStations(activities,
+                               bssAssignment,
+                               bssIndex,
+                               config,
+                               distribution.apStationMaps[bssIndex]);
     }
 
-    // ------------------------------------------------------------------------
-    // Sanity check.
-    //
-    // The old implementation can silently skip an agent if all stations are
-    // full. This implementation treats incomplete placement as an error.
-    // ------------------------------------------------------------------------
+    std::size_t mappedAgentCount = 0;
 
-    std::size_t mappedAgents = 0;
-
-    for (const auto& stationMap : result.apStationMaps)
+    for (const auto& stationMap : distribution.apStationMaps)
     {
-        mappedAgents += stationMap.size();
+        mappedAgentCount += stationMap.size();
     }
 
-    if (mappedAgents != parsed.agents.size())
+    if (mappedAgentCount != parsedTrace.agents.size())
     {
-        throw std::runtime_error(
-            "DistributeAgentsContentionAware: "
-            "not all agents were assigned to a station");
+        throw std::runtime_error("DistributeAgentsContentionAware: "
+                                 "not all agents were assigned to a station");
     }
 
-    NS_LOG_INFO(
-        "[Distribution] Contention-aware distribution complete:"
-        << " mappedAgents="
-        << mappedAgents
-        << "/"
-        << parsed.agents.size());
+    NS_LOG_INFO("[Distribution] Contention-aware distribution complete:"
+                << " mappedAgents=" << mappedAgentCount << "/" << parsedTrace.agents.size());
 
-    return result;
+    return distribution;
 }
-
-
 } // namespace ns3

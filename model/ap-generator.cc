@@ -1,11 +1,7 @@
-// model/ap-generator.cc
-//
-// AP Generator Application - Downlink sender from Access Point
-// Sends downlink data to stations based on agent-to-station mapping
-//
-
 #include "ap-generator.h"
+
 #include "app-tx-tag.h"
+#include "llm-log.h"
 
 #include "ns3/inet-socket-address.h"
 #include "ns3/ipv4-address.h"
@@ -14,40 +10,41 @@
 #include "ns3/packet.h"
 #include "ns3/simulator.h"
 #include "ns3/socket.h"
-#include "ns3/tcp-socket-factory.h"
 #include "ns3/tcp-socket-base.h"
+#include "ns3/tcp-socket-factory.h"
 #include "ns3/uinteger.h"
 
 #include <algorithm>
 #include <iomanip>
+#include <sstream>
+#include <utility>
 
 namespace ns3
 {
 
-NS_LOG_COMPONENT_DEFINE("APGenerator");
+static LogComponent& g_log = llm_detail::GetApGeneratorLog();
 
 NS_OBJECT_ENSURE_REGISTERED(APGenerator);
 
 TypeId
 APGenerator::GetTypeId()
 {
-    static TypeId tid =
-        TypeId("ns3::APGenerator")
-            .SetParent<Application>()
-            .SetGroupName("Applications")
-            .AddConstructor<APGenerator>()
-            .AddTraceSource("Tx",
-                            "Downlink packet sent to a station.",
-                            MakeTraceSourceAccessor(&APGenerator::m_txTrace),
-                            "ns3::APGenerator::AgentSendCallback")
-            .AddTraceSource("AgentSend",
-                            "A complete downlink transmission to a station.",
-                            MakeTraceSourceAccessor(&APGenerator::m_agentSendTrace),
-                            "ns3::APGenerator::AgentSendCallback")
-            .AddTraceSource("AppTxDrop",
-                            "Application payload rejected by the TCP socket.",
-                            MakeTraceSourceAccessor(&APGenerator::m_appTxDropTrace),
-                            "ns3::APGenerator::AgentSendCallback");
+    static TypeId tid = TypeId("ns3::APGenerator")
+                            .SetParent<Application>()
+                            .SetGroupName("Applications")
+                            .AddConstructor<APGenerator>()
+                            .AddTraceSource("Tx",
+                                            "Downlink packet sent to a station.",
+                                            MakeTraceSourceAccessor(&APGenerator::m_txTrace),
+                                            "ns3::APGenerator::AgentSendCallback")
+                            .AddTraceSource("AgentSend",
+                                            "A complete downlink transmission to a station.",
+                                            MakeTraceSourceAccessor(&APGenerator::m_agentSendTrace),
+                                            "ns3::APGenerator::AgentSendCallback")
+                            .AddTraceSource("AppTxDrop",
+                                            "Application payload rejected by the TCP socket.",
+                                            MakeTraceSourceAccessor(&APGenerator::m_appTxDropTrace),
+                                            "ns3::APGenerator::AgentSendCallback");
     return tid;
 }
 
@@ -62,26 +59,26 @@ APGenerator::~APGenerator()
 }
 
 void
-APGenerator::SetAgentStationMap(std::map<std::string, Address> mapping)
+APGenerator::SetAgentStationMap(std::map<std::string, Address> stationAddressByAgent)
 {
     NS_LOG_FUNCTION(this);
-    m_stationAddressByAgent = mapping;
+    m_stationAddressByAgent = std::move(stationAddressByAgent);
 }
 
 void
 APGenerator::SetAgentMap(
-  std::map<std::string, std::vector<std::tuple<int, double, double, int>>> agentsMap)
+    std::map<std::string, std::vector<std::tuple<int, double, double, int>>> operationsByAgent)
 {
     NS_LOG_FUNCTION(this);
-    m_operationsByAgent = agentsMap;
-    m_allAgentKeys.clear();
-    for (const auto &[agentKey, ops] : m_operationsByAgent)
+    m_operationsByAgent = std::move(operationsByAgent);
+    m_unscheduledAgentKeys.clear();
+    m_unscheduledAgentKeys.reserve(m_operationsByAgent.size());
+    for (const auto& [agentKey, operations] : m_operationsByAgent)
     {
-        if (std::find(m_allAgentKeys.begin(), m_allAgentKeys.end(), agentKey) == m_allAgentKeys.end()) {
-            m_allAgentKeys.emplace_back(agentKey);
-        }
+        (void)operations;
+        m_unscheduledAgentKeys.push_back(agentKey);
     }
-    AggregateAndSortOperations();
+    BuildSchedules();
 }
 
 void
@@ -95,8 +92,7 @@ APGenerator::StartTraffic(uint64_t experimentStartMs)
 {
     NS_ABORT_MSG_IF(!m_readyReported,
                     "APGenerator::StartTraffic called before all TCP connections are ready");
-    NS_ABORT_MSG_IF(m_trafficStarted,
-                    "APGenerator::StartTraffic called more than once");
+    NS_ABORT_MSG_IF(m_trafficStarted, "APGenerator::StartTraffic called more than once");
 
     m_trafficStarted = true;
     m_experimentStartMs = experimentStartMs;
@@ -123,34 +119,16 @@ APGenerator::DoDispose()
         localIp = inetLocal.GetIpv4();
     }
 
-    if (!m_allAgentKeys.empty())
-    {
-        std::ostringstream notTxed;
-        notTxed << "[";
-        bool first = true;
-        for (const auto &key : m_allAgentKeys)
-        {
-            if (!first)
-            {
-                notTxed << ", ";
-            }
-            notTxed << key;
-            first = false;
-        }
-        notTxed << "]";
-        NS_LOG_WARN("[APGenerator] Agents that didn't TX from AP "
-                    << localIp << ": " << notTxed.str());
-    }
+    ReportUnscheduledAgents(localIp);
 
-    NS_LOG_INFO("[APGenerator] stopping ap="
-                << localIp
-                << ", effective seconds="
-                << m_metricsByAbsoluteSecond.size());
+    NS_LOG_INFO("[APGenerator] stopping ap=" << localIp << ", effective seconds="
+                                             << m_metricsByAbsoluteSecond.size());
 
     PrintPerSecondMetrics();
 
-    for (auto &[addr, socket] : m_socketByStation)
+    for (auto& [stationAddress, socket] : m_socketByStation)
     {
+        (void)stationAddress;
         socket = nullptr;
     }
     m_socketByStation.clear();
@@ -159,11 +137,33 @@ APGenerator::DoDispose()
 }
 
 void
+APGenerator::ReportUnscheduledAgents(Ipv4Address localAddress) const
+{
+    if (m_unscheduledAgentKeys.empty())
+    {
+        return;
+    }
+
+    std::ostringstream agentList;
+    agentList << "[";
+    for (std::size_t index = 0; index < m_unscheduledAgentKeys.size(); ++index)
+    {
+        if (index > 0)
+        {
+            agentList << ", ";
+        }
+        agentList << m_unscheduledAgentKeys[index];
+    }
+    agentList << "]";
+    NS_LOG_WARN("[APGenerator] Agents that didn't TX from AP " << localAddress << ": "
+                                                               << agentList.str());
+}
+
+void
 APGenerator::StartApplication()
 {
     NS_LOG_FUNCTION(this);
 
-    // Create sockets and connect to each station.
     ConnectToStations();
 
     // An AP with no mapped station has no TCP connection to wait for.
@@ -175,21 +175,21 @@ APGenerator::StopApplication()
 {
     NS_LOG_FUNCTION(this);
 
-    // Cancel all pending events
-    for (auto &[addr, event] : m_sendEventByStation)
+    for (auto& [stationAddress, event] : m_sendEventByStation)
     {
+        (void)stationAddress;
         Simulator::Cancel(event);
     }
 
-    // Close all sockets
-    for (auto &[addr, socket] : m_socketByStation)
+    for (auto& [stationAddress, socket] : m_socketByStation)
     {
+        (void)stationAddress;
         socket->Close();
     }
 }
 
 void
-APGenerator::AggregateAndSortOperations()
+APGenerator::BuildSchedules()
 {
     NS_LOG_FUNCTION(this);
 
@@ -215,8 +215,8 @@ APGenerator::AggregateAndSortOperations()
         BuildDownlinkSchedules(m_operationsByAgent, m_stationAddressByAgent);
 
     NS_LOG_WARN("Aggregated operations for " << m_downlinkSchedulesByStation.size()
-                                             << " stations from "
-                                             << m_operationsByAgent.size() << " agents");
+                                             << " stations from " << m_operationsByAgent.size()
+                                             << " agents");
 }
 
 void
@@ -224,47 +224,47 @@ APGenerator::ConnectToStations()
 {
     NS_LOG_FUNCTION(this);
 
-    for (const auto &[station, ops] : m_downlinkSchedulesByStation)
+    for (const auto& [stationAddress, schedule] : m_downlinkSchedulesByStation)
     {
-        NS_LOG_INFO("ConnectToStations " << InetSocketAddress::ConvertFrom(station).GetIpv4() <<
-                " " << InetSocketAddress::ConvertFrom(station).GetPort());
-        // Create TCP socket for this station
+        (void)schedule;
+        NS_LOG_INFO("ConnectToStations "
+                    << InetSocketAddress::ConvertFrom(stationAddress).GetIpv4() << " "
+                    << InetSocketAddress::ConvertFrom(stationAddress).GetPort());
         Ptr<Socket> socket = Socket::CreateSocket(GetNode(), TcpSocketFactory::GetTypeId());
+        ConfigureSocket(stationAddress, socket);
 
-        // Store station address in reverse map (socket pointer -> station)
-        m_socketToStation[&*socket] = station;
-        m_socketByStation[station] = socket;
-        m_isConnectedByStation[station] = false;
-        m_sendEventByStation[station] = EventId();
-
-        // Set up callbacks
-        socket->SetConnectCallback(
-          MakeCallback(&APGenerator::OnConnectionSucceeded, this),
-          MakeCallback(&APGenerator::OnConnectionFailed, this));
-
-        socket->SetRecvCallback(MakeCallback(&APGenerator::HandleRead, this));
-
-        // Subscribe to Cwnd trace via TcpSocketBase
-        auto tcpBase = DynamicCast<TcpSocketBase>(socket);
-        if (tcpBase)
-        {
-            tcpBase->TraceConnectWithoutContext(
-              "CongestionWindow",
-              MakeCallback(&APGenerator::OnCwndChange, this));
-        }
-
-        socket->Connect(station);
-
-        NS_LOG_WARN("Created socket for station " << station);
+        NS_LOG_WARN("Created socket for station " << stationAddress);
     }
 }
 
 void
-APGenerator::ScheduleStationTransmissions(const Address &station)
+APGenerator::ConfigureSocket(const Address& stationAddress, Ptr<Socket> socket)
+{
+    m_socketToStation[&*socket] = stationAddress;
+    m_socketByStation[stationAddress] = socket;
+    m_isConnectedByStation[stationAddress] = false;
+    m_sendEventByStation[stationAddress] = EventId();
+
+    socket->SetConnectCallback(MakeCallback(&APGenerator::OnConnectionSucceeded, this),
+                               MakeCallback(&APGenerator::OnConnectionFailed, this));
+    socket->SetRecvCallback(MakeCallback(&APGenerator::HandleRead, this));
+
+    Ptr<TcpSocketBase> tcpSocket = DynamicCast<TcpSocketBase>(socket);
+    if (tcpSocket)
+    {
+        tcpSocket->TraceConnectWithoutContext("CongestionWindow",
+                                              MakeCallback(&APGenerator::OnCwndChange, this));
+    }
+
+    socket->Connect(stationAddress);
+}
+
+void
+APGenerator::ScheduleStationTransmissions(const Address& stationAddress)
 {
     NS_LOG_FUNCTION(this);
 
-    const auto& schedule = m_downlinkSchedulesByStation.at(station);
+    const auto& schedule = m_downlinkSchedulesByStation.at(stationAddress);
 
     for (const auto& payload : schedule)
     {
@@ -277,29 +277,25 @@ APGenerator::ScheduleStationTransmissions(const Address &station)
 
         const Time delay = targetTime - Simulator::Now();
 
-        m_sendEventByStation[station] = Simulator::Schedule(
-          delay,
-          &APGenerator::SendDownlink,
-          this,
-          station,
-          payload.agentKey,
-          payload.payloadBytes,
-          payload.traceTimeMs);
+        m_sendEventByStation[stationAddress] = Simulator::Schedule(delay,
+                                                                   &APGenerator::SendDownlink,
+                                                                   this,
+                                                                   stationAddress,
+                                                                   payload.agentKey,
+                                                                   payload.payloadBytes,
+                                                                   payload.traceTimeMs);
 
-        NS_LOG_INFO("[Agent " << payload.agentKey
-                               << "] Scheduled: trace time="
-                               << std::fixed << std::setprecision(6)
-                               << payload.traceTimeMs
-                               << "ms / simulation time="
-                               << targetTime.As(Time::MS)
-                               << " / delay="
-                               << delay.As(Time::MS)
-                               << " / downlinkBytes="
-                               << payload.payloadBytes);
+        NS_LOG_INFO("[Agent " << payload.agentKey << "] Scheduled: trace time=" << std::fixed
+                              << std::setprecision(6) << payload.traceTimeMs
+                              << "ms / simulation time=" << targetTime.As(Time::MS) << " / delay="
+                              << delay.As(Time::MS) << " / downlinkBytes=" << payload.payloadBytes);
 
-        auto it = std::find(m_allAgentKeys.begin(), m_allAgentKeys.end(), payload.agentKey);
-        if (it != m_allAgentKeys.end()) {
-            m_allAgentKeys.erase(it);
+        auto unscheduledAgent = std::find(m_unscheduledAgentKeys.begin(),
+                                          m_unscheduledAgentKeys.end(),
+                                          payload.agentKey);
+        if (unscheduledAgent != m_unscheduledAgentKeys.end())
+        {
+            m_unscheduledAgentKeys.erase(unscheduledAgent);
         }
     }
 
@@ -307,93 +303,96 @@ APGenerator::ScheduleStationTransmissions(const Address &station)
 }
 
 void
-APGenerator::SendDownlink(const Address &station,
-                          const std::string &agentKey,
-                          uint32_t bytes,
-                          double startMs)
+APGenerator::SendDownlink(const Address& stationAddress,
+                          const std::string& agentKey,
+                          uint32_t payloadBytes,
+                          double traceTimeMs)
 {
-    NS_LOG_FUNCTION(this << station << agentKey << bytes << startMs);
+    NS_LOG_FUNCTION(this << stationAddress << agentKey << payloadBytes << traceTimeMs);
 
-    auto socketIt = m_socketByStation.find(station);
+    auto socketIt = m_socketByStation.find(stationAddress);
     if (socketIt == m_socketByStation.end() || !socketIt->second)
     {
-        NS_LOG_WARN("No socket for station " << station);
+        NS_LOG_WARN("No socket for station " << stationAddress);
         return;
     }
 
     Ptr<Socket> socket = socketIt->second;
-    if (!m_isConnectedByStation[station])
+    if (!m_isConnectedByStation[stationAddress])
     {
-        NS_LOG_WARN("Station " << station << " not connected yet, skipping send");
+        NS_LOG_WARN("Station " << stationAddress << " not connected yet, skipping send");
         return;
     }
 
-    Time startTime = Simulator::Now();
-    Ptr<Packet> packet = Create<Packet>(bytes);
+    const Time transmitTime = Simulator::Now();
+    Ptr<Packet> packet = Create<Packet>(payloadBytes);
 
     Address localAddress;
     socket->GetSockName(localAddress);
     InetSocketAddress inetLocal = InetSocketAddress::ConvertFrom(localAddress);
     auto localIp = inetLocal.GetIpv4();
 
-    const InetSocketAddress inetRemote = InetSocketAddress::ConvertFrom(station);
+    const InetSocketAddress inetRemote = InetSocketAddress::ConvertFrom(stationAddress);
     auto remoteIp = inetRemote.GetIpv4();
 
-    AddAppTxTag(packet, startTime, inetLocal, inetRemote, agentKey);
+    AddAppTxTag(packet, transmitTime, inetLocal, inetRemote, agentKey);
 
-    int sent = socket->Send(packet);
-    if (sent < 0)
+    const int acceptedBytes = socket->Send(packet);
+    if (acceptedBytes < 0)
     {
-        m_appTxDropTrace(station, agentKey, bytes, startTime);
-        NS_LOG_ERROR("[AP] " << localIp << " Failed to send " << bytes << " bytes to " << remoteIp
-                                            << " for agent " << agentKey);
+        m_appTxDropTrace(stationAddress, agentKey, payloadBytes, transmitTime);
+        NS_LOG_ERROR("[AP] " << localIp << " Failed to send " << payloadBytes << " bytes to "
+                             << remoteIp << " for agent " << agentKey);
         return;
     }
 
-    if (static_cast<uint32_t>(sent) < bytes)
+    if (static_cast<uint32_t>(acceptedBytes) < payloadBytes)
     {
-        m_appTxDropTrace(station,
+        m_appTxDropTrace(stationAddress,
                          agentKey,
-                         bytes - static_cast<uint32_t>(sent),
-                         startTime);
+                         payloadBytes - static_cast<uint32_t>(acceptedBytes),
+                         transmitTime);
     }
 
     const double actualTraceMs =
-        startTime.GetSeconds() * 1000.0 -
-        static_cast<double>(m_experimentStartMs);
+        transmitTime.GetSeconds() * 1000.0 - static_cast<double>(m_experimentStartMs);
 
     NS_LOG_WARN("[APP TX] direction=DL"
                 << " agent=\"" << agentKey << "\""
-                << " local=" << localIp
-                << " remote=" << remoteIp
-                << " trace_ms=" << std::fixed << std::setprecision(6) << startMs
-                << " actual_trace_ms=" << actualTraceMs
-                << " delta_ms=" << (actualTraceMs - startMs)
-                << " expected_bytes=" << bytes
-                << " socket_accepted_bytes=" << sent);
+                << " local=" << localIp << " remote=" << remoteIp << " trace_ms=" << std::fixed
+                << std::setprecision(6) << traceTimeMs << " actual_trace_ms=" << actualTraceMs
+                << " delta_ms=" << (actualTraceMs - traceTimeMs) << " expected_bytes="
+                << payloadBytes << " socket_accepted_bytes=" << acceptedBytes);
 
-    // Collect metrics into a one-second bucket.
-    const uint32_t second = GetAbsoluteSecond(startTime);
+    RecordAcceptedSend(stationAddress,
+                       agentKey,
+                       static_cast<uint32_t>(acceptedBytes),
+                       transmitTime);
 
-    PerSecondStats& stats = m_metricsByAbsoluteSecond[second];
+    const Time endTime = Simulator::Now();
 
-    stats.totalBytes += static_cast<uint64_t>(sent);
-    stats.agentBytes[agentKey] += static_cast<uint64_t>(sent);
-    stats.stationBytes[station] += static_cast<uint64_t>(sent);
+    m_txTrace(stationAddress, agentKey, payloadBytes, transmitTime);
+    m_agentSendTrace(stationAddress, agentKey, payloadBytes, transmitTime, endTime);
+}
 
-    stats.lastCwnd = m_stationMetrics[station].currentCwnd;
-
-    Time endTime = Simulator::Now();
-
-    m_txTrace(station, agentKey, bytes, startTime);
-    m_agentSendTrace(station, agentKey, bytes, startTime, endTime);
+void
+APGenerator::RecordAcceptedSend(const Address& stationAddress,
+                                const std::string& agentKey,
+                                uint32_t acceptedBytes,
+                                Time transmitTime)
+{
+    const uint32_t second = GetAbsoluteSecond(transmitTime);
+    PerSecondStats& statistics = m_metricsByAbsoluteSecond[second];
+    statistics.totalBytes += acceptedBytes;
+    statistics.agentBytes[agentKey] += acceptedBytes;
+    statistics.stationBytes[stationAddress] += acceptedBytes;
+    statistics.lastCwnd = m_stationMetrics[stationAddress].currentCwnd;
 }
 
 void
 APGenerator::HandleRead(Ptr<Socket> socket)
 {
     NS_LOG_FUNCTION(this << socket);
-    // Consume incoming data (ACKs) - not used in current design
     Address from;
     while (auto packet = socket->RecvFrom(from))
     {
@@ -411,17 +410,16 @@ APGenerator::OnConnectionSucceeded(Ptr<Socket> socket)
 {
     NS_LOG_FUNCTION(this << socket);
 
-    // Find station from reverse map
-    auto it = m_socketToStation.find(&*socket);
-    if (it == m_socketToStation.end())
+    const auto stationEntry = m_socketToStation.find(&*socket);
+    if (stationEntry == m_socketToStation.end())
     {
         NS_LOG_ERROR("[AP] Unknown socket in connection succeeded");
         return;
     }
-    const Address &station = it->second;
-    auto remoteIp = InetSocketAddress::ConvertFrom(station).GetIpv4();
+    const Address& stationAddress = stationEntry->second;
+    const Ipv4Address remoteIp = InetSocketAddress::ConvertFrom(stationAddress).GetIpv4();
 
-    m_isConnectedByStation[station] = true;
+    m_isConnectedByStation[stationAddress] = true;
     NS_LOG_INFO("[AP] Connected to station " << remoteIp);
 
     ReportReadyIfComplete();
@@ -457,23 +455,23 @@ APGenerator::OnConnectionFailed(Ptr<Socket> socket)
 {
     NS_LOG_FUNCTION(this << socket);
 
-    // Find station from reverse map
-    auto it = m_socketToStation.find(&*socket);
-    if (it == m_socketToStation.end())
+    const auto stationEntry = m_socketToStation.find(&*socket);
+    if (stationEntry == m_socketToStation.end())
     {
         NS_LOG_ERROR("[AP] Unknown socket in connection failed");
         return;
     }
-    const Address &station = it->second;
+    const Address& stationAddress = stationEntry->second;
 
-    m_isConnectedByStation[station] = false;
-    NS_FATAL_ERROR("[AP] Failed to connect to station " << station);
+    m_isConnectedByStation[stationAddress] = false;
+    NS_FATAL_ERROR("[AP] Failed to connect to station " << stationAddress);
 }
 
 void
-APGenerator::OnCwndChange(uint32_t, uint32_t newCwnd)
+APGenerator::OnCwndChange(uint32_t oldCwnd, uint32_t newCwnd)
 {
     NS_LOG_FUNCTION(this << newCwnd);
+    (void)oldCwnd;
 
     const uint32_t second = GetAbsoluteSecond(Simulator::Now());
     if (newCwnd == 0)
@@ -482,118 +480,6 @@ APGenerator::OnCwndChange(uint32_t, uint32_t newCwnd)
     }
     // All AP sockets share this aggregate bucket; the last callback wins.
     m_metricsByAbsoluteSecond[second].lastCwnd = static_cast<double>(newCwnd);
-}
-
-void
-APGenerator::PrintPerSecondMetrics()
-{
-    NS_LOG_FUNCTION(this);
-
-    NS_LOG_WARN(
-      "========== APGenerator per-second statistics ==========");
-
-    if (m_metricsByAbsoluteSecond.empty())
-    {
-        NS_LOG_WARN("[Final per-second] No transmitted data");
-        NS_LOG_WARN(
-          "==========================================================");
-        return;
-    }
-
-    for (const auto& [second, stats] : m_metricsByAbsoluteSecond)
-    {
-        if (stats.totalBytes == 0)
-        {
-            continue;
-        }
-        // Each bucket represents exactly one second.
-        const double throughputBps =
-          static_cast<double>(stats.totalBytes) * 8.0;
-
-        const double throughputMbps =
-          throughputBps / 1e6;
-
-        NS_LOG_WARN(
-          "[Final per-second] interval=["
-          << static_cast<int64_t>(second) -
-                 static_cast<int64_t>(m_experimentStartMs / 1000)
-          << ","
-          << static_cast<int64_t>(second + 1) -
-                 static_cast<int64_t>(m_experimentStartMs / 1000)
-          << ")s"
-          << " totalBytes=" << stats.totalBytes
-          << " throughput=" << throughputMbps << " Mbps"
-          << " cwnd=" << stats.lastCwnd << " bytes");
-
-        for (const auto& [agentKey, agentBytes] :
-             stats.agentBytes)
-        {
-            const double agentThroughputMbps =
-              static_cast<double>(agentBytes) * 8.0 / 1e6;
-
-            const double bandwidthSharePercent =
-              stats.totalBytes > 0
-                ? static_cast<double>(agentBytes) /
-                    static_cast<double>(stats.totalBytes) *
-                    100.0
-                : 0.0;
-
-            NS_LOG_WARN(
-              "[Final per-second]   Agent "
-              << agentKey
-              << ": bytes=" << agentBytes
-              << " throughput=" << agentThroughputMbps
-              << " Mbps"
-              << " share=" << bandwidthSharePercent << "%");
-        }
-
-        for (const auto& [station, stationBytes] :
-             stats.stationBytes)
-        {
-            const double stationThroughputMbps =
-              static_cast<double>(stationBytes) * 8.0 / 1e6;
-
-            const double bandwidthSharePercent =
-              stats.totalBytes > 0
-                ? static_cast<double>(stationBytes) /
-                    static_cast<double>(stats.totalBytes) *
-                    100.0
-                : 0.0;
-
-            NS_LOG_WARN(
-              "[Final per-second]   Station "
-              << InetSocketAddress::ConvertFrom(station).GetIpv4()
-              << ": bytes=" << stationBytes
-              << " throughput=" << stationThroughputMbps
-              << " Mbps"
-              << " share=" << bandwidthSharePercent << "%");
-        }
-    }
-
-    // Overall average stats
-    uint64_t totalBytesAllSeconds = 0;
-    uint64_t seconds = 0;
-    for (const auto& [second, stats] : m_metricsByAbsoluteSecond)
-    {
-        if (stats.totalBytes == 0)
-        {
-            continue;
-        }
-        ++seconds;
-        totalBytesAllSeconds += stats.totalBytes;
-    }
-    const double totalDurationSeconds = static_cast<double>(seconds);
-    const double avgThroughputMbps = totalDurationSeconds > 0
-      ? (static_cast<double>(totalBytesAllSeconds) * 8.0 / 1e6) / totalDurationSeconds
-      : 0.0;
-
-    NS_LOG_WARN(
-      "[Final overall] duration=" << totalDurationSeconds
-      << "s totalBytes=" << totalBytesAllSeconds
-      << " avgThroughput=" << avgThroughputMbps << " Mbps");
-
-    NS_LOG_WARN(
-      "==========================================================");
 }
 
 } // namespace ns3

@@ -21,38 +21,37 @@ static LogComponent& g_log = llm_detail::GetAgentDistributionLog();
 ParsedResult
 ParseJson(std::istream& input)
 {
-    const json root = json::parse(input);
+    const json traceDocument = json::parse(input);
 
-    std::map<std::string, AgentInfo> agentMap;
-    std::map<std::string, int> typeToNum;
-    int typeCounter = 1;
+    std::map<std::string, AgentInfo> agentsByKey;
+    std::map<std::string, int> typeNumberByName;
+    int nextTypeNumber = 1;
     double experimentDurationMs = 0.0;
 
-    for (const auto& trace : root.at("traces"))
+    for (const auto& agentTrace : traceDocument.at("traces"))
     {
-        const int agentId = trace.at("agentId").get<int>();
-        const std::string agentType = trace.at("agentType").get<std::string>();
+        const int agentId = agentTrace.at("agentId").get<int>();
+        const std::string agentType = agentTrace.at("agentType").get<std::string>();
 
-        if (typeToNum.find(agentType) == typeToNum.end())
+        if (typeNumberByName.find(agentType) == typeNumberByName.end())
         {
-            typeToNum[agentType] = typeCounter++;
-            NS_LOG_INFO("[Parse] Type \"" << agentType << "\" -> " << typeToNum[agentType]);
+            typeNumberByName[agentType] = nextTypeNumber++;
+            NS_LOG_INFO("[Parse] Type \"" << agentType << "\" -> " << typeNumberByName[agentType]);
         }
 
         const std::string key = std::to_string(agentId) + "_" + agentType;
-        if (agentMap.find(key) == agentMap.end())
+        if (agentsByKey.find(key) == agentsByKey.end())
         {
-            agentMap[key] = AgentInfo{key, agentId, typeToNum[agentType], {}};
+            agentsByKey[key] = AgentInfo{key, agentId, typeNumberByName[agentType], {}};
         }
 
-        for (const auto& task : trace.at("tasks"))
+        for (const auto& task : agentTrace.at("tasks"))
         {
             for (const auto& operationJson : task.at("operations"))
             {
                 const double startOffsetMs = operationJson.at("startOffsetMs").get<double>();
                 const double durationMs = operationJson.at("durationMs").get<double>();
-                experimentDurationMs =
-                    std::max(experimentDurationMs, startOffsetMs + durationMs);
+                experimentDurationMs = std::max(experimentDurationMs, startOffsetMs + durationMs);
 
                 if (operationJson.at("downlinkBytes").get<int>() <= 0 ||
                     operationJson.at("uplinkBytes").get<int>() <= 0)
@@ -60,7 +59,7 @@ ParseJson(std::istream& input)
                     continue;
                 }
 
-                agentMap[key].operations.push_back(
+                agentsByKey[key].operations.push_back(
                     Operation{operationJson.at("downlinkBytes").get<int>(),
                               startOffsetMs,
                               startOffsetMs + durationMs,
@@ -69,13 +68,13 @@ ParseJson(std::istream& input)
         }
     }
 
-    ParsedResult result;
-    result.experimentDurationMs = experimentDurationMs;
-    result.agents.reserve(agentMap.size());
+    ParsedResult parsedTrace;
+    parsedTrace.experimentDurationMs = experimentDurationMs;
+    parsedTrace.agents.reserve(agentsByKey.size());
 
-    for (const auto& [key, agent] : agentMap)
+    for (const auto& [key, agent] : agentsByKey)
     {
-        result.agents.push_back(agent);
+        parsedTrace.agents.push_back(agent);
         const int64_t totalBytes =
             std::accumulate(agent.operations.begin(),
                             agent.operations.end(),
@@ -83,17 +82,17 @@ ParseJson(std::istream& input)
                             [](int64_t sum, const Operation& operation) {
                                 return sum + operation.downlinkBytes + operation.uplinkBytes;
                             });
-        NS_LOG_INFO("[Parse] Agent key=\"" << key << "\" id=" << agent.id
-                                             << " type=" << agent.type
-                                             << " ops=" << agent.operations.size()
-                                             << " bytes=" << totalBytes);
+        NS_LOG_INFO("[Parse] Agent key=\"" << key << "\" id=" << agent.id << " type=" << agent.type
+                                           << " operations=" << agent.operations.size()
+                                           << " bytes=" << totalBytes);
     }
 
-    NS_LOG_INFO("[Parse] Total agents: " << result.agents.size());
-    NS_LOG_INFO("[Parse] Total types: " << typeToNum.size());
-    NS_LOG_INFO("[Parse] Experiment duration from JSON: " << result.experimentDurationMs << " ms");
+    NS_LOG_INFO("[Parse] Total agents: " << parsedTrace.agents.size());
+    NS_LOG_INFO("[Parse] Total types: " << typeNumberByName.size());
+    NS_LOG_INFO("[Parse] Experiment duration from JSON: " << parsedTrace.experimentDurationMs
+                                                          << " ms");
 
-    return result;
+    return parsedTrace;
 }
 
 ParsedResult

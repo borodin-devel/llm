@@ -1,9 +1,8 @@
 #include "wifi-statistics.h"
 
-#include "wifi-statistics-internal.h"
-
 #include "scenario-log.h"
 #include "traffic-coordinator.h"
+#include "wifi-statistics-internal.h"
 
 #include "ns3/ap-generator.h"
 #include "ns3/app-tx-tag.h"
@@ -32,8 +31,7 @@ namespace ns3
 
 static LogComponent& g_log = llm_example::GetScenarioLog();
 static constexpr uint32_t kMacStatsWindowMs = 10;
-static constexpr int64_t kMacStatsWindowUs =
-    static_cast<int64_t>(kMacStatsWindowMs) * 1000;
+static constexpr int64_t kMacStatsWindowUs = static_cast<int64_t>(kMacStatsWindowMs) * 1000;
 
 static std::string
 Ipv4ToString(Ipv4Address address)
@@ -43,21 +41,18 @@ Ipv4ToString(Ipv4Address address)
     return stream.str();
 }
 
-// ============================================================================
-// Cross-layer / PHY observability
-// ============================================================================
-
 static bool
-GetExperimentSecond(int64_t absoluteUs, uint32_t& second)
+GetExperimentSecond(const WifiStatisticsState& statistics, int64_t absoluteUs, uint32_t& second)
 {
-    if (GetWifiStatisticsState().coordinator.GetExperimentStartUs() < 0 || absoluteUs < GetWifiStatisticsState().coordinator.GetExperimentStartUs())
+    if (statistics.coordinator.GetExperimentStartUs() < 0 ||
+        absoluteUs < statistics.coordinator.GetExperimentStartUs())
     {
         return false;
     }
 
-    const int64_t relativeUs = absoluteUs - GetWifiStatisticsState().coordinator.GetExperimentStartUs();
-    const int64_t experimentEndUs = static_cast<int64_t>(std::ceil(
-        GetWifiStatisticsState().coordinator.GetMaxExperimentDurationMs() * 1000.0));
+    const int64_t relativeUs = absoluteUs - statistics.coordinator.GetExperimentStartUs();
+    const int64_t experimentEndUs = static_cast<int64_t>(
+        std::ceil(statistics.coordinator.GetMaxExperimentDurationMs() * 1000.0));
     if (relativeUs >= experimentEndUs)
     {
         return false;
@@ -68,14 +63,14 @@ GetExperimentSecond(int64_t absoluteUs, uint32_t& second)
 }
 
 static NodeSecondStats*
-GetNodeSecondStats(uint32_t nodeId, int64_t absoluteUs)
+GetNodeSecondStats(WifiStatisticsState& statistics, uint32_t nodeId, int64_t absoluteUs)
 {
     uint32_t second = 0;
-    if (!GetExperimentSecond(absoluteUs, second))
+    if (!GetExperimentSecond(statistics, absoluteUs, second))
     {
         return nullptr;
     }
-    return &GetWifiStatisticsState().nodeSeconds[nodeId][second];
+    return &statistics.nodeSeconds[nodeId][second];
 }
 
 static std::string
@@ -87,16 +82,16 @@ MacToString(Mac48Address address)
 }
 
 static bool
-ResolvePhyFlow(const std::string& srcIp,
+ResolvePhyFlow(const WifiStatisticsState& statistics,
+               const std::string& srcIp,
                const std::string& dstIp,
                int& apId,
                std::string& hostId,
                bool& uplink)
 {
-    const auto srcSta = GetWifiStatisticsState().bssByStationIp.find(srcIp);
-    const auto dstAp = GetWifiStatisticsState().bssByApIp.find(dstIp);
-    if (srcSta != GetWifiStatisticsState().bssByStationIp.end() &&
-        dstAp != GetWifiStatisticsState().bssByApIp.end() &&
+    const auto srcSta = statistics.bssByStationIp.find(srcIp);
+    const auto dstAp = statistics.bssByApIp.find(dstIp);
+    if (srcSta != statistics.bssByStationIp.end() && dstAp != statistics.bssByApIp.end() &&
         srcSta->second == dstAp->second)
     {
         apId = srcSta->second;
@@ -105,10 +100,9 @@ ResolvePhyFlow(const std::string& srcIp,
         return true;
     }
 
-    const auto srcAp = GetWifiStatisticsState().bssByApIp.find(srcIp);
-    const auto dstSta = GetWifiStatisticsState().bssByStationIp.find(dstIp);
-    if (srcAp != GetWifiStatisticsState().bssByApIp.end() &&
-        dstSta != GetWifiStatisticsState().bssByStationIp.end() &&
+    const auto srcAp = statistics.bssByApIp.find(srcIp);
+    const auto dstSta = statistics.bssByStationIp.find(dstIp);
+    if (srcAp != statistics.bssByApIp.end() && dstSta != statistics.bssByStationIp.end() &&
         srcAp->second == dstSta->second)
     {
         apId = srcAp->second;
@@ -121,16 +115,17 @@ ResolvePhyFlow(const std::string& srcIp,
 }
 
 static bool
-GetPhyWindowIndex(int64_t nowUs, uint32_t& bucketIndex)
+GetPhyWindowIndex(const WifiStatisticsState& statistics, int64_t nowUs, uint32_t& bucketIndex)
 {
-    if (GetWifiStatisticsState().coordinator.GetExperimentStartUs() < 0 || nowUs < GetWifiStatisticsState().coordinator.GetExperimentStartUs())
+    if (statistics.coordinator.GetExperimentStartUs() < 0 ||
+        nowUs < statistics.coordinator.GetExperimentStartUs())
     {
         return false;
     }
 
-    const int64_t relativeUs = nowUs - GetWifiStatisticsState().coordinator.GetExperimentStartUs();
-    const int64_t statsEndUs = static_cast<int64_t>(std::ceil(
-        GetWifiStatisticsState().coordinator.GetMaxExperimentDurationMs() * 1000.0));
+    const int64_t relativeUs = nowUs - statistics.coordinator.GetExperimentStartUs();
+    const int64_t statsEndUs = static_cast<int64_t>(
+        std::ceil(statistics.coordinator.GetMaxExperimentDurationMs() * 1000.0));
     if (relativeUs >= statsEndUs)
     {
         return false;
@@ -141,7 +136,8 @@ GetPhyWindowIndex(int64_t nowUs, uint32_t& bucketIndex)
 }
 
 static void
-RecordPhyStats(int64_t nowUs,
+RecordPhyStats(WifiStatisticsState& statistics,
+               int64_t nowUs,
                const std::string& srcIp,
                const std::string& dstIp,
                uint32_t payloadBytes)
@@ -152,7 +148,7 @@ RecordPhyStats(int64_t nowUs,
     }
 
     uint32_t bucketIndex = 0;
-    if (!GetPhyWindowIndex(nowUs, bucketIndex))
+    if (!GetPhyWindowIndex(statistics, nowUs, bucketIndex))
     {
         return;
     }
@@ -160,24 +156,25 @@ RecordPhyStats(int64_t nowUs,
     int apId = -1;
     std::string hostId;
     bool uplink = false;
-    if (!ResolvePhyFlow(srcIp, dstIp, apId, hostId, uplink))
+    if (!ResolvePhyFlow(statistics, srcIp, dstIp, apId, hostId, uplink))
     {
         return;
     }
 
-    auto& stats = GetWifiStatisticsState().phyWindows[bucketIndex][apId];
+    auto& stats = statistics.phyWindows[bucketIndex][apId];
     auto& bytesByHost = uplink ? stats.upBytes : stats.downBytes;
     bytesByHost[hostId] += payloadBytes;
 }
 
 static void
-StaAppTxTrace(uint32_t nodeId,
+StaAppTxTrace(WifiStatisticsState* statistics,
+              uint32_t nodeId,
               std::string agentKey,
               uint32_t bytes,
               Time time)
 {
     (void)agentKey;
-    if (auto* stats = GetNodeSecondStats(nodeId, time.GetMicroSeconds()))
+    if (auto* stats = GetNodeSecondStats(*statistics, nodeId, time.GetMicroSeconds()))
     {
         ++stats->appTxEvents;
         stats->appTxBytes += bytes;
@@ -185,23 +182,25 @@ StaAppTxTrace(uint32_t nodeId,
 }
 
 static void
-ApAppTxTrace(uint32_t nodeId,
+ApAppTxTrace(WifiStatisticsState* statistics,
+             uint32_t nodeId,
              Address station,
              std::string agentKey,
              uint32_t bytes,
              Time time)
 {
     (void)station;
-    StaAppTxTrace(nodeId, std::move(agentKey), bytes, time);
+    StaAppTxTrace(statistics, nodeId, std::move(agentKey), bytes, time);
 }
 
 static void
-RecordAppTxDropTrace(uint32_t nodeId,
+RecordAppTxDropTrace(WifiStatisticsState& statistics,
+                     uint32_t nodeId,
                      const std::string& agentKey,
                      uint32_t bytes,
                      Time time)
 {
-    if (auto* stats = GetNodeSecondStats(nodeId, time.GetMicroSeconds()))
+    if (auto* stats = GetNodeSecondStats(statistics, nodeId, time.GetMicroSeconds()))
     {
         ++stats->appDropEvents;
         stats->appDropBytes += bytes;
@@ -212,29 +211,31 @@ RecordAppTxDropTrace(uint32_t nodeId,
 }
 
 static void
-StaAppTxDropTrace(uint32_t nodeId,
+StaAppTxDropTrace(WifiStatisticsState* statistics,
+                  uint32_t nodeId,
                   std::string agentKey,
                   uint32_t bytes,
                   Time time)
 {
-    RecordAppTxDropTrace(nodeId, agentKey, bytes, time);
+    RecordAppTxDropTrace(*statistics, nodeId, agentKey, bytes, time);
 }
 
 static void
-ApAppTxDropTrace(uint32_t nodeId,
+ApAppTxDropTrace(WifiStatisticsState* statistics,
+                 uint32_t nodeId,
                  Address station,
                  std::string agentKey,
                  uint32_t bytes,
                  Time time)
 {
     (void)station;
-    RecordAppTxDropTrace(nodeId, agentKey, bytes, time);
+    RecordAppTxDropTrace(*statistics, nodeId, agentKey, bytes, time);
 }
 
 static void
-MacTxDropTrace(uint32_t nodeId, Ptr<const Packet> packet)
+MacTxDropTrace(WifiStatisticsState* statistics, uint32_t nodeId, Ptr<const Packet> packet)
 {
-    if (auto* stats = GetNodeSecondStats(nodeId, Simulator::Now().GetMicroSeconds()))
+    if (auto* stats = GetNodeSecondStats(*statistics, nodeId, Simulator::Now().GetMicroSeconds()))
     {
         ++stats->macTxDrops;
         stats->macTxDropBytes += packet->GetSize();
@@ -242,11 +243,12 @@ MacTxDropTrace(uint32_t nodeId, Ptr<const Packet> packet)
 }
 
 static void
-MacDroppedMpduTrace(uint32_t nodeId,
+MacDroppedMpduTrace(WifiStatisticsState* statistics,
+                    uint32_t nodeId,
                     WifiMacDropReason reason,
                     Ptr<const WifiMpdu> mpdu)
 {
-    if (auto* stats = GetNodeSecondStats(nodeId, Simulator::Now().GetMicroSeconds()))
+    if (auto* stats = GetNodeSecondStats(*statistics, nodeId, Simulator::Now().GetMicroSeconds()))
     {
         ++stats->macMpduDrops;
         stats->macMpduDropBytes += mpdu ? mpdu->GetSize() : 0;
@@ -255,32 +257,35 @@ MacDroppedMpduTrace(uint32_t nodeId,
 }
 
 static void
-MacTxDataFailedTrace(uint32_t nodeId, Mac48Address remote)
+MacTxDataFailedTrace(WifiStatisticsState* statistics, uint32_t nodeId, Mac48Address remote)
 {
     (void)remote;
-    if (auto* stats = GetNodeSecondStats(nodeId, Simulator::Now().GetMicroSeconds()))
+    if (auto* stats = GetNodeSecondStats(*statistics, nodeId, Simulator::Now().GetMicroSeconds()))
     {
         ++stats->macDataFailures;
     }
 }
 
 static void
-MacTxFinalDataFailedTrace(uint32_t nodeId, Mac48Address remote)
+MacTxFinalDataFailedTrace(WifiStatisticsState* statistics, uint32_t nodeId, Mac48Address remote)
 {
     (void)remote;
-    if (auto* stats = GetNodeSecondStats(nodeId, Simulator::Now().GetMicroSeconds()))
+    if (auto* stats = GetNodeSecondStats(*statistics, nodeId, Simulator::Now().GetMicroSeconds()))
     {
         ++stats->macFinalDataFailures;
     }
 }
 
 static void
-PhyTxBeginTrace(uint32_t nodeId, Ptr<const Packet> packet, double txPowerW)
+PhyTxBeginTrace(WifiStatisticsState* statistics,
+                uint32_t nodeId,
+                Ptr<const Packet> packet,
+                double txPowerW)
 {
     (void)txPowerW;
 
     const int64_t nowUs = Simulator::Now().GetMicroSeconds();
-    auto* nodeStats = GetNodeSecondStats(nodeId, nowUs);
+    auto* nodeStats = GetNodeSecondStats(*statistics, nodeId, nowUs);
     if (!nodeStats)
     {
         return;
@@ -291,6 +296,7 @@ PhyTxBeginTrace(uint32_t nodeId, Ptr<const Packet> packet, double txPowerW)
         AppTxTag tag;
         uint32_t bytes;
     };
+
     std::vector<TaggedSpan> spans;
 
     auto iterator = packet->GetByteTagIterator();
@@ -325,14 +331,13 @@ PhyTxBeginTrace(uint32_t nodeId, Ptr<const Packet> packet, double txPowerW)
     WifiMacHeader wifiHeader;
     if (packet->PeekHeader(wifiHeader) > 0 && wifiHeader.IsData())
     {
-        const PhyMpduKey key{
-            nodeId,
-            MacToString(wifiHeader.GetAddr1()),
-            MacToString(wifiHeader.GetAddr2()),
-            wifiHeader.GetSequenceNumber(),
-            wifiHeader.GetFragmentNumber(),
-            spans.front().tag.GetAppPacketUid()};
-        firstTransmission = GetWifiStatisticsState().seenTaggedMpdus.insert(key).second;
+        const PhyMpduKey key{nodeId,
+                             MacToString(wifiHeader.GetAddr1()),
+                             MacToString(wifiHeader.GetAddr2()),
+                             wifiHeader.GetSequenceNumber(),
+                             wifiHeader.GetFragmentNumber(),
+                             spans.front().tag.GetAppPacketUid()};
+        firstTransmission = statistics->seenTaggedMpdus.insert(key).second;
         if (!firstTransmission)
         {
             ++nodeStats->phyRetransmissions;
@@ -346,7 +351,7 @@ PhyTxBeginTrace(uint32_t nodeId, Ptr<const Packet> packet, double txPowerW)
 
         // The primary JSON reports actual tagged application payload observed
         // at PHY, so retransmitted payload is intentionally counted again.
-        RecordPhyStats(nowUs, src, dst, span.bytes);
+        RecordPhyStats(*statistics, nowUs, src, dst, span.bytes);
         nodeStats->phyPayloadBytes += span.bytes;
 
         if (firstTransmission)
@@ -362,7 +367,8 @@ PhyTxBeginTrace(uint32_t nodeId, Ptr<const Packet> packet, double txPowerW)
 }
 
 static void
-PhyTxPsduBeginTrace(uint32_t nodeId,
+PhyTxPsduBeginTrace(WifiStatisticsState* statistics,
+                    uint32_t nodeId,
                     WifiPhyBand band,
                     WifiConstPsduMap psduMap,
                     WifiTxVector txVector,
@@ -373,7 +379,7 @@ PhyTxPsduBeginTrace(uint32_t nodeId,
 
     const int64_t nowUs = Simulator::Now().GetMicroSeconds();
     uint32_t bucketIndex = 0;
-    if (!GetPhyWindowIndex(nowUs, bucketIndex))
+    if (!GetPhyWindowIndex(*statistics, nowUs, bucketIndex))
     {
         return;
     }
@@ -397,8 +403,8 @@ PhyTxPsduBeginTrace(uint32_t nodeId,
             continue;
         }
 
-        const double rateBps = static_cast<double>(
-            txVector.GetMode(staId).GetDataRate(txVector, staId));
+        const double rateBps =
+            static_cast<double>(txVector.GetMode(staId).GetDataRate(txVector, staId));
 
         for (const auto& mpdu : *PeekPointer(psdu))
         {
@@ -428,7 +434,8 @@ PhyTxPsduBeginTrace(uint32_t nodeId,
                 int apId = -1;
                 std::string hostId;
                 bool uplink = false;
-                if (!ResolvePhyFlow(Ipv4ToString(tag.GetSource()),
+                if (!ResolvePhyFlow(*statistics,
+                                    Ipv4ToString(tag.GetSource()),
                                     Ipv4ToString(tag.GetDestination()),
                                     apId,
                                     hostId,
@@ -437,11 +444,9 @@ PhyTxPsduBeginTrace(uint32_t nodeId,
                     continue;
                 }
 
-                auto& contribution =
-                    contributions[std::make_tuple(apId, uplink, hostId)];
+                auto& contribution = contributions[std::make_tuple(apId, uplink, hostId)];
                 contribution.taggedBytes += taggedBytes;
-                contribution.rateBpsTimesBytes +=
-                    static_cast<long double>(rateBps) * taggedBytes;
+                contribution.rateBpsTimesBytes += static_cast<long double>(rateBps) * taggedBytes;
                 totalTaggedBytes += taggedBytes;
             }
         }
@@ -456,8 +461,7 @@ PhyTxPsduBeginTrace(uint32_t nodeId,
     // PHY preamble/header and A-MPDU aggregation effects.  For a PPDU carrying
     // multiple tagged flows, its airtime is attributed proportionally to the
     // tagged application payload bytes of each flow.
-    const Time ppduDuration =
-        WifiPhy::CalculateTxDuration(psduMap, txVector, band);
+    const Time ppduDuration = WifiPhy::CalculateTxDuration(psduMap, txVector, band);
     const long double ppduAirtimeUs =
         static_cast<long double>(ppduDuration.GetNanoSeconds()) / 1000.0L;
     if (ppduAirtimeUs <= 0.0L)
@@ -475,112 +479,113 @@ PhyTxPsduBeginTrace(uint32_t nodeId,
 
         const long double allocatedAirtimeUs =
             ppduAirtimeUs * contribution.taggedBytes / totalTaggedBytes;
-        const double averageRateBps = static_cast<double>(
-            contribution.rateBpsTimesBytes / contribution.taggedBytes);
+        const double averageRateBps =
+            static_cast<double>(contribution.rateBpsTimesBytes / contribution.taggedBytes);
 
-        auto& stats = GetWifiStatisticsState().phyWindows[bucketIndex][apId];
+        auto& stats = statistics->phyWindows[bucketIndex][apId];
         auto& ratesByHost = uplink ? stats.upPhyRates : stats.downPhyRates;
-        ratesByHost[hostId].Add(
-            averageRateBps,
-            static_cast<double>(allocatedAirtimeUs));
+        ratesByHost[hostId].Add(averageRateBps, static_cast<double>(allocatedAirtimeUs));
     }
 }
 
 static void
-PhyStateTrace(uint32_t nodeId, Time start, Time duration, WifiPhyState state)
+PhyStateTrace(WifiStatisticsState* statistics,
+              uint32_t nodeId,
+              Time start,
+              Time duration,
+              WifiPhyState state)
 {
-    if (state != WifiPhyState::TX &&
-        state != WifiPhyState::RX &&
-        state != WifiPhyState::CCA_BUSY)
+    if (state != WifiPhyState::TX && state != WifiPhyState::RX && state != WifiPhyState::CCA_BUSY)
     {
         return;
     }
 
-    if (GetWifiStatisticsState().coordinator.GetExperimentStartUs() < 0)
+    if (statistics->coordinator.GetExperimentStartUs() < 0)
     {
         return;
     }
 
-    int64_t intervalStartUs = std::max<int64_t>(
-        start.GetMicroSeconds(),
-        GetWifiStatisticsState().coordinator.GetExperimentStartUs());
+    int64_t intervalStartUs =
+        std::max<int64_t>(start.GetMicroSeconds(), statistics->coordinator.GetExperimentStartUs());
     int64_t intervalEndUs = start.GetMicroSeconds() + duration.GetMicroSeconds();
-    const int64_t experimentEndUs = GetWifiStatisticsState().coordinator.GetExperimentStartUs() +
-        static_cast<int64_t>(std::ceil(GetWifiStatisticsState().coordinator.GetMaxExperimentDurationMs() * 1000.0));
+    const int64_t experimentEndUs =
+        statistics->coordinator.GetExperimentStartUs() +
+        static_cast<int64_t>(
+            std::ceil(statistics->coordinator.GetMaxExperimentDurationMs() * 1000.0));
     intervalEndUs = std::min(intervalEndUs, experimentEndUs);
 
     while (intervalStartUs < intervalEndUs)
     {
-        const int64_t relativeUs = intervalStartUs - GetWifiStatisticsState().coordinator.GetExperimentStartUs();
+        const int64_t relativeUs = intervalStartUs - statistics->coordinator.GetExperimentStartUs();
         const uint32_t second = static_cast<uint32_t>(relativeUs / 1000000);
-        const int64_t nextBoundaryUs =
-            GetWifiStatisticsState().coordinator.GetExperimentStartUs() + (static_cast<int64_t>(second) + 1) * 1000000;
+        const int64_t nextBoundaryUs = statistics->coordinator.GetExperimentStartUs() +
+                                       (static_cast<int64_t>(second) + 1) * 1000000;
         const int64_t pieceEndUs = std::min(intervalEndUs, nextBoundaryUs);
-        GetWifiStatisticsState().nodeSeconds[nodeId][second].phyBusyUs += pieceEndUs - intervalStartUs;
+        statistics->nodeSeconds[nodeId][second].phyBusyUs += pieceEndUs - intervalStartUs;
         intervalStartUs = pieceEndUs;
     }
 }
 
 static void
-RegisterWifiObservability(uint32_t nodeId,
+RegisterWifiObservability(WifiStatisticsState* statistics,
+                          uint32_t nodeId,
                           const std::string& label,
                           Ptr<NetDevice> device)
 {
     Ptr<WifiNetDevice> wifi = DynamicCast<WifiNetDevice>(device);
     NS_ABORT_MSG_IF(!wifi, "Observability target is not a WifiNetDevice");
 
-    GetWifiStatisticsState().nodeLabels[nodeId] = label;
+    statistics->nodeLabels[nodeId] = label;
 
     wifi->GetPhy()->TraceConnectWithoutContext(
         "PhyTxBegin",
-        MakeBoundCallback(&PhyTxBeginTrace, nodeId));
+        MakeBoundCallback(&PhyTxBeginTrace, statistics, nodeId));
     wifi->GetPhy()->TraceConnectWithoutContext(
         "PhyTxPsduBegin",
-        MakeBoundCallback(&PhyTxPsduBeginTrace,
-                          nodeId,
-                          wifi->GetPhy()->GetPhyBand()));
+        MakeBoundCallback(&PhyTxPsduBeginTrace, statistics, nodeId, wifi->GetPhy()->GetPhyBand()));
     wifi->GetPhy()->GetState()->TraceConnectWithoutContext(
         "State",
-        MakeBoundCallback(&PhyStateTrace, nodeId));
+        MakeBoundCallback(&PhyStateTrace, statistics, nodeId));
     wifi->GetMac()->TraceConnectWithoutContext(
         "MacTxDrop",
-        MakeBoundCallback(&MacTxDropTrace, nodeId));
+        MakeBoundCallback(&MacTxDropTrace, statistics, nodeId));
     wifi->GetMac()->TraceConnectWithoutContext(
         "DroppedMpdu",
-        MakeBoundCallback(&MacDroppedMpduTrace, nodeId));
+        MakeBoundCallback(&MacDroppedMpduTrace, statistics, nodeId));
 
     Ptr<WifiRemoteStationManager> manager = wifi->GetRemoteStationManager();
     manager->TraceConnectWithoutContext(
         "MacTxDataFailed",
-        MakeBoundCallback(&MacTxDataFailedTrace, nodeId));
+        MakeBoundCallback(&MacTxDataFailedTrace, statistics, nodeId));
     manager->TraceConnectWithoutContext(
         "MacTxFinalDataFailed",
-        MakeBoundCallback(&MacTxFinalDataFailedTrace, nodeId));
+        MakeBoundCallback(&MacTxFinalDataFailedTrace, statistics, nodeId));
 }
 
 void
-WifiStatistics::RegisterWifiDevice(uint32_t nodeId,
-                                   std::string nodeLabel,
-                                   Ptr<NetDevice> device)
+WifiStatistics::RegisterWifiDevice(uint32_t nodeId, std::string nodeLabel, Ptr<NetDevice> device)
 {
-    RegisterWifiObservability(nodeId, nodeLabel, device);
+    RegisterWifiObservability(m_state.get(), nodeId, nodeLabel, device);
 }
 
 void
 WifiStatistics::ConnectApGenerator(Ptr<APGenerator> generator, uint32_t nodeId)
 {
-    generator->TraceConnectWithoutContext("Tx", MakeBoundCallback(&ApAppTxTrace, nodeId));
-    generator->TraceConnectWithoutContext("AppTxDrop",
-                                          MakeBoundCallback(&ApAppTxDropTrace, nodeId));
+    generator->TraceConnectWithoutContext("Tx",
+                                          MakeBoundCallback(&ApAppTxTrace, m_state.get(), nodeId));
+    generator->TraceConnectWithoutContext(
+        "AppTxDrop",
+        MakeBoundCallback(&ApAppTxDropTrace, m_state.get(), nodeId));
 }
 
 void
 WifiStatistics::ConnectStaGenerator(Ptr<StaLlmGenerator> generator, uint32_t nodeId)
 {
     generator->TraceConnectWithoutContext("TxCustom",
-                                          MakeBoundCallback(&StaAppTxTrace, nodeId));
-    generator->TraceConnectWithoutContext("AppTxDrop",
-                                          MakeBoundCallback(&StaAppTxDropTrace, nodeId));
+                                          MakeBoundCallback(&StaAppTxTrace, m_state.get(), nodeId));
+    generator->TraceConnectWithoutContext(
+        "AppTxDrop",
+        MakeBoundCallback(&StaAppTxDropTrace, m_state.get(), nodeId));
 }
 
 } // namespace ns3

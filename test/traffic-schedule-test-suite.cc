@@ -1,7 +1,7 @@
 #include "llm-test-suite.h"
 
-#include "ns3/inet-socket-address.h"
 #include "ns3/ap-generator.h"
+#include "ns3/inet-socket-address.h"
 #include "ns3/sta-llm-generator.h"
 #include "ns3/traffic-schedule.h"
 
@@ -58,15 +58,9 @@ TrafficScheduleTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(downlink.size(), 1, "Agent without a station was not skipped");
     const auto& stationSchedule = downlink.at(station);
     NS_TEST_ASSERT_MSG_EQ(stationSchedule.size(), 2, "Wrong downlink count");
-    NS_TEST_ASSERT_MSG_EQ_TOL(stationSchedule[0].traceTimeMs,
-                              10.0,
-                              1e-9,
-                              "Wrong first DL time");
+    NS_TEST_ASSERT_MSG_EQ_TOL(stationSchedule[0].traceTimeMs, 10.0, 1e-9, "Wrong first DL time");
     NS_TEST_ASSERT_MSG_EQ(stationSchedule[0].payloadBytes, 15, "Wrong first DL bytes");
-    NS_TEST_ASSERT_MSG_EQ_TOL(stationSchedule[1].traceTimeMs,
-                              30.0,
-                              1e-9,
-                              "Wrong second DL time");
+    NS_TEST_ASSERT_MSG_EQ_TOL(stationSchedule[1].traceTimeMs, 30.0, 1e-9, "Wrong second DL time");
     NS_TEST_ASSERT_MSG_EQ(stationSchedule[1].payloadBytes, 10, "Wrong second DL bytes");
 }
 

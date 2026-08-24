@@ -15,10 +15,10 @@ namespace ns3
  */
 struct Operation
 {
-    int downlinkBytes;     ///< Downlink application payload size in bytes.
-    double startOffsetMs;  ///< Downlink start offset in milliseconds.
-    double endMs;          ///< Uplink start offset in milliseconds.
-    int uplinkBytes;       ///< Uplink application payload size in bytes.
+    int downlinkBytes;    ///< Downlink application payload size in bytes.
+    double startOffsetMs; ///< Uplink send offset in milliseconds.
+    double endMs;         ///< Downlink send offset in milliseconds.
+    int uplinkBytes;      ///< Uplink application payload size in bytes.
 };
 
 /**
@@ -26,9 +26,9 @@ struct Operation
  */
 struct AgentInfo
 {
-    std::string key;                  ///< Composite agent identifier.
-    int id;                           ///< Numeric agent identifier.
-    int type;                         ///< Deterministic numeric type identifier.
+    std::string key;                   ///< Composite agent identifier.
+    int id;                            ///< Numeric agent identifier.
+    int type;                          ///< Deterministic numeric type identifier.
     std::vector<Operation> operations; ///< Network operations in trace order.
 };
 

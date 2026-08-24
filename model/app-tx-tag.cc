@@ -7,18 +7,18 @@ namespace ns3
 
 AppTxTag::AppTxTag(uint64_t appPacketUid,
                    int64_t appTxTimeUs,
-                   Ipv4Address src,
-                   Ipv4Address dst,
-                   uint16_t srcPort,
-                   uint16_t dstPort,
+                   Ipv4Address source,
+                   Ipv4Address destination,
+                   uint16_t sourcePort,
+                   uint16_t destinationPort,
                    uint32_t appPayloadBytes,
                    std::string agentKey)
     : m_appPacketUid(appPacketUid),
       m_appTxTimeUs(appTxTimeUs),
-      m_srcIpv4(src.Get()),
-      m_dstIpv4(dst.Get()),
-      m_srcPort(srcPort),
-      m_dstPort(dstPort),
+      m_sourceIpv4(source.Get()),
+      m_destinationIpv4(destination.Get()),
+      m_sourcePort(sourcePort),
+      m_destinationPort(destinationPort),
       m_appPayloadBytes(appPayloadBytes),
       m_agentKey(std::move(agentKey))
 {
@@ -48,10 +48,10 @@ AppTxTag::Serialize(TagBuffer buffer) const
 {
     buffer.WriteU64(m_appPacketUid);
     buffer.WriteU64(static_cast<uint64_t>(m_appTxTimeUs));
-    buffer.WriteU32(m_srcIpv4);
-    buffer.WriteU32(m_dstIpv4);
-    buffer.WriteU16(m_srcPort);
-    buffer.WriteU16(m_dstPort);
+    buffer.WriteU32(m_sourceIpv4);
+    buffer.WriteU32(m_destinationIpv4);
+    buffer.WriteU16(m_sourcePort);
+    buffer.WriteU16(m_destinationPort);
     buffer.WriteU32(m_appPayloadBytes);
     const auto keySize = static_cast<uint32_t>(m_agentKey.size());
     buffer.WriteU32(keySize);
@@ -66,10 +66,10 @@ AppTxTag::Deserialize(TagBuffer buffer)
 {
     m_appPacketUid = buffer.ReadU64();
     m_appTxTimeUs = static_cast<int64_t>(buffer.ReadU64());
-    m_srcIpv4 = buffer.ReadU32();
-    m_dstIpv4 = buffer.ReadU32();
-    m_srcPort = buffer.ReadU16();
-    m_dstPort = buffer.ReadU16();
+    m_sourceIpv4 = buffer.ReadU32();
+    m_destinationIpv4 = buffer.ReadU32();
+    m_sourcePort = buffer.ReadU16();
+    m_destinationPort = buffer.ReadU16();
     m_appPayloadBytes = buffer.ReadU32();
     const uint32_t keySize = buffer.ReadU32();
     m_agentKey.resize(keySize);
@@ -83,8 +83,8 @@ void
 AppTxTag::Print(std::ostream& os) const
 {
     os << "uid=" << m_appPacketUid << " appTxUs=" << m_appTxTimeUs
-       << " src=" << Ipv4Address(m_srcIpv4) << ":" << m_srcPort
-       << " dst=" << Ipv4Address(m_dstIpv4) << ":" << m_dstPort
+       << " src=" << Ipv4Address(m_sourceIpv4) << ":" << m_sourcePort
+       << " dst=" << Ipv4Address(m_destinationIpv4) << ":" << m_destinationPort
        << " payload=" << m_appPayloadBytes << " agent=\"" << m_agentKey << "\"";
 }
 
@@ -103,25 +103,25 @@ AppTxTag::GetAppTxTimeUs() const
 Ipv4Address
 AppTxTag::GetSource() const
 {
-    return Ipv4Address(m_srcIpv4);
+    return Ipv4Address(m_sourceIpv4);
 }
 
 Ipv4Address
 AppTxTag::GetDestination() const
 {
-    return Ipv4Address(m_dstIpv4);
+    return Ipv4Address(m_destinationIpv4);
 }
 
 uint16_t
 AppTxTag::GetSourcePort() const
 {
-    return m_srcPort;
+    return m_sourcePort;
 }
 
 uint16_t
 AppTxTag::GetDestinationPort() const
 {
-    return m_dstPort;
+    return m_destinationPort;
 }
 
 uint32_t

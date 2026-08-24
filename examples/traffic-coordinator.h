@@ -65,6 +65,7 @@ class TrafficCoordinator
     uint32_t GetExpectedGeneratorCount() const;
 
   private:
+    /** Record one ready generator and open the barrier when complete. */
     void NotifyGeneratorReady();
 
     double m_traceDurationMs;         ///< Complete input trace duration in milliseconds.

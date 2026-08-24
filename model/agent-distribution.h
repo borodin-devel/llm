@@ -11,15 +11,15 @@ namespace ns3
 /**
  * Distribute agents across APs and stations with the original greedy heuristic.
  *
- * @param parsed Parsed agent trace.
- * @param nAp Number of APs.
- * @param nStationsPerAp Number of stations available per AP.
+ * @param parsedTrace Parsed agent trace.
+ * @param accessPointCount Number of APs.
+ * @param stationsPerAccessPoint Number of stations available per AP.
  * @param maxAgentsPerStation Maximum number of agents assigned to one station.
  * @return AP and station placement for every assigned agent.
  */
-DistributionResult DistributeAgents(const ParsedResult& parsed,
-                                    int nAp = 3,
-                                    int nStationsPerAp = 30,
+DistributionResult DistributeAgents(const ParsedResult& parsedTrace,
+                                    int accessPointCount = 3,
+                                    int stationsPerAccessPoint = 30,
                                     int maxAgentsPerStation = 3);
 
 } // namespace ns3

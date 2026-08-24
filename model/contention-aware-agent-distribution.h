@@ -32,14 +32,9 @@ namespace ns3
  */
 struct ContentionAwareDistributionConfig
 {
-    /// Number of independent BSS/AP groups.
-    int nAp{3};
-
-    /// Number of stations available inside each BSS.
-    int nStationsPerAp{30};
-
-    /// Hard upper bound on application-level agents assigned to one STA.
-    int maxAgentsPerStation{3};
+    int nAp{3};                 ///< Number of independent BSS/AP groups.
+    int nStationsPerAp{30};     ///< Number of stations available inside each BSS.
+    int maxAgentsPerStation{3}; ///< Hard application-agent limit per STA.
 
     /**
      * STA placement policy.
@@ -86,7 +81,7 @@ struct ContentionAwareDistributionConfig
  *   STA 1: 10.1.<ap>.3:9001
  *   ...
  *
- * @param parsed Parsed agent trace.
+ * @param parsedTrace Parsed agent trace.
  * @param config Distribution parameters.
  *
  * @return Agent -> BSS/STA mapping compatible with the existing scenario.
@@ -95,11 +90,9 @@ struct ContentionAwareDistributionConfig
  *         topology capacity.
  * @throws std::runtime_error if a complete assignment cannot be produced.
  */
-DistributionResult
-DistributeAgentsContentionAware(
-    const ParsedResult& parsed,
-    const ContentionAwareDistributionConfig& config =
-        ContentionAwareDistributionConfig{});
+DistributionResult DistributeAgentsContentionAware(
+    const ParsedResult& parsedTrace,
+    const ContentionAwareDistributionConfig& config = ContentionAwareDistributionConfig{});
 
 } // namespace ns3
 

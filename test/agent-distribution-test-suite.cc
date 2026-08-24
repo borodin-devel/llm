@@ -4,6 +4,7 @@
 #include "ns3/contention-aware-agent-distribution.h"
 #include "ns3/inet-socket-address.h"
 
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -138,6 +139,66 @@ class DistributionBoundaryTestCase : public TestCase
     void DoRun() override;
 };
 
+/**
+ * @ingroup tests
+ *
+ * Verify maximum-station placement when contention priority is disabled.
+ */
+class MaximumStationDistributionTestCase : public TestCase
+{
+  public:
+    MaximumStationDistributionTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+MaximumStationDistributionTestCase::MaximumStationDistributionTestCase()
+    : TestCase("use maximum stations when contention priority is disabled")
+{
+}
+
+void
+MaximumStationDistributionTestCase::DoRun()
+{
+    ParsedResult parsed;
+    parsed.agents = {
+        {"1_alpha", 1, 1, {{100, 0.0, 10.0, 50}}},
+        {"2_beta", 2, 2, {{200, 0.0, 10.0, 80}}},
+        {"3_gamma", 3, 3, {{300, 0.0, 10.0, 120}}},
+    };
+
+    ContentionAwareDistributionConfig config;
+    config.nAp = 1;
+    config.nStationsPerAp = 3;
+    config.maxAgentsPerStation = 2;
+    config.lowContentionPriority = false;
+    config.slotMs = 50;
+
+    const auto first = DistributeAgentsContentionAware(parsed, config);
+    const auto second = DistributeAgentsContentionAware(parsed, config);
+
+    std::set<uint16_t> stationPorts;
+    for (const auto& agent : parsed.agents)
+    {
+        const auto firstAddress = GetStationAddress(first, 0, agent.key);
+        const auto secondAddress = GetStationAddress(second, 0, agent.key);
+        stationPorts.insert(firstAddress.GetPort());
+
+        NS_TEST_ASSERT_MSG_EQ(firstAddress.GetIpv4(),
+                              secondAddress.GetIpv4(),
+                              agent.key << " maximum-station IP changed");
+        NS_TEST_ASSERT_MSG_EQ(firstAddress.GetPort(),
+                              secondAddress.GetPort(),
+                              agent.key << " maximum-station port changed");
+    }
+
+    NS_TEST_ASSERT_MSG_EQ(stationPorts.size(), 3, "Maximum-station policy did not use every STA");
+    NS_TEST_ASSERT_MSG_EQ(stationPorts.contains(9000), true, "STA 0 was not used");
+    NS_TEST_ASSERT_MSG_EQ(stationPorts.contains(9001), true, "STA 1 was not used");
+    NS_TEST_ASSERT_MSG_EQ(stationPorts.contains(9002), true, "STA 2 was not used");
+}
+
 DistributionValidationTestCase::DistributionValidationTestCase()
     : TestCase("reject invalid contention-aware configuration")
 {
@@ -254,6 +315,7 @@ CreateAgentDistributionTestCases()
 {
     return {new SimpleDistributionTestCase,
             new ContentionAwareDistributionTestCase,
+            new MaximumStationDistributionTestCase,
             new DistributionValidationTestCase,
             new DistributionBoundaryTestCase};
 }

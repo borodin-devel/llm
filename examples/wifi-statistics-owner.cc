@@ -1,7 +1,6 @@
-#include "wifi-statistics.h"
-
 #include "traffic-coordinator.h"
 #include "wifi-statistics-internal.h"
+#include "wifi-statistics.h"
 
 #include "ns3/core-module.h"
 #include "ns3/internet-module.h"
@@ -13,14 +12,6 @@ namespace ns3
 {
 
 static constexpr int64_t kMacStatsWindowUs = 10000;
-static WifiStatisticsState* g_activeStatistics = nullptr;
-
-WifiStatisticsState&
-GetWifiStatisticsState()
-{
-    NS_ABORT_MSG_IF(!g_activeStatistics, "Wi-Fi statistics owner is not active");
-    return *g_activeStatistics;
-}
 
 void
 PhyRateAccumulator::Add(double rateBps, double allocatedAirtimeUs)
@@ -82,16 +73,44 @@ GetStatisticsWindowIndex(int64_t absoluteUs,
 WifiStatistics::WifiStatistics(const TrafficCoordinator& coordinator)
     : m_state(std::make_unique<WifiStatisticsState>(coordinator))
 {
-    NS_ABORT_MSG_IF(g_activeStatistics, "Only one Wi-Fi statistics owner may be active");
-    g_activeStatistics = m_state.get();
 }
 
-WifiStatistics::~WifiStatistics()
+WifiStatistics::~WifiStatistics() = default;
+
+bool
+RecordMacPayloadInWindow(WifiStatisticsState& statistics,
+                         uint32_t windowIndex,
+                         const std::string& sourceIp,
+                         const std::string& destinationIp,
+                         uint32_t payloadBytes)
 {
-    if (g_activeStatistics == m_state.get())
+    if (payloadBytes == 0)
     {
-        g_activeStatistics = nullptr;
+        return false;
     }
+
+    const auto sourceStation = statistics.bssByStationIp.find(sourceIp);
+    const auto destinationAp = statistics.bssByApIp.find(destinationIp);
+    if (sourceStation != statistics.bssByStationIp.end() &&
+        destinationAp != statistics.bssByApIp.end() &&
+        sourceStation->second == destinationAp->second)
+    {
+        statistics.macWindows[windowIndex][sourceStation->second].upBytes[sourceIp] += payloadBytes;
+        return true;
+    }
+
+    const auto sourceAp = statistics.bssByApIp.find(sourceIp);
+    const auto destinationStation = statistics.bssByStationIp.find(destinationIp);
+    if (sourceAp != statistics.bssByApIp.end() &&
+        destinationStation != statistics.bssByStationIp.end() &&
+        sourceAp->second == destinationStation->second)
+    {
+        statistics.macWindows[windowIndex][sourceAp->second].downBytes[destinationIp] +=
+            payloadBytes;
+        return true;
+    }
+
+    return false;
 }
 
 void
@@ -99,7 +118,7 @@ WifiStatistics::RegisterApGroup(int bssIndex,
                                 Ipv4Address apAddress,
                                 const Ipv4InterfaceContainer& stationInterfaces)
 {
-    auto& state = GetWifiStatisticsState();
+    auto& state = *m_state;
     if (state.stationIpsByBss.size() <= static_cast<std::size_t>(bssIndex))
     {
         state.stationIpsByBss.resize(bssIndex + 1);
@@ -127,7 +146,7 @@ WifiStatistics::RecordMacPayload(int64_t nowUs,
                                  const std::string& destinationIp,
                                  uint32_t payloadBytes)
 {
-    auto& state = GetWifiStatisticsState();
+    auto& state = *m_state;
     if (state.coordinator.GetExperimentStartUs() < 0 ||
         nowUs < state.coordinator.GetExperimentStartUs() || payloadBytes == 0)
     {
@@ -135,32 +154,15 @@ WifiStatistics::RecordMacPayload(int64_t nowUs,
     }
 
     const int64_t relativeUs = nowUs - state.coordinator.GetExperimentStartUs();
-    const int64_t statsEndUs = static_cast<int64_t>(
-        std::ceil(state.coordinator.GetMaxExperimentDurationMs() * 1000.0));
+    const int64_t statsEndUs =
+        static_cast<int64_t>(std::ceil(state.coordinator.GetMaxExperimentDurationMs() * 1000.0));
     if (relativeUs >= statsEndUs)
     {
         return;
     }
     const uint32_t windowIndex = static_cast<uint32_t>(relativeUs / kMacStatsWindowUs);
 
-    const auto sourceStation = state.bssByStationIp.find(sourceIp);
-    const auto destinationAp = state.bssByApIp.find(destinationIp);
-    if (sourceStation != state.bssByStationIp.end() &&
-        destinationAp != state.bssByApIp.end() &&
-        sourceStation->second == destinationAp->second)
-    {
-        state.macWindows[windowIndex][sourceStation->second].upBytes[sourceIp] += payloadBytes;
-        return;
-    }
-
-    const auto sourceAp = state.bssByApIp.find(sourceIp);
-    const auto destinationStation = state.bssByStationIp.find(destinationIp);
-    if (sourceAp != state.bssByApIp.end() &&
-        destinationStation != state.bssByStationIp.end() &&
-        sourceAp->second == destinationStation->second)
-    {
-        state.macWindows[windowIndex][sourceAp->second].downBytes[destinationIp] += payloadBytes;
-    }
+    RecordMacPayloadInWindow(state, windowIndex, sourceIp, destinationIp, payloadBytes);
 }
 
 } // namespace ns3

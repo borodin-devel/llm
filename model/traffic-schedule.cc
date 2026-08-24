@@ -17,8 +17,7 @@ BuildUplinkSchedule(const LegacyAgentOperations& operationsByAgent)
         {
             (void)downlinkBytes;
             (void)endMs;
-            schedule.push_back(
-                {agentKey, static_cast<uint32_t>(uplinkBytes), startOffsetMs});
+            schedule.push_back({agentKey, static_cast<uint32_t>(uplinkBytes), startOffsetMs});
         }
     }
 

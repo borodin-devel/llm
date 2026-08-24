@@ -50,8 +50,8 @@ class TrafficFlowMonitor
     void PrintTransmissionTimePerSender() const;
 
   private:
-    const TrafficCoordinator& m_coordinator;       ///< Traffic epoch owner.
-    WifiStatistics& m_wifiStatistics;              ///< Cross-layer statistics receiver.
+    const TrafficCoordinator& m_coordinator;          ///< Traffic epoch owner.
+    WifiStatistics& m_wifiStatistics;                 ///< Cross-layer statistics receiver.
     std::unique_ptr<TrafficFlowMonitorState> m_state; ///< Per-flow timestamps and byte counts.
 };
 

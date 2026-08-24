@@ -17,4 +17,18 @@ GetContentionAwareDistributionLog()
     return component;
 }
 
+LogComponent&
+GetApGeneratorLog()
+{
+    static LogComponent component("APGenerator", __FILE__);
+    return component;
+}
+
+LogComponent&
+GetStaLlmGeneratorLog()
+{
+    static LogComponent component("StaLlmGenerator", __FILE__);
+    return component;
+}
+
 } // namespace ns3::llm_detail

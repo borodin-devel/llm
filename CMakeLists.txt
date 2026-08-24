@@ -10,7 +10,9 @@ set(source_files
     model/traffic-sink.cc
     model/traffic-schedule.cc
     model/ap-generator.cc
+    model/ap-generator-report.cc
     model/sta-llm-generator.cc
+    model/sta-llm-generator-report.cc
 )
 
 set(header_files

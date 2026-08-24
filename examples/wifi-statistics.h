@@ -22,9 +22,9 @@ struct WifiStatisticsState;
 /** Accumulate PHY rates weighted by allocated airtime. */
 struct PhyRateAccumulator
 {
-    uint64_t txAttempts{0};              ///< Number of tagged transmit attempts.
-    long double weightedRateBpsUs{0.0};  ///< Sum of rate multiplied by airtime.
-    long double airtimeUs{0.0};          ///< Allocated airtime in microseconds.
+    uint64_t txAttempts{0};             ///< Number of tagged transmit attempts.
+    long double weightedRateBpsUs{0.0}; ///< Sum of rate multiplied by airtime.
+    long double airtimeUs{0.0};         ///< Allocated airtime in microseconds.
 
     /**
      * Add one rate sample.
@@ -68,17 +68,63 @@ class WifiStatistics
     explicit WifiStatistics(const TrafficCoordinator& coordinator);
     ~WifiStatistics();
 
+    /**
+     * Register addressing for one AP group.
+     *
+     * @param bssIndex Zero-based BSS index.
+     * @param apAddress AP IPv4 address.
+     * @param stationInterfaces Station IPv4 interfaces in index order.
+     */
     void RegisterApGroup(int bssIndex,
                          Ipv4Address apAddress,
                          const Ipv4InterfaceContainer& stationInterfaces);
+
+    /**
+     * Register one Wi-Fi device for trace collection.
+     *
+     * @param nodeId Owning ns-3 node identifier.
+     * @param nodeLabel Stable report label.
+     * @param device Wi-Fi network device.
+     */
     void RegisterWifiDevice(uint32_t nodeId, std::string nodeLabel, Ptr<NetDevice> device);
+
+    /**
+     * Connect AP application traces.
+     *
+     * @param generator AP traffic generator.
+     * @param nodeId Owning ns-3 node identifier.
+     */
     void ConnectApGenerator(Ptr<APGenerator> generator, uint32_t nodeId);
+
+    /**
+     * Connect station application traces.
+     *
+     * @param generator Station traffic generator.
+     * @param nodeId Owning ns-3 node identifier.
+     */
     void ConnectStaGenerator(Ptr<StaLlmGenerator> generator, uint32_t nodeId);
+
+    /**
+     * Record one parsed MAC payload sample.
+     *
+     * @param nowUs Absolute simulation time in microseconds.
+     * @param sourceIp Source IPv4 address.
+     * @param destinationIp Destination IPv4 address.
+     * @param payloadBytes Application payload size in bytes.
+     */
     void RecordMacPayload(int64_t nowUs,
                           const std::string& sourceIp,
                           const std::string& destinationIp,
                           uint32_t payloadBytes);
+
+    /**
+     * Serialize all collected statistics to JSON.
+     *
+     * @param outputPath Destination JSON path.
+     */
     void WriteJson(const std::string& outputPath) const;
+
+    /** Print the final cross-layer consistency report. */
     void PrintCrossLayerReport() const;
 
   private:
