@@ -50,30 +50,35 @@ No Python packages are installed with `pip`.
 
 ### `scripts/trace_stream.py`
 
-This module owns JSON streaming, validation, filtering, and output. It exposes
-small functions that accept binary input streams so unit tests can use real
-in-memory JSON without mocking the parser.
+This module owns input opening, JSON streaming, validation, filtering, and
+output. It exposes small functions that accept binary input streams so unit
+tests can use real in-memory JSON without mocking the parser.
 
 Responsibilities:
 
-1. Iterate top-level trace items using `ijson.items(stream, "traces.item")`.
-2. Validate the fields consumed by `ParseJsonFile()`:
+1. Open regular JSON paths directly and RAR paths through a checked `unrar p`
+   subprocess; every call returns a new binary stream for a fresh pass.
+2. Iterate `ijson.parse()` events, validate the root shape, and use
+   `ijson.common.ObjectBuilder` to materialize only one `traces.item` at a
+   time.
+3. Validate the fields consumed by `ParseJsonFile()`:
    - integer `agentId`;
    - string `agentType`;
    - array `tasks`;
    - array `operations` per task;
    - finite, non-negative `startOffsetMs` and `durationMs`;
    - non-negative integer `uplinkBytes` and `downlinkBytes`.
-3. Report trace count, operation count, network-operation count, total network
+4. Report trace count, operation count, network-operation count, total network
    bytes, earliest network start, and maximum operation end.
-4. Stream a selected slice to JSON without accumulating the complete output in
+5. Stream a selected slice to JSON without accumulating the complete output in
    memory.
-5. Preserve arbitrary metadata dictionaries on trace, task, and operation
+6. Preserve arbitrary metadata dictionaries on trace, task, and operation
    objects.
 
-The real input root currently contains only `traces`. The writer emits the
-same top-level shape. A second large top-level collection is rejected instead
-of being silently dropped.
+The real input root currently contains only `traces`, and the writer emits the
+same top-level shape. Metadata preservation applies to trace, task, and
+operation objects; additional top-level fields are outside this tool's input
+contract.
 
 ### `scripts/find_window.py`
 
@@ -84,8 +89,11 @@ This is the user-facing CLI. It has three subcommands:
   duration;
 - `find-window`: find and write the highest-byte fully contained window.
 
-Inputs may be regular JSON paths or `-` for standard input. Outputs are regular
-paths and are written atomically through a sibling temporary file.
+Inputs may be regular JSON paths or RAR archive paths. `validate`, which needs
+one pass, also accepts `-` for standard input. The two-pass `slice-first` and
+`find-window` commands reject `-` and reopen their input path internally.
+Outputs are regular paths and are written atomically through a sibling
+temporary file.
 
 ### `scripts/test_trace_stream.py`
 
@@ -152,9 +160,13 @@ through the streaming reader.
 One shell session creates a directory with `mktemp -d` and installs an exit
 trap that removes it. For each archive:
 
-1. Stream the archive member through `find_window.py validate`.
-2. Stream it again through `find_window.py slice-first --window-seconds 60`,
-   writing a temporary JSON slice.
+1. Run `find_window.py validate <archive.rar>`.
+2. Run the following command, which internally opens the archive twice and
+   writes a temporary JSON slice:
+
+   ```text
+   find_window.py slice-first <archive.rar> <slice.json> --window-seconds 60
+   ```
 3. Validate the slice.
 
 Only after all four slices pass static validation, build `llm_sample`. Then run
@@ -168,9 +180,10 @@ Each run writes stdout/stderr to a temporary log. A failed run prints the log
 tail and stops the workflow; no run is repeated. A successful run must return
 zero and produce non-empty statistics JSON.
 
-If all four runs succeed, stream the specified archive twice to select and
-write `traces/1W_high_load_10m.json`, then validate the final file. The cleanup
-trap removes all temporary slices, statistics, and logs.
+If all four runs succeed, run `find_window.py find-window` on the specified
+archive. It opens the archive once to select the window and once to write
+`traces/1W_high_load_10m.json`, then validates the final file. The cleanup trap
+removes all temporary slices, statistics, and logs.
 
 ## Failure Handling
 
