@@ -3,12 +3,6 @@
 using namespace ns3;
 
 std::vector<TestCase*>
-CreateTrafficScheduleTestCases()
-{
-    return {};
-}
-
-std::vector<TestCase*>
 CreateTrafficCoordinatorTestCases()
 {
     return {};

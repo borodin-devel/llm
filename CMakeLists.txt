@@ -8,6 +8,7 @@ set(source_files
     model/llm-log.cc
     model/trace-parser.cc
     model/traffic-sink.cc
+    model/traffic-schedule.cc
     model/ap-generator.cc
     model/sta-llm-generator.cc
 )
@@ -17,6 +18,7 @@ set(header_files
     model/agent-data.h
     model/app-tx-tag.h
     model/traffic-sink.h
+    model/traffic-schedule.h
     model/agent-distribution.h
     model/contention-aware-agent-distribution.h
     model/ap-generator.h
@@ -29,6 +31,7 @@ set(test_sources
     test/trace-parser-test-suite.cc
     test/agent-distribution-test-suite.cc
     test/app-tx-tag-test-suite.cc
+    test/traffic-schedule-test-suite.cc
 )
 
 build_lib(
