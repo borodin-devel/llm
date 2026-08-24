@@ -9,6 +9,7 @@
 
 #include "scenario-log.h"
 #include "traffic-coordinator.h"
+#include "traffic-flow-monitor.h"
 #include "wifi-statistics.h"
 
 #include "ns3/ap-generator.h"
@@ -26,25 +27,13 @@
 #include "ns3/error-rate-model.h"
 #include "ns3/yans-wifi-helper.h"
 
-#include "ns3/wifi-mac-header.h"
-#include "ns3/wifi-mpdu.h"
-#include "ns3/wifi-phy.h"
-#include "ns3/wifi-psdu.h"
-#include "ns3/wifi-tx-vector.h"
-#include "ns3/wifi-phy-state-helper.h"
-#include "ns3/wifi-remote-station-manager.h"
-#include "ns3/ipv4-header.h"
-#include "ns3/tcp-header.h"
-
 #include <iostream>
-#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <tuple>
 #include <string>
 #include <vector>
 #include <map>
-#include <functional>
 #include <fstream>
 #include <iomanip>
 #include <stdexcept>
@@ -68,234 +57,7 @@ Ipv4ToString(Ipv4Address address)
 
 static LogComponent& g_log = llm_example::GetScenarioLog();
 
-// ============================================================================
-// Device TX/RX trace maps
-// ============================================================================
-
-struct TxRxKey
-{
-    std::string txSrcIp;
-    uint16_t txSrcPort;
-    std::string rxSrcIp;
-    uint16_t rxSrcPort;
-    uint32_t bytes;
-
-    bool operator==(const TxRxKey& other) const
-    {
-        return txSrcIp == other.txSrcIp &&
-               txSrcPort == other.txSrcPort &&
-               rxSrcIp == other.rxSrcIp &&
-               rxSrcPort == other.rxSrcPort &&
-               bytes == other.bytes;
-    }
-};
-
-struct TxRxKeyHash
-{
-    std::size_t operator()(const TxRxKey& k) const
-    {
-        std::size_t h1 = std::hash<std::string>{}(k.txSrcIp);
-        std::size_t h2 = std::hash<uint16_t>{}(k.txSrcPort);
-        std::size_t h3 = std::hash<std::string>{}(k.rxSrcIp);
-        std::size_t h4 = std::hash<uint16_t>{}(k.rxSrcPort);
-        std::size_t h5 = std::hash<uint32_t>{}(k.bytes);
-        return h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h4 << 3) ^ (h5 << 4);
-    }
-};
-
-std::map<std::string, std::vector<uint64_t>> g_txBytes;
-
-std::map<TxRxKey, std::vector<uint64_t>, std::function<bool(const TxRxKey&, const TxRxKey&)>> g_txMap(
-    [](const TxRxKey& a, const TxRxKey& b) { return std::make_tuple(a.txSrcIp, a.txSrcPort, a.rxSrcIp, a.rxSrcPort, a.bytes) <
-                                                      std::make_tuple(b.txSrcIp, b.txSrcPort, b.rxSrcIp, b.rxSrcPort, b.bytes); });
-
-std::map<TxRxKey, std::vector<uint64_t>, std::function<bool(const TxRxKey&, const TxRxKey&)>> g_rxMap(
-    [](const TxRxKey& a, const TxRxKey& b) { return std::make_tuple(a.txSrcIp, a.txSrcPort, a.rxSrcIp, a.rxSrcPort, a.bytes) <
-                                                      std::make_tuple(b.txSrcIp, b.txSrcPort, b.rxSrcIp, b.rxSrcPort, b.bytes); });
-
-// ============================================================================
-// Fixed-window MAC/PHY statistics
-// ============================================================================
-
 static constexpr double kAutoExperimentTailMarginMs = 2000.0;
-
-// Free trace callbacks are moved into owners in the next extraction tasks.
-static const TrafficCoordinator* g_trafficCoordinator = nullptr;
-static WifiStatistics* g_wifiStatistics = nullptr;
-void PrintTransmissionTimePerSender()
-{
-    NS_LOG_INFO("========== MAC Layer Transmission time per sender ==========");
-
-    std::map<std::string, uint64_t> senderTotalDiffUs;
-    std::map<std::string, uint64_t> senderTotalBytes;
-
-    for (const auto& [key, rxTimestamps] : g_rxMap)
-    {
-        auto txIt = g_txMap.find(key);
-        if (txIt == g_txMap.end() || txIt->second.empty())
-        {
-            continue;
-        }
-
-        const auto& txTimestamps = txIt->second;
-        std::size_t minSize = std::min(txTimestamps.size(), rxTimestamps.size());
-
-        for (std::size_t i = 0; i < minSize; ++i)
-        {
-            int64_t diff = static_cast<int64_t>(rxTimestamps[i]) - static_cast<int64_t>(txTimestamps[i]);
-            if (diff > 0)
-            {
-                senderTotalDiffUs[key.txSrcIp] += static_cast<uint64_t>(diff);
-            }
-        }
-    }
-
-    for (const auto& [k, byteArr] : g_txBytes)
-    {
-        int sum = std::accumulate(byteArr.begin(), byteArr.end(), 0);
-        senderTotalBytes[k] = sum;
-    }
-
-    for (const auto& [sender, totalUs] : senderTotalDiffUs)
-    {
-        double totalMs = static_cast<double>(totalUs) / 1000.0;
-        double totalSec = static_cast<double>(totalUs) / 1e6;
-        double totalBytesMb = static_cast<double>(senderTotalBytes[sender]) / (1024.0 * 1024.0);
-        NS_LOG_INFO("Sender " << sender <<
-            ": txTime=" << totalMs << " ms (" << totalSec << " s), " <<
-            "PayloadOnly=" << senderTotalBytes[sender] << " (" << totalBytesMb << " MB)" <<
-            "effRate=" << totalBytesMb * 8 / totalSec << " mbps");
-    }
-
-    NS_LOG_INFO("============================================================");
-}
-
-void DeviceTxTrace (std::string context, Ptr<const Packet> packet)
-{
-    if (g_trafficCoordinator->GetExperimentStartUs() < 0 ||
-        Simulator::Now().GetMicroSeconds() < g_trafficCoordinator->GetExperimentStartUs())
-    {
-        return;
-    }
-    Ptr<Packet> pktCopy = packet->Copy ();
-    LlcSnapHeader llc;
-    pktCopy->RemoveHeader (llc);
-
-    const uint32_t packetSize = packet->GetSize ();
-    if (packetSize <= 60)
-    {
-        return;
-    }
-    const uint32_t payloadSize = packetSize - 60;
-
-    Ipv4Header ipHeader;
-    std::string srcIp = "Unknown";
-    std::string dstIp = "Unknown";
-
-    if (pktCopy->PeekHeader (ipHeader))
-    {
-        std::ostringstream srcStream, dstStream;
-        ipHeader.GetSource ().Print (srcStream);
-        ipHeader.GetDestination ().Print (dstStream);
-        srcIp = srcStream.str ();
-        dstIp = dstStream.str ();
-
-        pktCopy->RemoveHeader (ipHeader);
-    }
-    else
-    {
-        return;
-    }
-
-    TcpHeader tcpHeader;
-    uint16_t srcPort = 0;
-    uint16_t dstPort = 0;
-    bool isTcp = pktCopy->PeekHeader (tcpHeader);
-
-    if (isTcp)
-    {
-        srcPort = tcpHeader.GetSourcePort ();
-        dstPort = tcpHeader.GetDestinationPort ();
-    }
-    else
-    {
-        return;
-    }
-
-    NS_LOG_INFO ("TX [" << Simulator::Now ().GetMicroSeconds () << " us] "
-                 << "PayloadOnly: " << payloadSize << " | "
-                 << "tx: " << srcIp << ":" << srcPort << " -> "
-                 << "rx: " << dstIp << ":" << dstPort);
-
-    g_wifiStatistics->RecordMacPayload(Simulator::Now().GetMicroSeconds(),
-                                       srcIp,
-                                       dstIp,
-                                       payloadSize);
-
-    TxRxKey key{srcIp, srcPort, dstIp, dstPort, payloadSize};
-    g_txMap[key].push_back(Simulator::Now().GetMicroSeconds());
-    g_txBytes[srcIp].push_back(payloadSize);
-}
-
-void DeviceRxTrace (std::string context, Ptr<const Packet> packet)
-{
-    if (g_trafficCoordinator->GetExperimentStartUs() < 0 ||
-        Simulator::Now().GetMicroSeconds() < g_trafficCoordinator->GetExperimentStartUs())
-    {
-        return;
-    }
-    Ptr<Packet> pktCopy = packet->Copy ();
-    LlcSnapHeader llc;
-    pktCopy->RemoveHeader (llc);
-
-    const uint32_t packetSize = packet->GetSize ();
-    if (packetSize <= 60)
-    {
-        return;
-    }
-    const uint32_t payloadSize = packetSize - 60;
-
-    Ipv4Header ipHeader;
-    std::string srcIp = "Unknown";
-    std::string dstIp = "Unknown";
-
-    if (pktCopy->PeekHeader (ipHeader))
-    {
-        std::ostringstream srcStream, dstStream;
-        ipHeader.GetSource ().Print (srcStream);
-        ipHeader.GetDestination ().Print (dstStream);
-        srcIp = srcStream.str ();
-        dstIp = dstStream.str ();
-
-        pktCopy->RemoveHeader (ipHeader);
-    }
-    else
-    {
-        return;
-    }
-
-    TcpHeader tcpHeader;
-    uint16_t srcPort = 0;
-    uint16_t dstPort = 0;
-    bool isTcp = pktCopy->PeekHeader (tcpHeader);
-
-    if (isTcp)
-    {
-        srcPort = tcpHeader.GetSourcePort ();
-        dstPort = tcpHeader.GetDestinationPort ();
-    }
-    else
-    {
-        return;
-    }
-
-    NS_LOG_INFO ("RX [" << Simulator::Now ().GetMicroSeconds() << " us] "
-                 << "Payload: " << payloadSize << " | "
-                 << "tx: " << srcIp << ":" << srcPort << " -> "
-                 << "rx: " << dstIp << ":" << dstPort);
-    TxRxKey key{srcIp, srcPort, dstIp, dstPort, payloadSize};
-    g_rxMap[key].push_back(Simulator::Now().GetMicroSeconds());
-}
 
 // ============================================================================
 // Wi-Fi association diagnostics
@@ -702,9 +464,8 @@ main(int argc, char* argv[])
         autoExperimentTime ? traceDurationMs + kAutoExperimentTailMarginMs
                            : fixedExperimentTimeMs;
     TrafficCoordinator trafficCoordinator(traceDurationMs, maxExperimentDurationMs);
-    g_trafficCoordinator = &trafficCoordinator;
     WifiStatistics wifiStatistics(trafficCoordinator);
-    g_wifiStatistics = &wifiStatistics;
+    TrafficFlowMonitor trafficFlowMonitor(trafficCoordinator, wifiStatistics);
 
     // Default distribution
     // DistributionResult dist = DistributeAgents(parsed, apNum, staNum, 3);
@@ -752,9 +513,9 @@ main(int argc, char* argv[])
     {
         std::cout << "\nExperiment time mode: auto" << std::endl;
         std::cout << "Experiment duration from JSON: "
-                  << g_trafficCoordinator->GetTraceDurationMs() / 1000.0 << " seconds" << std::endl;
+                  << trafficCoordinator.GetTraceDurationMs() / 1000.0 << " seconds" << std::endl;
         std::cout << "Max experiment time: "
-                  << g_trafficCoordinator->GetMaxExperimentDurationMs() / 1000.0
+                  << trafficCoordinator.GetMaxExperimentDurationMs() / 1000.0
                   << " seconds (JSON duration + "
                   << kAutoExperimentTailMarginMs / 1000.0
                   << " seconds)" << std::endl;
@@ -763,28 +524,25 @@ main(int argc, char* argv[])
     {
         std::cout << "\nExperiment time mode: fixed" << std::endl;
         std::cout << "Max experiment time: "
-                  << g_trafficCoordinator->GetMaxExperimentDurationMs() / 1000.0
+                  << trafficCoordinator.GetMaxExperimentDurationMs() / 1000.0
                   << " seconds" << std::endl;
         std::cout << "Experiment duration from JSON: "
-                  << g_trafficCoordinator->GetTraceDurationMs() / 1000.0 << " seconds" << std::endl;
+                  << trafficCoordinator.GetTraceDurationMs() / 1000.0 << " seconds" << std::endl;
 
-        if (g_trafficCoordinator->GetMaxExperimentDurationMs() < g_trafficCoordinator->GetTraceDurationMs())
+        if (trafficCoordinator.GetMaxExperimentDurationMs() <
+            trafficCoordinator.GetTraceDurationMs())
         {
             NS_LOG_WARN("Fixed experiment time "
-                        << g_trafficCoordinator->GetMaxExperimentDurationMs() / 1000.0
+                        << trafficCoordinator.GetMaxExperimentDurationMs() / 1000.0
                         << "s is shorter than JSON duration "
-                        << g_trafficCoordinator->GetTraceDurationMs() / 1000.0
+                        << trafficCoordinator.GetTraceDurationMs() / 1000.0
                         << "s; trace tail will be truncated");
         }
     }
     std::cout << "Waiting for " << trafficCoordinator.GetExpectedGeneratorCount()
               << " traffic generators to complete TCP setup..." << std::endl;
 
-    Config::Connect ("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/MacTx",
-                 MakeCallback (&DeviceTxTrace));
-
-    Config::Connect ("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/MacRx",
-                 MakeCallback (&DeviceRxTrace));
+    trafficFlowMonitor.ConnectDeviceTraces();
 
     Config::SetDefault(
     "ns3::TcpL4Protocol::SocketType",
@@ -801,11 +559,11 @@ main(int argc, char* argv[])
     const double wallClockSeconds =
         std::chrono::duration<double>(wallClockEnd - wallClockStart).count();
 
-    NS_ABORT_MSG_IF(g_trafficCoordinator->GetExperimentStartUs() < 0,
+    NS_ABORT_MSG_IF(trafficCoordinator.GetExperimentStartUs() < 0,
                     "Simulation ended before the global traffic barrier opened");
 
     wifiStatistics.WriteJson(statsOutputPath);
-    PrintTransmissionTimePerSender();
+    trafficFlowMonitor.PrintTransmissionTimePerSender();
     wifiStatistics.PrintCrossLayerReport();
 
     Simulator::Destroy();

@@ -4,6 +4,7 @@ build_lib_example(
     sample-scenario.cc
     scenario-log.cc
     traffic-coordinator.cc
+    traffic-flow-monitor.cc
     wifi-statistics.cc
     wifi-statistics-json.cc
     wifi-statistics-owner.cc
