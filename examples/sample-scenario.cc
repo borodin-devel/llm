@@ -7,7 +7,9 @@
 //   experiment_time: "auto" (JSON duration + 2s, default) or fixed seconds (> 0)
 //
 
-// #include "sample-scenario.h"
+#include "scenario-log.h"
+#include "traffic-coordinator.h"
+
 #include "ns3/ap-generator.h"
 #include "ns3/sta-llm-generator.h"
 #include "ns3/traffic-sink.h"
@@ -56,7 +58,7 @@ using namespace ns3;
 using AgentMap = std::map<std::string, std::vector<Operation>>;
 
 
-NS_LOG_COMPONENT_DEFINE("SampleScenario");
+static LogComponent& g_log = llm_example::GetScenarioLog();
 
 // ============================================================================
 // Device TX/RX trace maps
@@ -111,18 +113,10 @@ static constexpr uint32_t kMacStatsWindowMs = 10;
 static constexpr int64_t kMacStatsWindowUs =
     static_cast<int64_t>(kMacStatsWindowMs) * 1000;
 
-// Global experiment epoch. It is selected only after every required TCP
-// connection has been established. Trace timestamps are relative to this point.
-static int64_t g_experimentStartUs = -1;
-static double g_traceEndMs = 0.0;
-static double g_maxExperimentTimeMs = 0.0;
 static constexpr double kAutoExperimentTailMarginMs = 2000.0;
 
-static std::vector<Ptr<APGenerator>> g_apGenerators;
-static std::vector<Ptr<StaLlmGenerator>> g_staGenerators;
-static std::vector<Ptr<Application>> g_trafficApplications;
-static uint32_t g_expectedReadyGenerators = 0;
-static uint32_t g_readyGenerators = 0;
+// Trace callbacks are free functions until their state moves into collectors.
+static const TrafficCoordinator* g_trafficCoordinator = nullptr;
 
 struct PhyRateAccumulator
 {
@@ -281,14 +275,14 @@ std::set<PhyMpduKey> g_seenTaggedMpdus;
 static bool
 GetExperimentSecond(int64_t absoluteUs, uint32_t& second)
 {
-    if (g_experimentStartUs < 0 || absoluteUs < g_experimentStartUs)
+    if (g_trafficCoordinator->GetExperimentStartUs() < 0 || absoluteUs < g_trafficCoordinator->GetExperimentStartUs())
     {
         return false;
     }
 
-    const int64_t relativeUs = absoluteUs - g_experimentStartUs;
+    const int64_t relativeUs = absoluteUs - g_trafficCoordinator->GetExperimentStartUs();
     const int64_t experimentEndUs = static_cast<int64_t>(std::ceil(
-        g_maxExperimentTimeMs * 1000.0));
+        g_trafficCoordinator->GetMaxExperimentDurationMs() * 1000.0));
     if (relativeUs >= experimentEndUs)
     {
         return false;
@@ -354,14 +348,14 @@ ResolvePhyFlow(const std::string& srcIp,
 static bool
 GetPhyWindowIndex(int64_t nowUs, uint32_t& bucketIndex)
 {
-    if (g_experimentStartUs < 0 || nowUs < g_experimentStartUs)
+    if (g_trafficCoordinator->GetExperimentStartUs() < 0 || nowUs < g_trafficCoordinator->GetExperimentStartUs())
     {
         return false;
     }
 
-    const int64_t relativeUs = nowUs - g_experimentStartUs;
+    const int64_t relativeUs = nowUs - g_trafficCoordinator->GetExperimentStartUs();
     const int64_t statsEndUs = static_cast<int64_t>(std::ceil(
-        g_maxExperimentTimeMs * 1000.0));
+        g_trafficCoordinator->GetMaxExperimentDurationMs() * 1000.0));
     if (relativeUs >= statsEndUs)
     {
         return false;
@@ -727,25 +721,25 @@ PhyStateTrace(uint32_t nodeId, Time start, Time duration, WifiPhyState state)
         return;
     }
 
-    if (g_experimentStartUs < 0)
+    if (g_trafficCoordinator->GetExperimentStartUs() < 0)
     {
         return;
     }
 
     int64_t intervalStartUs = std::max<int64_t>(
         start.GetMicroSeconds(),
-        g_experimentStartUs);
+        g_trafficCoordinator->GetExperimentStartUs());
     int64_t intervalEndUs = start.GetMicroSeconds() + duration.GetMicroSeconds();
-    const int64_t experimentEndUs = g_experimentStartUs +
-        static_cast<int64_t>(std::ceil(g_maxExperimentTimeMs * 1000.0));
+    const int64_t experimentEndUs = g_trafficCoordinator->GetExperimentStartUs() +
+        static_cast<int64_t>(std::ceil(g_trafficCoordinator->GetMaxExperimentDurationMs() * 1000.0));
     intervalEndUs = std::min(intervalEndUs, experimentEndUs);
 
     while (intervalStartUs < intervalEndUs)
     {
-        const int64_t relativeUs = intervalStartUs - g_experimentStartUs;
+        const int64_t relativeUs = intervalStartUs - g_trafficCoordinator->GetExperimentStartUs();
         const uint32_t second = static_cast<uint32_t>(relativeUs / 1000000);
         const int64_t nextBoundaryUs =
-            g_experimentStartUs + (static_cast<int64_t>(second) + 1) * 1000000;
+            g_trafficCoordinator->GetExperimentStartUs() + (static_cast<int64_t>(second) + 1) * 1000000;
         const int64_t pieceEndUs = std::min(intervalEndUs, nextBoundaryUs);
         g_nodeSecondStats[nodeId][second].phyBusyUs += pieceEndUs - intervalStartUs;
         intervalStartUs = pieceEndUs;
@@ -795,10 +789,10 @@ PrintCrossLayerStats()
     NS_LOG_WARN("========== App -> PHY / reliability statistics ==========");
 
     const uint32_t totalSecondBuckets =
-        g_maxExperimentTimeMs > 0.0
-            ? static_cast<uint32_t>(std::ceil(g_maxExperimentTimeMs / 1000.0))
+        g_trafficCoordinator->GetMaxExperimentDurationMs() > 0.0
+            ? static_cast<uint32_t>(std::ceil(g_trafficCoordinator->GetMaxExperimentDurationMs() / 1000.0))
             : 0;
-    const double experimentDurationSeconds = g_maxExperimentTimeMs / 1000.0;
+    const double experimentDurationSeconds = g_trafficCoordinator->GetMaxExperimentDurationMs() / 1000.0;
 
     // Iterate the topology registry, not only the sparse statistics map.  This
     // makes unused STAs visible too (all-zero rows are meaningful diagnostics).
@@ -998,16 +992,16 @@ RecordMacStats(int64_t nowUs,
                const std::string& dstIp,
                uint32_t payloadBytes)
 {
-    if (g_experimentStartUs < 0 ||
-        nowUs < g_experimentStartUs ||
+    if (g_trafficCoordinator->GetExperimentStartUs() < 0 ||
+        nowUs < g_trafficCoordinator->GetExperimentStartUs() ||
         payloadBytes == 0)
     {
         return;
     }
 
-    const int64_t relativeUs = nowUs - g_experimentStartUs;
+    const int64_t relativeUs = nowUs - g_trafficCoordinator->GetExperimentStartUs();
     const int64_t statsEndUs = static_cast<int64_t>(std::ceil(
-        g_maxExperimentTimeMs * 1000.0));
+        g_trafficCoordinator->GetMaxExperimentDurationMs() * 1000.0));
 
     if (relativeUs >= statsEndUs)
     {
@@ -1300,7 +1294,7 @@ WriteMacStatsJson(const std::string& outputPath)
     }
 
     const int64_t statsDurationUs = static_cast<int64_t>(std::ceil(
-        g_maxExperimentTimeMs * 1000.0));
+        g_trafficCoordinator->GetMaxExperimentDurationMs() * 1000.0));
 
     const uint32_t windowCount =
         statsDurationUs > 0
@@ -1566,8 +1560,8 @@ void PrintTransmissionTimePerSender()
 
 void DeviceTxTrace (std::string context, Ptr<const Packet> packet)
 {
-    if (g_experimentStartUs < 0 ||
-        Simulator::Now().GetMicroSeconds() < g_experimentStartUs)
+    if (g_trafficCoordinator->GetExperimentStartUs() < 0 ||
+        Simulator::Now().GetMicroSeconds() < g_trafficCoordinator->GetExperimentStartUs())
     {
         return;
     }
@@ -1633,8 +1627,8 @@ void DeviceTxTrace (std::string context, Ptr<const Packet> packet)
 
 void DeviceRxTrace (std::string context, Ptr<const Packet> packet)
 {
-    if (g_experimentStartUs < 0 ||
-        Simulator::Now().GetMicroSeconds() < g_experimentStartUs)
+    if (g_trafficCoordinator->GetExperimentStartUs() < 0 ||
+        Simulator::Now().GetMicroSeconds() < g_trafficCoordinator->GetExperimentStartUs())
     {
         return;
     }
@@ -1692,67 +1686,6 @@ void DeviceRxTrace (std::string context, Ptr<const Packet> packet)
 }
 
 // ============================================================================
-// Global traffic-start barrier
-// ============================================================================
-
-static void
-TrafficGeneratorReady()
-{
-    NS_ABORT_MSG_IF(g_expectedReadyGenerators == 0,
-                    "Traffic readiness barrier was not configured");
-    NS_ABORT_MSG_IF(g_readyGenerators >= g_expectedReadyGenerators,
-                    "Traffic generator reported readiness more than once");
-
-    ++g_readyGenerators;
-
-    NS_LOG_INFO("[Traffic barrier] ready="
-                << g_readyGenerators << "/" << g_expectedReadyGenerators);
-
-    if (g_readyGenerators != g_expectedReadyGenerators)
-    {
-        return;
-    }
-
-    const int64_t nowMs = Simulator::Now().GetMilliSeconds();
-
-    // One common integer-second origin strictly after the last TCP connection.
-    const int64_t experimentStartMs = ((nowMs / 1000) + 1) * 1000;
-    g_experimentStartUs = experimentStartMs * 1000;
-
-    const double applicationStopMs =
-        static_cast<double>(experimentStartMs) +
-        g_maxExperimentTimeMs;
-
-    NS_LOG_INFO("[Traffic barrier] all TCP connections ready at "
-                << nowMs << " ms; common traffic epoch="
-                << experimentStartMs << " ms; traceEnd="
-                << g_traceEndMs << " ms; maxExperimentTime="
-                << g_maxExperimentTimeMs << " ms; applicationStop="
-                << applicationStopMs << " ms");
-
-    for (const auto& generator : g_staGenerators)
-    {
-        generator->StartTraffic(static_cast<uint64_t>(experimentStartMs));
-    }
-
-    for (const auto& generator : g_apGenerators)
-    {
-        generator->StartTraffic(static_cast<uint64_t>(experimentStartMs));
-    }
-
-    const Time applicationStopTime = Time::FromDouble(applicationStopMs, Time::MS);
-    for (const auto& application : g_trafficApplications)
-    {
-        application->SetStopTime(applicationStopTime);
-    }
-
-    // Simulator::Stop(Time) is relative when called during the simulation.
-    const Time simulatorStopDelay =
-        applicationStopTime + MilliSeconds(1) - Simulator::Now();
-    Simulator::Stop(simulatorStopDelay);
-}
-
-// ============================================================================
 // Wi-Fi association diagnostics
 // ============================================================================
 
@@ -1774,7 +1707,8 @@ SetupApGroup(int apIndex,
              const std::map<std::string, Address>& agentStationMap,
              const AgentMap& agentMap,
              Address apAddress,
-             uint32_t staNum)
+             uint32_t staNum,
+             TrafficCoordinator& trafficCoordinator)
 {
     NS_LOG_INFO("=== Setting up AP group " << apIndex
                 << ", BW " << bandwidthMhz << " MHz ===");
@@ -1923,7 +1857,7 @@ SetupApGroup(int apIndex,
     apSink->SetAttribute("Port", UintegerValue(10000));
     apNode.Get(0)->AddApplication(apSink);
     apSink->SetStartTime(Seconds(0));
-    g_trafficApplications.push_back(apSink);
+    trafficCoordinator.AddApplication(apSink);
 
     // ========================================================================
     // Install TrafficSink on each station (receives downlink from AP)
@@ -1934,7 +1868,7 @@ SetupApGroup(int apIndex,
         sink->SetAttribute("Port", UintegerValue(9000 + i));
         stationNodes.Get(i)->AddApplication(sink);
         sink->SetStartTime(Seconds(0));
-        g_trafficApplications.push_back(sink);
+        trafficCoordinator.AddApplication(sink);
     }
 
     // Starting a generator only starts TCP setup. Payload scheduling is held
@@ -1971,7 +1905,7 @@ SetupApGroup(int apIndex,
     {
         Ptr<StaLlmGenerator> gen = CreateObject<StaLlmGenerator>();
         gen->SetAttribute("Remote", AddressValue(apAddress));
-        gen->SetReadyCallback(MakeCallback(&TrafficGeneratorReady));
+        gen->SetReadyCallback(trafficCoordinator.GetReadyCallback());
 
         // Merge all operations from all agents on this station
         std::map<std::string, std::vector<std::tuple<int, double, double, int>>> agentOpsMap;
@@ -1999,8 +1933,8 @@ SetupApGroup(int apIndex,
         stationNodes.Get(idx)->AddApplication(gen);
         gen->SetStartTime(trafficGeneratorStart);
 
-        g_staGenerators.push_back(gen);
-        g_trafficApplications.push_back(gen);
+        trafficCoordinator.AddGenerator(gen);
+        trafficCoordinator.AddApplication(gen);
 
         NS_LOG_INFO("Station " << idx << " placed on node "
                     << idx << " with " << agents.size() << " agents");
@@ -2011,7 +1945,7 @@ SetupApGroup(int apIndex,
     // Uses agentStationMap directly with string keys
     // ========================================================================
     Ptr<APGenerator> apGen = CreateObject<APGenerator>();
-    apGen->SetReadyCallback(MakeCallback(&TrafficGeneratorReady));
+    apGen->SetReadyCallback(trafficCoordinator.GetReadyCallback());
 
     // Pass operations directly - tuple format: (downlinkBytes, endMs, startOffsetMs, uplinkBytes)
     std::map<std::string, std::vector<std::tuple<int, double, double, int>>> rawOpsMap;
@@ -2041,8 +1975,8 @@ SetupApGroup(int apIndex,
     apNode.Get(0)->AddApplication(apGen);
     apGen->SetStartTime(trafficGeneratorStart);
 
-    g_apGenerators.push_back(apGen);
-    g_trafficApplications.push_back(apGen);
+    trafficCoordinator.AddGenerator(apGen);
+    trafficCoordinator.AddApplication(apGen);
 
     NS_LOG_INFO("AP group " << apIndex << " setup complete: "
                 << agentMap.size() << " agents, " << staNum << " stations");
@@ -2162,17 +2096,12 @@ main(int argc, char* argv[])
 
     // Parse and distribute agents
     ParsedResult parsed = ParseJsonFile(jsonPath);
-    g_traceEndMs = parsed.experimentDurationMs;
-
-    if (autoExperimentTime)
-    {
-        g_maxExperimentTimeMs =
-            g_traceEndMs + kAutoExperimentTailMarginMs;
-    }
-    else
-    {
-        g_maxExperimentTimeMs = fixedExperimentTimeMs;
-    }
+    const double traceDurationMs = parsed.experimentDurationMs;
+    const double maxExperimentDurationMs =
+        autoExperimentTime ? traceDurationMs + kAutoExperimentTailMarginMs
+                           : fixedExperimentTimeMs;
+    TrafficCoordinator trafficCoordinator(traceDurationMs, maxExperimentDurationMs);
+    g_trafficCoordinator = &trafficCoordinator;
 
     // Default distribution
     // DistributionResult dist = DistributeAgents(parsed, apNum, staNum, 3);
@@ -2209,22 +2138,19 @@ main(int argc, char* argv[])
                      dist.apStationMaps[ap],
                      dist.apAgentMaps[ap],
                      dist.apAddresses[ap],
-                     staNum);
+                     staNum,
+                     trafficCoordinator);
     }
 
-    g_expectedReadyGenerators = static_cast<uint32_t>(
-        g_apGenerators.size() + g_staGenerators.size());
-
-    NS_ABORT_MSG_IF(g_expectedReadyGenerators == 0,
-                    "No traffic generators were created");
+    trafficCoordinator.FinalizeRegistration();
 
     if (autoExperimentTime)
     {
         std::cout << "\nExperiment time mode: auto" << std::endl;
         std::cout << "Experiment duration from JSON: "
-                  << g_traceEndMs / 1000.0 << " seconds" << std::endl;
+                  << g_trafficCoordinator->GetTraceDurationMs() / 1000.0 << " seconds" << std::endl;
         std::cout << "Max experiment time: "
-                  << g_maxExperimentTimeMs / 1000.0
+                  << g_trafficCoordinator->GetMaxExperimentDurationMs() / 1000.0
                   << " seconds (JSON duration + "
                   << kAutoExperimentTailMarginMs / 1000.0
                   << " seconds)" << std::endl;
@@ -2233,21 +2159,21 @@ main(int argc, char* argv[])
     {
         std::cout << "\nExperiment time mode: fixed" << std::endl;
         std::cout << "Max experiment time: "
-                  << g_maxExperimentTimeMs / 1000.0
+                  << g_trafficCoordinator->GetMaxExperimentDurationMs() / 1000.0
                   << " seconds" << std::endl;
         std::cout << "Experiment duration from JSON: "
-                  << g_traceEndMs / 1000.0 << " seconds" << std::endl;
+                  << g_trafficCoordinator->GetTraceDurationMs() / 1000.0 << " seconds" << std::endl;
 
-        if (g_maxExperimentTimeMs < g_traceEndMs)
+        if (g_trafficCoordinator->GetMaxExperimentDurationMs() < g_trafficCoordinator->GetTraceDurationMs())
         {
             NS_LOG_WARN("Fixed experiment time "
-                        << g_maxExperimentTimeMs / 1000.0
+                        << g_trafficCoordinator->GetMaxExperimentDurationMs() / 1000.0
                         << "s is shorter than JSON duration "
-                        << g_traceEndMs / 1000.0
+                        << g_trafficCoordinator->GetTraceDurationMs() / 1000.0
                         << "s; trace tail will be truncated");
         }
     }
-    std::cout << "Waiting for " << g_expectedReadyGenerators
+    std::cout << "Waiting for " << trafficCoordinator.GetExpectedGeneratorCount()
               << " traffic generators to complete TCP setup..." << std::endl;
 
     Config::Connect ("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/MacTx",
@@ -2271,7 +2197,7 @@ main(int argc, char* argv[])
     const double wallClockSeconds =
         std::chrono::duration<double>(wallClockEnd - wallClockStart).count();
 
-    NS_ABORT_MSG_IF(g_experimentStartUs < 0,
+    NS_ABORT_MSG_IF(g_trafficCoordinator->GetExperimentStartUs() < 0,
                     "Simulation ended before the global traffic barrier opened");
 
     WriteMacStatsJson(statsOutputPath);

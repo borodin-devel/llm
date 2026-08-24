@@ -32,6 +32,9 @@ set(test_sources
     test/agent-distribution-test-suite.cc
     test/app-tx-tag-test-suite.cc
     test/traffic-schedule-test-suite.cc
+    test/traffic-coordinator-test-suite.cc
+    examples/scenario-log.cc
+    examples/traffic-coordinator.cc
 )
 
 build_lib(
