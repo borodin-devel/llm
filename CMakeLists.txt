@@ -1,7 +1,10 @@
 
 set(source_files
+    model/app-tx-tag.cc
     model/agent-distribution.cc
     model/contention-aware-agent-distribution.cc
+    model/llm-log.cc
+    model/trace-parser.cc
     model/traffic-sink.cc
     model/ap-generator.cc
     model/sta-llm-generator.cc
@@ -9,11 +12,14 @@ set(source_files
 
 set(header_files
     lib/json.hpp
+    model/agent-data.h
+    model/app-tx-tag.h
     model/traffic-sink.h
     model/agent-distribution.h
     model/contention-aware-agent-distribution.h
     model/ap-generator.h
     model/sta-llm-generator.h
+    model/trace-parser.h
 )
 
 set(test_sources
@@ -36,5 +42,6 @@ build_lib(
     ${libapplications}
     ${libwifi}
     ${libconfig-store}
+  PRIVATE_HEADER_FILES model/llm-log.h
   TEST_SOURCES ${test_sources}
 )

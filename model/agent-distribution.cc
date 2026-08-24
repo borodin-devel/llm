@@ -9,11 +9,9 @@
 
 #include "agent-distribution.h"
 
+#include "llm-log.h"
+
 #include "ns3/inet-socket-address.h"
-#include "ns3/log.h"
-#include "ns3/nstime.h"
-#include "ns3/simulator.h"
-#include "ns3/json.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -22,15 +20,11 @@
 #include <utility>
 #include <climits>
 #include <limits>
-#include <fstream>
-#include <numeric>
-
-using json = nlohmann::json;
 
 namespace ns3
 {
 
-NS_LOG_COMPONENT_DEFINE("AgentDistribution");
+static LogComponent& g_log = llm_detail::GetAgentDistributionLog();
 
 // ============================================================================
 // Internal helpers
@@ -281,105 +275,6 @@ AssignStationsToAgents(
 // ============================================================================
 // DistributeAgents (API)
 // ============================================================================
-
-ParsedResult
-ParseJsonFile(const std::string& jsonPath)
-{
-    NS_LOG_INFO("[Parse] Loading JSON: " << jsonPath);
-
-    std::ifstream ifs(jsonPath);
-    if (!ifs)
-    {
-        std::cerr << "Cannot open file: " << jsonPath << std::endl;
-        std::exit(1);
-    }
-
-    json root = json::parse(ifs);
-
-    // Collect agents: map<agentKey, AgentInfo>
-    // agentKey = "id_type" (e.g. "1_GUI交互综合Agent")
-    std::map<std::string, AgentInfo> agentMap;
-    std::map<std::string, int> typeToNum;
-    int typeCounter = 1;
-    double experimentDurationMs = 0.0;
-
-    for (const auto& trace : root.at("traces"))
-    {
-        int agentId = trace.at("agentId").get<int>();
-        std::string agentType = trace.at("agentType").get<std::string>();
-
-        // Assign numeric type
-        if (typeToNum.find(agentType) == typeToNum.end())
-        {
-            typeToNum[agentType] = typeCounter++;
-            NS_LOG_INFO("[Parse] Type \"" << agentType << "\" -> " << typeToNum[agentType]);
-        }
-
-        std::string key = std::to_string(agentId) + "_" + agentType;
-
-        if (agentMap.find(key) == agentMap.end())
-        {
-            agentMap[key] = AgentInfo{key, agentId, typeToNum[agentType], {}};
-        }
-
-        for (const auto& task : trace.at("tasks"))
-        {
-            for (const auto& op : task.at("operations"))
-            {
-                const double startOffsetMs =
-                    op.at("startOffsetMs").get<double>();
-                const double durationMs =
-                    op.at("durationMs").get<double>();
-
-                // Experiment duration is a property of the complete JSON
-                // timeline, not only of operations that emit network traffic.
-                // Local 0-byte operations can extend the end of the trace.
-                experimentDurationMs = std::max(
-                    experimentDurationMs,
-                    startOffsetMs + durationMs);
-
-                if (op.at("downlinkBytes").get<int>() <= 0 ||
-                    op.at("uplinkBytes").get<int>() <= 0)
-                {
-                    continue;
-                }
-
-                agentMap[key].operations.push_back(Operation{
-                    op.at("downlinkBytes").get<int>(),
-                    startOffsetMs,
-                    startOffsetMs + durationMs,
-                    op.at("uplinkBytes").get<int>()
-                });
-            }
-        }
-    }
-
-    ParsedResult result;
-    result.experimentDurationMs = experimentDurationMs;
-    result.agents.reserve(agentMap.size());
-
-    for (const auto& [key, info] : agentMap)
-    {
-        result.agents.push_back(info);
-        int64_t totalBytes = std::accumulate(info.operations.begin(),
-                                              info.operations.end(), 0,
-                                              [](int64_t s, const Operation& o) {
-                                                  return s + o.downlinkBytes + o.uplinkBytes;
-                                              });
-        NS_LOG_INFO("[Parse] Agent key=\"" << key
-               << "\" id=" << info.id
-               << " type=" << info.type
-               << " ops=" << info.operations.size()
-               << " bytes=" << totalBytes);
-    }
-
-    NS_LOG_INFO("[Parse] Total agents: " << result.agents.size());
-    NS_LOG_INFO("[Parse] Total types: " << typeToNum.size());
-    NS_LOG_INFO("[Parse] Experiment duration from JSON: "
-                << result.experimentDurationMs << " ms");
-
-    return result;
-}
 
 DistributionResult
 DistributeAgents(const ParsedResult& parsed,

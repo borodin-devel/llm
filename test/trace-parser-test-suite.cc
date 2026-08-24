@@ -1,7 +1,9 @@
 #include "llm-test-suite.h"
 
 #include "ns3/agent-distribution.h"
+#include "ns3/trace-parser.h"
 
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -19,6 +21,20 @@ class TraceParserTestCase : public TestCase
 {
   public:
     TraceParserTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+/**
+ * @ingroup tests
+ *
+ * Verify that parsing can use an in-memory stream.
+ */
+class TraceStreamParserTestCase : public TestCase
+{
+  public:
+    TraceStreamParserTestCase();
 
   private:
     void DoRun() override;
@@ -49,10 +65,41 @@ TraceParserTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(parsed.agents[1].type, 2, "Unexpected worker type");
 }
 
+TraceStreamParserTestCase::TraceStreamParserTestCase()
+    : TestCase("parse an agent trace from a stream")
+{
+}
+
+void
+TraceStreamParserTestCase::DoRun()
+{
+    std::istringstream input(R"({
+      "traces": [{
+        "agentId": 7,
+        "agentType": "worker",
+        "tasks": [{"operations": [{
+          "startOffsetMs": 5.0,
+          "durationMs": 15.0,
+          "downlinkBytes": 8,
+          "uplinkBytes": 9
+        }]}]
+      }]
+    })");
+
+    const ParsedResult parsed = ParseJson(input);
+
+    NS_TEST_ASSERT_MSG_EQ(parsed.agents.size(), 1, "Unexpected agent count");
+    NS_TEST_ASSERT_MSG_EQ(parsed.agents[0].key, "7_worker", "Unexpected agent key");
+    NS_TEST_ASSERT_MSG_EQ_TOL(parsed.experimentDurationMs,
+                              20.0,
+                              1e-9,
+                              "Unexpected trace duration");
+}
+
 } // namespace
 
 std::vector<TestCase*>
 CreateTraceParserTestCases()
 {
-    return {new TraceParserTestCase};
+    return {new TraceParserTestCase, new TraceStreamParserTestCase};
 }
