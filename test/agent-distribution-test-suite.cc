@@ -124,6 +124,20 @@ class DistributionValidationTestCase : public TestCase
     void ExpectInvalid(const ContentionAwareDistributionConfig& config, const std::string& name);
 };
 
+/**
+ * @ingroup tests
+ *
+ * Characterize slot boundaries and empty input.
+ */
+class DistributionBoundaryTestCase : public TestCase
+{
+  public:
+    DistributionBoundaryTestCase();
+
+  private:
+    void DoRun() override;
+};
+
 DistributionValidationTestCase::DistributionValidationTestCase()
     : TestCase("reject invalid contention-aware configuration")
 {
@@ -172,6 +186,67 @@ DistributionValidationTestCase::DoRun()
     ExpectInvalid(config, "insufficient capacity");
 }
 
+DistributionBoundaryTestCase::DistributionBoundaryTestCase()
+    : TestCase("preserve distribution slot boundaries")
+{
+}
+
+void
+DistributionBoundaryTestCase::DoRun()
+{
+    ParsedResult parsed;
+    parsed.agents = {
+        {"1_before", 1, 1, {{10, 49.999, 55.0, 10}}},
+        {"2_boundary", 2, 2, {{10, 50.0, 60.0, 10}}},
+        {"3_next", 3, 3, {{10, 100.0, 110.0, 10}}},
+    };
+
+    ContentionAwareDistributionConfig config;
+    config.nAp = 2;
+    config.nStationsPerAp = 3;
+    config.maxAgentsPerStation = 2;
+    config.lowContentionPriority = true;
+    config.slotMs = 50;
+
+    const auto first = DistributeAgentsContentionAware(parsed, config);
+    const auto second = DistributeAgentsContentionAware(parsed, config);
+
+    for (const auto& agent : parsed.agents)
+    {
+        int firstCount = 0;
+        int secondCount = 0;
+        Address firstAddress;
+        Address secondAddress;
+
+        for (int bssIndex = 0; bssIndex < config.nAp; ++bssIndex)
+        {
+            const auto firstIt = first.apStationMaps[bssIndex].find(agent.key);
+            if (firstIt != first.apStationMaps[bssIndex].end())
+            {
+                ++firstCount;
+                firstAddress = firstIt->second;
+            }
+            const auto secondIt = second.apStationMaps[bssIndex].find(agent.key);
+            if (secondIt != second.apStationMaps[bssIndex].end())
+            {
+                ++secondCount;
+                secondAddress = secondIt->second;
+            }
+        }
+
+        NS_TEST_ASSERT_MSG_EQ(firstCount, 1, agent.key << " was not assigned exactly once");
+        NS_TEST_ASSERT_MSG_EQ(secondCount, 1, agent.key << " changed assignment count");
+        NS_TEST_ASSERT_MSG_EQ(firstAddress, secondAddress, agent.key << " mapping changed");
+    }
+
+    ParsedResult empty;
+    const auto emptyResult = DistributeAgentsContentionAware(empty, config);
+    NS_TEST_ASSERT_MSG_EQ(emptyResult.apAgentMaps.size(), 2, "Wrong empty AP map count");
+    NS_TEST_ASSERT_MSG_EQ(emptyResult.apStationMaps.size(), 2, "Wrong empty STA map count");
+    NS_TEST_ASSERT_MSG_EQ(emptyResult.apAgentMaps[0].empty(), true, "Unexpected empty agent");
+    NS_TEST_ASSERT_MSG_EQ(emptyResult.apAgentMaps[1].empty(), true, "Unexpected empty agent");
+}
+
 } // namespace
 
 std::vector<TestCase*>
@@ -179,5 +254,6 @@ CreateAgentDistributionTestCases()
 {
     return {new SimpleDistributionTestCase,
             new ContentionAwareDistributionTestCase,
-            new DistributionValidationTestCase};
+            new DistributionValidationTestCase,
+            new DistributionBoundaryTestCase};
 }

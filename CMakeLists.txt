@@ -3,6 +3,8 @@ set(source_files
     model/app-tx-tag.cc
     model/agent-distribution.cc
     model/contention-aware-agent-distribution.cc
+    model/contention-aware-bss-assignment.cc
+    model/contention-aware-sta-assignment.cc
     model/llm-log.cc
     model/trace-parser.cc
     model/traffic-sink.cc
@@ -42,6 +44,8 @@ build_lib(
     ${libapplications}
     ${libwifi}
     ${libconfig-store}
-  PRIVATE_HEADER_FILES model/llm-log.h
+  PRIVATE_HEADER_FILES
+    model/contention-aware-distribution-internal.h
+    model/llm-log.h
   TEST_SOURCES ${test_sources}
 )

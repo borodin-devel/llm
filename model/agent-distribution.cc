@@ -9,6 +9,7 @@
 
 #include "agent-distribution.h"
 
+#include "contention-aware-distribution-internal.h"
 #include "llm-log.h"
 
 #include "ns3/inet-socket-address.h"
@@ -39,17 +40,6 @@ GetTimeWindows(const std::vector<Operation>& ops)
         windows.emplace_back(op.startOffsetMs, op.endMs);
     }
     return windows;
-}
-
-static int64_t
-GetTotalBytes(const std::vector<Operation>& ops)
-{
-    int64_t total = 0;
-    for (const auto& op : ops)
-    {
-        total += op.downlinkBytes + op.uplinkBytes;
-    }
-    return total;
 }
 
 // ============================================================================
@@ -94,7 +84,7 @@ GreedyAssignAPs(const std::vector<AgentInfo>& agents,
     {
         AgentSlotInfo info;
         info.key = agent.key;
-        info.totalBytes = GetTotalBytes(agent.operations);
+        info.totalBytes = llm_detail::CalculateTotalBytes(agent.operations);
 
         std::map<int, int> slotCounts;
         for (const auto& [s, e] : GetTimeWindows(agent.operations))
@@ -181,7 +171,7 @@ GreedyAssignAPs(const std::vector<AgentInfo>& agents,
                 {
                     if (agent.key == key)
                     {
-                        totalBytes += GetTotalBytes(agent.operations);
+                        totalBytes += llm_detail::CalculateTotalBytes(agent.operations);
                         break;
                     }
                 }
