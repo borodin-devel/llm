@@ -7,6 +7,8 @@
 #ifndef STA_LLM_GENERATOR_H
 #define STA_LLM_GENERATOR_H
 
+#include "traffic-schedule.h"
+
 #include "ns3/source-application.h"
 #include "ns3/event-id.h"
 #include "ns3/data-rate.h"
@@ -88,22 +90,14 @@ class StaLlmGenerator : public SourceApplication
     void OnLastRttChange(Time, Time lastRtt);
     void PrintPerSecondMetrics();
 
-    // Agent operations map: agentId -> list of (downlinkBytes, endMs, startOffsetMs, uplinkBytes)
-    std::map<std::string, std::vector<std::tuple<int, double, double, int>>> m_agentsMap;
-
-    // Sorted combined operations: (startOffsetMs, agentId, downlinkBytes, endMs, uplinkBytes)
-    std::vector<std::tuple<double, std::string, int, double, int>> m_sortedOperations;
+    LegacyAgentOperations m_operationsByAgent; ///< Legacy operation input by agent.
+    std::vector<ScheduledPayload> m_uplinkSchedule; ///< Ordered uplink payloads.
 
     // Event for next send
     EventId m_sendEvent;
 
     // Prevent repeated scheduling if the connection callback fires again.
     bool m_transmissionsScheduled{false};
-
-    // Metrics: per-agent bytes sent
-    std::map<std::string, uint64_t> m_agentBytesSent;
-
-    uint64_t m_totalSent;
 
     // Absolute simulation time corresponding to trace t=0.
     uint64_t m_experimentStartMs{0};
@@ -129,13 +123,10 @@ class StaLlmGenerator : public SourceApplication
     //
     // For example, key 0 contains events from [0, 1) seconds,
     // key 1 contains events from [1, 2) seconds, etc.
-    std::map<uint32_t, PerSecondStats> m_perSecondStats;
-
-    // Metrics: TCP Cwnd samples per second
-    std::vector<double> m_cwndSamples;
+    std::map<uint32_t, PerSecondStats> m_metricsByAbsoluteSecond;
 
     // Metrics: current Cwnd
-    double m_currentCwnd;
+    double m_currentCwnd{0.0};
 
     // Traced callbacks
     TracedCallback<std::string, uint32_t, Time> m_txTraceCustom;

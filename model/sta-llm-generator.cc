@@ -5,7 +5,7 @@
 //
 
 #include "sta-llm-generator.h"
-#include "agent-distribution.h"
+#include "app-tx-tag.h"
 
 #include "ns3/inet-socket-address.h"
 #include "ns3/inet6-socket-address.h"
@@ -21,7 +21,6 @@
 #include "ns3/uinteger.h"
 
 #include <algorithm>
-#include <cmath>
 #include <iomanip>
 #include <sstream>
 
@@ -61,8 +60,6 @@ StaLlmGenerator::GetTypeId()
 }
 
 StaLlmGenerator::StaLlmGenerator()
-    : m_totalSent(0),
-      m_currentCwnd(0)
 {
     NS_LOG_FUNCTION(this);
 }
@@ -84,36 +81,22 @@ StaLlmGenerator::SetAgentMap(
   std::map<std::string, std::vector<std::tuple<int, double, double, int>>> agentsMap)
 {
     NS_LOG_FUNCTION(this);
-    m_agentsMap = agentsMap;
+    m_operationsByAgent = agentsMap;
     m_allAgentKeys.clear();
-    for (const auto &[agentKey, ops] : m_agentsMap)
+    for (const auto& [agentKey, operations] : m_operationsByAgent)
     {
-        if (std::find(m_allAgentKeys.begin(), m_allAgentKeys.end(), agentKey) == m_allAgentKeys.end()) {
+        (void)operations;
+        if (std::find(m_allAgentKeys.begin(), m_allAgentKeys.end(), agentKey) ==
+            m_allAgentKeys.end())
+        {
             m_allAgentKeys.emplace_back(agentKey);
         }
     }
 
-    // Merge all operations into a single vector and sort by startOffsetMs
-    m_sortedOperations.clear();
-    for (const auto &[agentKey, ops] : m_agentsMap)
-    {
-        for (const auto &[downlinkBytes, endMs, startOffsetMs, uplinkBytes] : ops)
-        {
-            m_sortedOperations.emplace_back(startOffsetMs,
-                                            agentKey,
-                                            downlinkBytes,
-                                            endMs,
-                                            uplinkBytes);
-        }
-    }
+    m_uplinkSchedule = BuildUplinkSchedule(m_operationsByAgent);
 
-    // Sort by startOffsetMs (STA initiates uplink)
-    std::sort(m_sortedOperations.begin(),
-              m_sortedOperations.end(),
-              [](const auto &a, const auto &b) { return std::get<0>(a) < std::get<0>(b); });
-
-    NS_LOG_INFO("Merged " << m_sortedOperations.size() << " operations from "
-                           << m_agentsMap.size() << " agents");
+    NS_LOG_INFO("Merged " << m_uplinkSchedule.size() << " operations from "
+                           << m_operationsByAgent.size() << " agents");
 }
 
 void
@@ -208,7 +191,7 @@ StaLlmGenerator::DoStopApplication()
     NS_LOG_INFO("[StaLlmGenerator] stopping sta="
                 << localIp
                 << ", effective seconds="
-                << m_perSecondStats.size());
+                << m_metricsByAbsoluteSecond.size());
 
     CancelEvents();
     PrintPerSecondMetrics();
@@ -256,14 +239,10 @@ StaLlmGenerator::ScheduleAllTransmissions()
 {
     NS_LOG_FUNCTION(this);
 
-    for (uint32_t i = 0; i < m_sortedOperations.size(); ++i)
+    for (const auto& payload : m_uplinkSchedule)
     {
-        auto &[startOffsetMs, agentKey, downlinkBytes, endMs, uplinkBytes] =
-          m_sortedOperations[i];
-
-        const Time targetTime = Time::FromDouble(
-            static_cast<double>(m_experimentStartMs) + startOffsetMs,
-            Time::MS);
+        const Time targetTime =
+            GetScheduledSimulationTime(m_experimentStartMs, payload.traceTimeMs);
 
         NS_ABORT_MSG_IF(
             targetTime < Simulator::Now(),
@@ -275,23 +254,24 @@ StaLlmGenerator::ScheduleAllTransmissions()
           delay,
           &StaLlmGenerator::SendAgentData,
           this,
-          agentKey,
-          uplinkBytes,
-          startOffsetMs);
+          payload.agentKey,
+          payload.payloadBytes,
+          payload.traceTimeMs);
 
-        NS_LOG_INFO("[Agent " << agentKey
+        NS_LOG_INFO("[Agent " << payload.agentKey
                                << "] Scheduled: trace time="
                                << std::fixed << std::setprecision(6)
-                               << startOffsetMs
+                               << payload.traceTimeMs
                                << "ms / simulation time="
                                << targetTime.As(Time::MS)
                                << " / delay="
                                << delay.As(Time::MS)
                                << " / uplinkBytes="
-                               << uplinkBytes);
+                               << payload.payloadBytes);
 
-        auto it = std::find(m_allAgentKeys.begin(), m_allAgentKeys.end(), agentKey);
-        if (it != m_allAgentKeys.end()) {
+        auto it = std::find(m_allAgentKeys.begin(), m_allAgentKeys.end(), payload.agentKey);
+        if (it != m_allAgentKeys.end())
+        {
             m_allAgentKeys.erase(it);
         }
     }
@@ -320,15 +300,7 @@ StaLlmGenerator::SendAgentData(std::string agentKey,
     auto localIp = inetLocal.GetIpv4();
     const InetSocketAddress inetRemote = InetSocketAddress::ConvertFrom(m_peer);
 
-    AppTxTag appTxTag(packet->GetUid(),
-                      startTime.GetMicroSeconds(),
-                      localIp,
-                      inetRemote.GetIpv4(),
-                      inetLocal.GetPort(),
-                      inetRemote.GetPort(),
-                      bytes,
-                      agentKey);
-    packet->AddByteTag(appTxTag);
+    AddAppTxTag(packet, startTime, inetLocal, inetRemote, agentKey);
 
     int sent = m_socket->Send(packet);
     if (sent < 0)
@@ -360,14 +332,10 @@ StaLlmGenerator::SendAgentData(std::string agentKey,
                 << " expected_bytes=" << bytes
                 << " socket_accepted_bytes=" << sent);
 
-    m_totalSent += sent;
-    m_agentBytesSent[agentKey] += sent;
-
     // Collect metrics into a one-second bucket.
-    const uint32_t second =
-      static_cast<uint32_t>(std::floor(startTime.GetSeconds()));
+    const uint32_t second = GetAbsoluteSecond(startTime);
 
-    PerSecondStats& stats = m_perSecondStats[second];
+    PerSecondStats& stats = m_metricsByAbsoluteSecond[second];
 
     stats.totalBytes += static_cast<uint64_t>(sent);
     stats.agentBytes[agentKey] += static_cast<uint64_t>(sent);
@@ -375,11 +343,6 @@ StaLlmGenerator::SendAgentData(std::string agentKey,
 
     Time endTime = Simulator::Now();
 
-    // NS_LOG_WARN("[" << localIp << " / " << agentKey << " / " << startTime.As(Time::MS) <<
-    //                     "] Sent " << sent << " bytes, scheduledMs=" << scheduledMs << "ms"
-    //                 );
-
-    // Trace
     m_txTraceCustom(agentKey, bytes, startTime);
     m_agentSendTrace(agentKey, bytes, startTime, endTime);
 }
@@ -396,8 +359,6 @@ StaLlmGenerator::HandleRead(Ptr<Socket> socket)
     }
 }
 
-// TODO: 'm_perSecondStats[second].lastCwnd' is frequently being rewritten,
-// it is not correct to take the last one
 void
 StaLlmGenerator::OnCwndChange(uint32_t, uint32_t newCwnd)
 {
@@ -405,14 +366,11 @@ StaLlmGenerator::OnCwndChange(uint32_t, uint32_t newCwnd)
 
      m_currentCwnd = static_cast<double>(newCwnd);
 
-    const uint32_t second =
-      static_cast<uint32_t>(
-        std::floor(Simulator::Now().GetSeconds()));
+    const uint32_t second = GetAbsoluteSecond(Simulator::Now());
 
-    m_perSecondStats[second].lastCwnd = static_cast<double>(newCwnd);
+    m_metricsByAbsoluteSecond[second].lastCwnd = static_cast<double>(newCwnd);
 }
 
-// TODO: high RTT? 50ms for 5m distance - strange
 void
 StaLlmGenerator::OnLastRttChange(Time, Time lastRtt)
 {
@@ -423,13 +381,9 @@ StaLlmGenerator::OnLastRttChange(Time, Time lastRtt)
         return;
     }
 
-    // m_lastRttTrace(lastRtt.GetMicroSeconds());
+    const uint32_t second = GetAbsoluteSecond(Simulator::Now());
 
-    const uint32_t second =
-      static_cast<uint32_t>(
-        std::floor(Simulator::Now().GetSeconds()));
-
-    auto &stats = m_perSecondStats[second];
+    auto &stats = m_metricsByAbsoluteSecond[second];
     stats.rttSamples++;
     stats.rttSumUs += lastRtt.GetMicroSeconds();
 }
@@ -442,7 +396,7 @@ StaLlmGenerator::PrintPerSecondMetrics()
     NS_LOG_WARN(
       "========== StaLlmGenerator per-second statistics ==========");
 
-    if (m_perSecondStats.empty())
+    if (m_metricsByAbsoluteSecond.empty())
     {
         NS_LOG_WARN("[Final per-second] No transmitted data");
         NS_LOG_WARN(
@@ -450,9 +404,7 @@ StaLlmGenerator::PrintPerSecondMetrics()
         return;
     }
 
-    m_cwndSamples.clear();
-
-    for (const auto& [second, stats] : m_perSecondStats)
+    for (const auto& [second, stats] : m_metricsByAbsoluteSecond)
     {
         if (stats.totalBytes == 0)
         {
@@ -464,11 +416,6 @@ StaLlmGenerator::PrintPerSecondMetrics()
 
         const double throughputMbps =
           throughputBps / 1e6;
-
-        // const double avgRttUs =
-        //   stats.rttSamples > 0
-        //     ? stats.rttSumUs / static_cast<double>(stats.rttSamples)
-        //     : 0.0;
 
         NS_LOG_WARN(
           "[Final per-second] interval=["
@@ -504,13 +451,12 @@ StaLlmGenerator::PrintPerSecondMetrics()
               << " share=" << bandwidthSharePercent << "%");
         }
 
-        m_cwndSamples.push_back(stats.lastCwnd);
     }
 
     // Overall average stats
     uint64_t totalBytesAllSeconds = 0;
     uint64_t seconds = 0;
-    for (const auto& [second, stats] : m_perSecondStats)
+    for (const auto& [second, stats] : m_metricsByAbsoluteSecond)
     {
         if (stats.totalBytes == 0)
         {
@@ -523,17 +469,6 @@ StaLlmGenerator::PrintPerSecondMetrics()
     const double avgThroughputMbps = totalDurationSeconds > 0
       ? (static_cast<double>(totalBytesAllSeconds) * 8.0 / 1e6) / totalDurationSeconds
       : 0.0;
-
-    double totalRttSumUs = 0.0;
-    uint64_t totalRttSamples = 0;
-    for (const auto& [second, stats] : m_perSecondStats)
-    {
-        totalRttSumUs += stats.rttSumUs;
-        totalRttSamples += stats.rttSamples;
-    }
-    // double avgRttAll = totalRttSamples > 0
-    //   ? totalRttSumUs / static_cast<double>(totalRttSamples)
-    //   : 0.0;
 
     NS_LOG_WARN(
       "[Final overall] duration=" << totalDurationSeconds

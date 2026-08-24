@@ -7,6 +7,8 @@
 #ifndef AP_GENERATOR_H
 #define AP_GENERATOR_H
 
+#include "traffic-schedule.h"
+
 #include "ns3/application.h"
 #include "ns3/event-id.h"
 #include "ns3/data-rate.h"
@@ -130,44 +132,26 @@ class APGenerator : public Application
      */
     void PrintPerSecondMetrics();
 
-    /**
-     * @brief Aggregated operations per station.
-     * Key: station address, Value: sorted list of operations
-     */
-    struct StationOperation
-    {
-        std::string agentKey;
-        uint32_t downlinkBytes;
-        double endMs;
-        double startMs;
-    };
-
-    std::map<std::string, Address> m_agentStationMap;
-    std::map<std::string, std::vector<std::tuple<int, double, double, int>>> m_agentsMap;
-    std::map<Address, std::vector<StationOperation>> m_stationOperations;
+    std::map<std::string, Address> m_stationAddressByAgent; ///< Destination station by agent.
+    LegacyAgentOperations m_operationsByAgent;             ///< Legacy operation input by agent.
+    DownlinkSchedulesByStation m_downlinkSchedulesByStation; ///< Ordered payloads by station.
 
     // Per-station sockets
-    std::map<Address, Ptr<Socket>> m_stationSockets;
+    std::map<Address, Ptr<Socket>> m_socketByStation;
     // Track which sockets have connected
-    std::map<Address, bool> m_stationConnected;
+    std::map<Address, bool> m_isConnectedByStation;
     // Reverse mapping: socket pointer -> station address (for callbacks)
     std::map<const void*, Address> m_socketToStation;
 
     // Per-station pending events
-    std::map<Address, EventId> m_stationSendEvents;
+    std::map<Address, EventId> m_sendEventByStation;
 
     // Per-station metrics
     struct StationMetrics
     {
-        uint64_t bytesSent{0};
-        std::vector<double> queueingDelaysUs;
-        std::vector<double> cwndSamples;
-        double currentCwnd{0};
+        double currentCwnd{0}; ///< Most recently observed congestion window.
     };
     std::map<Address, StationMetrics> m_stationMetrics;
-
-    // AP-level metrics
-    uint64_t m_totalSent;
 
     // Absolute simulation time corresponding to trace t=0.
     uint64_t m_experimentStartMs{0};
@@ -175,8 +159,6 @@ class APGenerator : public Application
     bool m_readyReported{false};
     bool m_trafficStarted{false};
     Callback<void> m_readyCallback;
-
-    std::map<Address, uint64_t> m_stationBytesSent;
 
     // All agent keys (set before scheduling, drained during it)
     std::vector<std::string> m_allAgentKeys;
@@ -188,15 +170,11 @@ class APGenerator : public Application
         std::map<std::string, uint64_t> agentBytes;
         std::map<Address, uint64_t> stationBytes;
 
-        uint64_t queueingDelaySamples{0};
-        double queueingDelaySumUs{0.0};
-        double maxQueueingDelayUs{0.0};
-
         double lastCwnd{0.0};
     };
 
     // Second number -> metrics collected during this second.
-    std::map<uint32_t, PerSecondStats> m_perSecondStats;
+    std::map<uint32_t, PerSecondStats> m_metricsByAbsoluteSecond;
 
     // Traced callbacks
     TracedCallback<Address, std::string, uint32_t, Time> m_txTrace;

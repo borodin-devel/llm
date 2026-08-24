@@ -1,6 +1,8 @@
 #include "llm-test-suite.h"
 
 #include "ns3/inet-socket-address.h"
+#include "ns3/ap-generator.h"
+#include "ns3/sta-llm-generator.h"
 #include "ns3/traffic-schedule.h"
 
 #include <vector>
@@ -82,6 +84,21 @@ class TrafficScheduleTimeTestCase : public TestCase
     void DoRun() override;
 };
 
+/**
+ * @ingroup tests
+ *
+ * Preserve generator TypeIds and public trace source names.
+ */
+class GeneratorTypeIdTestCase : public TestCase
+{
+  public:
+    GeneratorTypeIdTestCase();
+
+  private:
+    void DoRun() override;
+    void ExpectTrace(TypeId typeId, const std::string& traceName);
+};
+
 TrafficScheduleTimeTestCase::TrafficScheduleTimeTestCase()
     : TestCase("convert trace times to simulation times")
 {
@@ -95,10 +112,41 @@ TrafficScheduleTimeTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(GetAbsoluteSecond(Seconds(3.999)), 3, "Wrong absolute second");
 }
 
+GeneratorTypeIdTestCase::GeneratorTypeIdTestCase()
+    : TestCase("preserve generator TypeIds and traces")
+{
+}
+
+void
+GeneratorTypeIdTestCase::ExpectTrace(TypeId typeId, const std::string& traceName)
+{
+    NS_TEST_EXPECT_MSG_EQ(static_cast<bool>(typeId.LookupTraceSourceByName(traceName)),
+                          true,
+                          typeId.GetName() << " lost trace " << traceName);
+}
+
+void
+GeneratorTypeIdTestCase::DoRun()
+{
+    const TypeId apType = APGenerator::GetTypeId();
+    NS_TEST_ASSERT_MSG_EQ(apType.GetName(), "ns3::APGenerator", "AP TypeId changed");
+    ExpectTrace(apType, "Tx");
+    ExpectTrace(apType, "AgentSend");
+    ExpectTrace(apType, "AppTxDrop");
+
+    const TypeId staType = StaLlmGenerator::GetTypeId();
+    NS_TEST_ASSERT_MSG_EQ(staType.GetName(), "ns3::StaLlmGenerator", "STA TypeId changed");
+    ExpectTrace(staType, "TxCustom");
+    ExpectTrace(staType, "AgentSend");
+    ExpectTrace(staType, "AppTxDrop");
+}
+
 } // namespace
 
 std::vector<TestCase*>
 CreateTrafficScheduleTestCases()
 {
-    return {new TrafficScheduleTestCase, new TrafficScheduleTimeTestCase};
+    return {new TrafficScheduleTestCase,
+            new TrafficScheduleTimeTestCase,
+            new GeneratorTypeIdTestCase};
 }
