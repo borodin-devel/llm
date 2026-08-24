@@ -3,12 +3,6 @@
 using namespace ns3;
 
 std::vector<TestCase*>
-CreateWifiStatisticsTestCases()
-{
-    return {};
-}
-
-std::vector<TestCase*>
 CreateScenarioConfigTestCases()
 {
     return {};

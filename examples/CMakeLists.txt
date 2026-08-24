@@ -4,5 +4,9 @@ build_lib_example(
     sample-scenario.cc
     scenario-log.cc
     traffic-coordinator.cc
+    wifi-statistics.cc
+    wifi-statistics-json.cc
+    wifi-statistics-owner.cc
+    wifi-statistics-report.cc
   LIBRARIES_TO_LINK ${libllm}
 )

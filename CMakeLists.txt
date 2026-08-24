@@ -35,6 +35,11 @@ set(test_sources
     test/traffic-coordinator-test-suite.cc
     examples/scenario-log.cc
     examples/traffic-coordinator.cc
+    examples/wifi-statistics.cc
+    examples/wifi-statistics-json.cc
+    examples/wifi-statistics-owner.cc
+    examples/wifi-statistics-report.cc
+    test/wifi-statistics-test-suite.cc
 )
 
 build_lib(
