@@ -5,12 +5,16 @@
 from __future__ import annotations
 
 import math
+import copy
+import json
+import os
 import subprocess
+import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, BinaryIO, ContextManager, Iterator
+from typing import Any, BinaryIO, Callable, ContextManager, Iterator
 
 import ijson
 from ijson.common import ObjectBuilder
@@ -30,6 +34,26 @@ class TraceSummary:
     total_network_bytes: int
     earliest_network_start_ms: float | None
     maximum_operation_end_ms: float
+
+
+@dataclass(frozen=True)
+class Window:
+    """Absolute source boundaries and contained network load."""
+
+    start_ms: float
+    end_ms: float
+    network_bytes: int
+
+
+@dataclass(frozen=True)
+class SliceSummary:
+    """Counts written to a filtered trace document."""
+
+    trace_count: int
+    task_count: int
+    operation_count: int
+    network_operation_count: int
+    network_bytes: int
 
 
 @contextmanager
@@ -183,8 +207,11 @@ def is_network_operation(operation: dict[str, Any]) -> bool:
     return operation["uplinkBytes"] > 0 and operation["downlinkBytes"] > 0
 
 
-def validate_stream(stream: BinaryIO) -> TraceSummary:
-    """Validate a complete stream and return aggregate trace properties."""
+def _summarize_stream(
+    stream: BinaryIO,
+    operation_observer: Callable[[dict[str, Any], float, float], None] | None = None,
+) -> TraceSummary:
+    """Validate a stream, optionally observing each normalized operation."""
 
     trace_count = 0
     operation_count = 0
@@ -249,6 +276,9 @@ def validate_stream(stream: BinaryIO) -> TraceSummary:
                     else:
                         earliest_network_start_ms = min(earliest_network_start_ms, start_ms)
 
+                if operation_observer is not None:
+                    operation_observer(operation, start_ms, duration_ms)
+
         trace_count += 1
 
     return TraceSummary(
@@ -259,6 +289,206 @@ def validate_stream(stream: BinaryIO) -> TraceSummary:
         earliest_network_start_ms=earliest_network_start_ms,
         maximum_operation_end_ms=maximum_operation_end_ms,
     )
+
+
+def validate_stream(stream: BinaryIO) -> TraceSummary:
+    """Validate a complete stream and return aggregate trace properties."""
+
+    return _summarize_stream(stream)
+
+
+def _require_window_ms(window_ms: float) -> float:
+    if not math.isfinite(window_ms) or window_ms <= 0.0:
+        raise TraceValidationError("window duration must be positive and finite")
+    return window_ms
+
+
+def find_first_window(path: Path, window_ms: float) -> Window:
+    """Find the earliest network operation that fits in the requested window."""
+
+    window_ms = _require_window_ms(window_ms)
+    earliest_start_ms: float | None = None
+
+    def observe(operation: dict[str, Any], start_ms: float, duration_ms: float) -> None:
+        nonlocal earliest_start_ms
+        if is_network_operation(operation) and duration_ms <= window_ms:
+            if earliest_start_ms is None:
+                earliest_start_ms = start_ms
+            else:
+                earliest_start_ms = min(earliest_start_ms, start_ms)
+
+    with open_trace_input(path) as stream:
+        _summarize_stream(stream, observe)
+
+    if earliest_start_ms is None:
+        raise TraceValidationError(f"{path}: no network operation fits in the requested window")
+    return Window(
+        start_ms=earliest_start_ms,
+        end_ms=earliest_start_ms + window_ms,
+        network_bytes=0,
+    )
+
+
+def find_high_load_window(path: Path, window_ms: float) -> Window:
+    """Find the earliest window with maximum fully contained network bytes."""
+
+    window_ms = _require_window_ms(window_ms)
+    changes: dict[float, list[int]] = {}
+
+    def observe(operation: dict[str, Any], start_ms: float, duration_ms: float) -> None:
+        if not is_network_operation(operation) or duration_ms > window_ms:
+            return
+        first_start_ms = max(0.0, start_ms + duration_ms - window_ms)
+        last_start_ms = start_ms
+        weight = operation["uplinkBytes"] + operation["downlinkBytes"]
+        changes.setdefault(first_start_ms, [0, 0])[0] += weight
+        changes.setdefault(last_start_ms, [0, 0])[1] += weight
+
+    with open_trace_input(path) as stream:
+        _summarize_stream(stream, observe)
+
+    if not changes:
+        raise TraceValidationError(f"{path}: no network operation fits in the requested window")
+
+    active_bytes = 0
+    best_bytes = -1
+    best_start_ms = 0.0
+    for timestamp_ms in sorted(changes):
+        additions, removals = changes[timestamp_ms]
+        active_bytes += additions
+        if active_bytes > best_bytes:
+            best_bytes = active_bytes
+            best_start_ms = timestamp_ms
+        active_bytes -= removals
+
+    return Window(
+        start_ms=best_start_ms,
+        end_ms=best_start_ms + window_ms,
+        network_bytes=best_bytes,
+    )
+
+
+def _filter_trace_item(
+    trace_value: dict[str, Any], window: Window
+) -> tuple[dict[str, Any] | None, SliceSummary]:
+    trace = copy.deepcopy(trace_value)
+    selected_tasks = []
+    task_count = 0
+    operation_count = 0
+    network_operation_count = 0
+    network_bytes = 0
+
+    for task in trace["tasks"]:
+        contained_operations = []
+        for operation in task["operations"]:
+            start_ms = float(operation["startOffsetMs"])
+            end_ms = start_ms + float(operation["durationMs"])
+            if start_ms >= window.start_ms and end_ms <= window.end_ms:
+                contained_operations.append(operation)
+
+        selected_network_operations = [
+            operation for operation in contained_operations if is_network_operation(operation)
+        ]
+        if not selected_network_operations:
+            continue
+
+        retained_ids = {
+            operation["opId"] for operation in contained_operations if "opId" in operation
+        }
+        for operation in contained_operations:
+            operation["startOffsetMs"] = float(operation["startOffsetMs"]) - window.start_ms
+            if isinstance(operation.get("depend"), list):
+                operation["depend"] = [
+                    dependency
+                    for dependency in operation["depend"]
+                    if dependency in retained_ids
+                ]
+
+        arrival_offset = task.get("arrivalOffsetMs")
+        if isinstance(arrival_offset, (int, float, Decimal)) and not isinstance(
+            arrival_offset, bool
+        ):
+            task["arrivalOffsetMs"] = float(arrival_offset) - window.start_ms
+        task["operations"] = contained_operations
+        selected_tasks.append(task)
+
+        task_count += 1
+        operation_count += len(contained_operations)
+        network_operation_count += len(selected_network_operations)
+        network_bytes += sum(
+            operation["uplinkBytes"] + operation["downlinkBytes"]
+            for operation in selected_network_operations
+        )
+
+    if not selected_tasks:
+        return None, SliceSummary(0, 0, 0, 0, 0)
+
+    trace["tasks"] = selected_tasks
+    return trace, SliceSummary(
+        trace_count=1,
+        task_count=task_count,
+        operation_count=operation_count,
+        network_operation_count=network_operation_count,
+        network_bytes=network_bytes,
+    )
+
+
+def write_window(path: Path, output_path: Path, window: Window) -> SliceSummary:
+    """Stream a filtered, rebased window to an atomically replaced JSON path."""
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output_path.name}.", suffix=".tmp", dir=output_path.parent
+    )
+    totals = SliceSummary(0, 0, 0, 0, 0)
+
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            output.write('{\n  "traces": [')
+            first_trace = True
+            with open_trace_input(path) as stream:
+                for trace_value in iter_trace_items(stream):
+                    filtered_trace, summary = _filter_trace_item(trace_value, window)
+                    if filtered_trace is None:
+                        continue
+                    if not first_trace:
+                        output.write(",")
+                    output.write("\n    ")
+                    json.dump(
+                        filtered_trace,
+                        output,
+                        ensure_ascii=False,
+                        allow_nan=False,
+                        separators=(",", ":"),
+                    )
+                    first_trace = False
+                    totals = SliceSummary(
+                        trace_count=totals.trace_count + summary.trace_count,
+                        task_count=totals.task_count + summary.task_count,
+                        operation_count=totals.operation_count + summary.operation_count,
+                        network_operation_count=(
+                            totals.network_operation_count + summary.network_operation_count
+                        ),
+                        network_bytes=totals.network_bytes + summary.network_bytes,
+                    )
+            output.write("\n  ]\n}\n")
+
+        if totals.network_operation_count == 0:
+            raise TraceValidationError("selected window contains no network operations")
+        if window.network_bytes > 0 and totals.network_bytes != window.network_bytes:
+            raise TraceValidationError(
+                "selected window byte mismatch: "
+                f"expected {window.network_bytes}, wrote {totals.network_bytes}"
+            )
+        os.replace(temporary_name, output_path)
+        return totals
+    except BaseException:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def validate_path(path: Path) -> TraceSummary:
