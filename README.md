@@ -1,5 +1,7 @@
 # ns-3 LLM Trace Replay Module
 
+[Русская версия](README_RU.md)
+
 This contributed ns-3 module replays communication recorded in large language
 model (LLM) workload traces over an 802.11ax infrastructure network. It maps
 application-level agents to access points (APs) and stations (STAs), opens TCP
@@ -683,6 +685,7 @@ the debugger.
 contrib/llm/
 |-- CMakeLists.txt                    ns-3 module and test registration
 |-- README.md                         English documentation
+|-- README_RU.md                      Russian documentation
 |-- examples/
 |   |-- sample-scenario.cc            Main executable orchestration
 |   |-- scenario-config.*             CLI parsing and validation
