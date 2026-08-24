@@ -1,0 +1,42 @@
+{
+  "traces": [
+    {
+      "agentId": 1,
+      "agentType": "planner",
+      "tasks": [
+        {
+          "operations": [
+            {
+              "startOffsetMs": 0.0,
+              "durationMs": 10.0,
+              "downlinkBytes": 100,
+              "uplinkBytes": 50
+            },
+            {
+              "startOffsetMs": 100.0,
+              "durationMs": 25.0,
+              "downlinkBytes": 0,
+              "uplinkBytes": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "agentId": 2,
+      "agentType": "worker",
+      "tasks": [
+        {
+          "operations": [
+            {
+              "startOffsetMs": 0.0,
+              "durationMs": 10.0,
+              "downlinkBytes": 200,
+              "uplinkBytes": 80
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

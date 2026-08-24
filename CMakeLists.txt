@@ -16,6 +16,13 @@ set(header_files
     model/sta-llm-generator.h
 )
 
+set(test_sources
+    test/llm-test-suite.cc
+    test/trace-parser-test-suite.cc
+    test/agent-distribution-test-suite.cc
+    test/app-tx-tag-test-suite.cc
+)
+
 build_lib(
   LIBNAME llm
   SOURCE_FILES ${source_files}
@@ -29,4 +36,5 @@ build_lib(
     ${libapplications}
     ${libwifi}
     ${libconfig-store}
+  TEST_SOURCES ${test_sources}
 )
