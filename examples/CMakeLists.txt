@@ -2,7 +2,9 @@ build_lib_example(
   NAME llm_sample
   SOURCE_FILES
     sample-scenario.cc
+    scenario-config.cc
     scenario-log.cc
+    scenario-topology.cc
     traffic-coordinator.cc
     traffic-flow-monitor.cc
     wifi-statistics.cc

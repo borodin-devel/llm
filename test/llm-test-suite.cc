@@ -2,12 +2,6 @@
 
 using namespace ns3;
 
-std::vector<TestCase*>
-CreateScenarioConfigTestCases()
-{
-    return {};
-}
-
 namespace
 {
 

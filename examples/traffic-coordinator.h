@@ -35,6 +35,7 @@ class TrafficCoordinator
      * @param maxExperimentDurationMs Maximum traffic duration in milliseconds.
      */
     TrafficCoordinator(double traceDurationMs, double maxExperimentDurationMs);
+    ~TrafficCoordinator();
 
     /** @return Callback that reports one generator ready. */
     Callback<void> GetReadyCallback();
@@ -66,15 +67,15 @@ class TrafficCoordinator
   private:
     void NotifyGeneratorReady();
 
-    double m_traceDurationMs;                ///< Complete input trace duration in milliseconds.
-    double m_maxExperimentDurationMs;        ///< Maximum traffic duration in milliseconds.
-    std::vector<Ptr<APGenerator>> m_apGenerators; ///< Registered AP generators.
+    double m_traceDurationMs;         ///< Complete input trace duration in milliseconds.
+    double m_maxExperimentDurationMs; ///< Maximum traffic duration in milliseconds.
+    std::vector<Ptr<APGenerator>> m_apGenerators;      ///< Registered AP generators.
     std::vector<Ptr<StaLlmGenerator>> m_staGenerators; ///< Registered STA generators.
     std::vector<Ptr<Application>> m_applications; ///< Applications with coordinated stop times.
-    uint32_t m_expectedGeneratorCount{0};    ///< Readiness barrier target.
-    uint32_t m_readyGeneratorCount{0};       ///< Generators that reported readiness.
-    int64_t m_experimentStartUs{-1};         ///< Common trace epoch in microseconds.
-    bool m_registrationFinalized{false};     ///< Whether generator registration is locked.
+    uint32_t m_expectedGeneratorCount{0};         ///< Readiness barrier target.
+    uint32_t m_readyGeneratorCount{0};            ///< Generators that reported readiness.
+    int64_t m_experimentStartUs{-1};              ///< Common trace epoch in microseconds.
+    bool m_registrationFinalized{false};          ///< Whether generator registration is locked.
 };
 
 } // namespace ns3

@@ -24,6 +24,8 @@ TrafficCoordinator::TrafficCoordinator(double traceDurationMs, double maxExperim
 {
 }
 
+TrafficCoordinator::~TrafficCoordinator() = default;
+
 Callback<void>
 TrafficCoordinator::GetReadyCallback()
 {
@@ -107,9 +109,8 @@ TrafficCoordinator::NotifyGeneratorReady()
         static_cast<double>(experimentStartMs) + m_maxExperimentDurationMs;
 
     NS_LOG_INFO("[Traffic barrier] all TCP connections ready at "
-                << nowMs << " ms; common traffic epoch=" << experimentStartMs
-                << " ms; traceEnd=" << m_traceDurationMs
-                << " ms; maxExperimentTime=" << m_maxExperimentDurationMs
+                << nowMs << " ms; common traffic epoch=" << experimentStartMs << " ms; traceEnd="
+                << m_traceDurationMs << " ms; maxExperimentTime=" << m_maxExperimentDurationMs
                 << " ms; applicationStop=" << applicationStopMs << " ms");
 
     for (const auto& generator : m_staGenerators)

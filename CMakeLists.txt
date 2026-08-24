@@ -33,7 +33,9 @@ set(test_sources
     test/app-tx-tag-test-suite.cc
     test/traffic-schedule-test-suite.cc
     test/traffic-coordinator-test-suite.cc
+    test/scenario-config-test-suite.cc
     examples/scenario-log.cc
+    examples/scenario-config.cc
     examples/traffic-coordinator.cc
     examples/wifi-statistics.cc
     examples/wifi-statistics-json.cc

@@ -1,5 +1,5 @@
 // examples/sample-scenario.cc
-// Sample ns-3 scenario: 3 APs x 3 stations, 802.11ax, TCP, separate YansWifiChannel per AP group
+// Sample ns-3 scenario: 3 APs x 30 stations, 802.11ax, TCP, isolated YansWifiChannels
 //
 // Usage: ./sample-scenario <traces.json> [bandwidth_mhz] [stats_output.json] [experiment_time]
 //   bandwidth_mhz: 20, 40, 80 or 160 (default: 20)
@@ -7,525 +7,121 @@
 //   experiment_time: "auto" (JSON duration + 2s, default) or fixed seconds (> 0)
 //
 
+#include "scenario-config.h"
 #include "scenario-log.h"
+#include "scenario-topology.h"
 #include "traffic-coordinator.h"
 #include "traffic-flow-monitor.h"
 #include "wifi-statistics.h"
 
-#include "ns3/ap-generator.h"
-#include "ns3/sta-llm-generator.h"
-#include "ns3/traffic-sink.h"
-#include "ns3/agent-distribution.h"
 #include "ns3/contention-aware-agent-distribution.h"
-
 #include "ns3/core-module.h"
-#include "ns3/network-module.h"
-#include "ns3/internet-module.h"
-#include "ns3/mobility-module.h"
-#include "ns3/wifi-module.h"
-#include "ns3/applications-module.h"
-#include "ns3/error-rate-model.h"
-#include "ns3/yans-wifi-helper.h"
+#include "ns3/tcp-highspeed.h"
+#include "ns3/tcp-linux-reno.h"
 
-#include <iostream>
 #include <chrono>
-#include <cmath>
-#include <tuple>
+#include <iomanip>
+#include <iostream>
 #include <string>
 #include <vector>
-#include <map>
-#include <fstream>
-#include <iomanip>
-#include <stdexcept>
-#include <limits>
-#include <set>
-#include <sstream>
 
 using namespace ns3;
 
-
-// Agent map key: "id_type" (e.g. "1_GUI交互综合Agent")
-using AgentMap = std::map<std::string, std::vector<Operation>>;
-
-static std::string
-Ipv4ToString(Ipv4Address address)
-{
-    std::ostringstream stream;
-    address.Print(stream);
-    return stream.str();
-}
-
-static LogComponent& g_log = llm_example::GetScenarioLog();
-
 static constexpr double kAutoExperimentTailMarginMs = 2000.0;
-
-// ============================================================================
-// Wi-Fi association diagnostics
-// ============================================================================
-
-static void
-StaAssociated(int apIndex, uint32_t staIndex, Mac48Address bssid)
-{
-    NS_LOG_INFO("[Wi-Fi association] AP group " << apIndex
-                << " STA " << staIndex
-                << " associated with BSSID " << bssid);
-}
-
-// ============================================================================
-// Helper: set up one AP + its stations
-// ============================================================================
-
-static void
-SetupApGroup(int apIndex,
-             int bandwidthMhz,
-             const std::map<std::string, Address>& agentStationMap,
-             const AgentMap& agentMap,
-             Address apAddress,
-             uint32_t staNum,
-             TrafficCoordinator& trafficCoordinator,
-             WifiStatistics& wifiStatistics)
-{
-    NS_LOG_INFO("=== Setting up AP group " << apIndex
-                << ", BW " << bandwidthMhz << " MHz ===");
-
-    // Create nodes
-    NodeContainer apNode;
-    apNode.Create(1); // AP node
-
-    NodeContainer stationNodes;
-    stationNodes.Create(staNum); // stations assigned to this AP
-
-    // Create a physically isolated YansWifiChannel for this AP group.
-    // PHYs belonging to different AP groups cannot hear or interfere with
-    // one another, regardless of their coordinates or configured frequency.
-    YansWifiChannelHelper channelHelper = YansWifiChannelHelper::Default();
-    Ptr<YansWifiChannel> channel = channelHelper.Create();
-
-    // The channel number intentionally remains 0: this hard model represents
-    // physical separation through independent channel objects rather than
-    // through per-AP RF channel numbers such as 36, 100, and 149.
-
-    // Configure PHY
-    YansWifiPhyHelper phyHelper;
-    phyHelper.SetChannel(channel);
-    phyHelper.Set("ChannelSettings",
-                  StringValue("{0, " + std::to_string(bandwidthMhz) +
-                              ", BAND_5GHZ, 0}"));
-
-    // Configure MAC (802.11ax)
-    WifiHelper wifiHelper;
-    wifiHelper.SetStandard(WIFI_STANDARD_80211ax);
-    wifiHelper.SetRemoteStationManager("ns3::MinstrelHtWifiManager");
-
-    // Each hard-assigned AP group has a unique SSID. Stations actively probe
-    // for that SSID and associate with the AP in their isolated radio domain.
-    const std::string ssidName = "llm-ap-" + std::to_string(apIndex);
-    const Ssid ssid(ssidName);
-
-    WifiMacHelper macHelper;
-    macHelper.SetType("ns3::ApWifiMac",
-                      "Ssid", SsidValue(ssid));
-
-    WifiMacHelper staMacHelper;
-    staMacHelper.SetType("ns3::StaWifiMac",
-                         "Ssid", SsidValue(ssid),
-                         "ActiveProbing", BooleanValue(true));
-
-    // Install devices on AP
-    NetDeviceContainer apDevices =
-        wifiHelper.Install(phyHelper, macHelper, apNode);
-
-    // Install devices on stations
-    NetDeviceContainer staDevices =
-        wifiHelper.Install(phyHelper, staMacHelper, stationNodes);
-
-    // Log successful Wi-Fi associations. These traces distinguish actual
-    // 802.11 association from a later TCP connection callback.
-    for (uint32_t i = 0; i < staDevices.GetN(); ++i)
-    {
-        Ptr<WifiNetDevice> wifiDevice = DynamicCast<WifiNetDevice>(staDevices.Get(i));
-        NS_ABORT_MSG_IF(!wifiDevice,
-                        "STA device " << i << " in AP group " << apIndex
-                                      << " is not a WifiNetDevice");
-
-        Ptr<StaWifiMac> staMac = DynamicCast<StaWifiMac>(wifiDevice->GetMac());
-        NS_ABORT_MSG_IF(!staMac,
-                        "STA device " << i << " in AP group " << apIndex
-                                      << " does not use StaWifiMac");
-
-        staMac->TraceConnectWithoutContext(
-            "Assoc",
-            MakeBoundCallback(&StaAssociated, apIndex, i));
-    }
-
-    // Mobility: fixed positions
-    MobilityHelper mobility;
-
-    // AP at center
-    mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
-    mobility.Install(apNode);
-
-    // Set AP position to center
-    Ptr<ConstantPositionMobilityModel> apMob =
-        apNode.Get(0)->GetObject<ConstantPositionMobilityModel>();
-    apMob->SetPosition(Vector(100 * apIndex, 100 * apIndex, 100 * apIndex));
-
-    // Stations in a disc around AP (5m radius)
-    // mobility.SetPositionAllocator("ns3::RandomDiscPositionAllocator",
-    //                               "Center", VectorValue(Vector(100 * apIndex, 100 * apIndex, 100 * apIndex)),
-    //                               "MaxDistance", DoubleValue(5.0));
-    mobility.SetPositionAllocator("ns3::UniformDiscPositionAllocator",
-                                  "X", DoubleValue(100 * apIndex),
-                                  "Y", DoubleValue(100 * apIndex),
-                                  "Z", DoubleValue(100 * apIndex),
-                                  "rho", DoubleValue(5.0));
-    mobility.Install(stationNodes);
-
-    // Internet stack
-    InternetStackHelper stack;
-    stack.Install(apNode);
-    stack.Install(stationNodes);
-
-    // Assign AP first, then stations. The AP receives 10.1.<apIndex>.1.
-    Ipv4AddressHelper ipv4;
-    std::string subnet = "10.1." + std::to_string(apIndex) + ".0";
-    ipv4.SetBase(Ipv4Address(subnet.c_str()), Ipv4Mask("255.255.255.0"));
-
-    NS_LOG_INFO("Number of devices in apDevices: " << apDevices.GetN());
-    Ipv4InterfaceContainer apInterfaces = ipv4.Assign(apDevices);
-    Ipv4InterfaceContainer staInterfaces = ipv4.Assign(staDevices);
-
-    wifiStatistics.RegisterApGroup(apIndex, apInterfaces.GetAddress(0), staInterfaces);
-
-    wifiStatistics.RegisterWifiDevice(
-        apNode.Get(0)->GetId(),
-        "AP" + std::to_string(apIndex) + "(" +
-            Ipv4ToString(apInterfaces.GetAddress(0)) + ")",
-        apDevices.Get(0));
-
-    for (uint32_t i = 0; i < staDevices.GetN(); ++i)
-    {
-        wifiStatistics.RegisterWifiDevice(
-            stationNodes.Get(i)->GetId(),
-            "AP" + std::to_string(apIndex) + "/STA" + std::to_string(i) + "(" +
-                Ipv4ToString(staInterfaces.GetAddress(i)) + ")",
-            staDevices.Get(i));
-    }
-
-    NS_LOG_INFO("AP location X:" << 100 * apIndex
-                << " Y:" << 100 * apIndex
-                << " Z:" << 100 * apIndex
-                << ", stations randomly within 5m distance");
-    NS_LOG_INFO("AP SSID: " << ssidName);
-    NS_LOG_INFO("AP IP: " << apInterfaces.GetAddress(0));
-    NS_LOG_INFO("STA N: " << staInterfaces.GetN());
-    NS_LOG_INFO("STA IP1: " << staInterfaces.GetAddress(0));
-    NS_LOG_INFO("STA IP2: " << staInterfaces.GetAddress(1));
-    NS_LOG_INFO("STA IP3: " << staInterfaces.GetAddress(2));
-
-    // ========================================================================
-    // Install TrafficSink on AP (receives uplink from stations)
-    // ========================================================================
-    Ptr<TrafficSink> apSink = CreateObject<TrafficSink>();
-    apSink->SetAttribute("Port", UintegerValue(10000));
-    apNode.Get(0)->AddApplication(apSink);
-    apSink->SetStartTime(Seconds(0));
-    trafficCoordinator.AddApplication(apSink);
-
-    // ========================================================================
-    // Install TrafficSink on each station (receives downlink from AP)
-    // ========================================================================
-    for (uint32_t i = 0; i < stationNodes.GetN(); i++)
-    {
-        Ptr<TrafficSink> sink = CreateObject<TrafficSink>();
-        sink->SetAttribute("Port", UintegerValue(9000 + i));
-        stationNodes.Get(i)->AddApplication(sink);
-        sink->SetStartTime(Seconds(0));
-        trafficCoordinator.AddApplication(sink);
-    }
-
-    // Starting a generator only starts TCP setup. Payload scheduling is held
-    // behind the global barrier until every generator reports ready.
-    const Time trafficGeneratorStart = Seconds(1.0);
-
-    // ========================================================================
-    // Install StaLlmGenerator on stations (uplink to AP)
-    // One StaLlmGenerator per station, handling ALL agents on that station
-    // Uses single TCP socket per station shared by all agents
-    // ========================================================================
-
-    // Group agents by station index
-    std::map<int, std::vector<std::pair<std::string, std::vector<Operation>>>> stationToAgents;
-    for (const auto& [agentKey, stationAddr] : agentStationMap)
-    {
-        auto addr = InetSocketAddress::ConvertFrom(stationAddr);
-        Ipv4Address ip = addr.GetIpv4();
-        uint32_t ipv4 = ip.Get();
-        uint32_t lastOctet = ipv4 & 0xff;
-        int stationIndex = static_cast<int>(lastOctet - 2);
-
-        NS_ABORT_MSG_IF(stationIndex < 0 ||
-                            stationIndex >= static_cast<int>(stationNodes.GetN()),
-                        "Invalid station index " << stationIndex
-                                                 << " for agent " << agentKey
-                                                 << " in AP group " << apIndex);
-
-        stationToAgents[stationIndex].push_back({agentKey, agentMap.at(agentKey)});
-    }
-
-    // Create one StaLlmGenerator per station that has agents
-    for (auto& [idx, agents] : stationToAgents)
-    {
-        Ptr<StaLlmGenerator> gen = CreateObject<StaLlmGenerator>();
-        gen->SetAttribute("Remote", AddressValue(apAddress));
-        gen->SetReadyCallback(trafficCoordinator.GetReadyCallback());
-
-        // Merge all operations from all agents on this station
-        std::map<std::string, std::vector<std::tuple<int, double, double, int>>> agentOpsMap;
-        for (const auto& [aKey, ops] : agents)
-        {
-            for (const auto& op : ops)
-            {
-                agentOpsMap[aKey].push_back(
-                    std::make_tuple(op.downlinkBytes,
-                                    op.endMs,
-                                    op.startOffsetMs,
-                                    op.uplinkBytes));
-            }
-        }
-        gen->SetAgentMap(agentOpsMap);
-
-        const uint32_t staNodeId = stationNodes.Get(idx)->GetId();
-        wifiStatistics.ConnectStaGenerator(gen, staNodeId);
-
-        stationNodes.Get(idx)->AddApplication(gen);
-        gen->SetStartTime(trafficGeneratorStart);
-
-        trafficCoordinator.AddGenerator(gen);
-        trafficCoordinator.AddApplication(gen);
-
-        NS_LOG_INFO("Station " << idx << " placed on node "
-                    << idx << " with " << agents.size() << " agents");
-    }
-
-    // ========================================================================
-    // Install APGenerator on AP (downlink to stations)
-    // Uses agentStationMap directly with string keys
-    // ========================================================================
-    Ptr<APGenerator> apGen = CreateObject<APGenerator>();
-    apGen->SetReadyCallback(trafficCoordinator.GetReadyCallback());
-
-    // Pass operations directly - tuple format: (downlinkBytes, endMs, startOffsetMs, uplinkBytes)
-    std::map<std::string, std::vector<std::tuple<int, double, double, int>>> rawOpsMap;
-    for (const auto& [agentKey, ops] : agentMap)
-    {
-        for (const auto& op : ops)
-        {
-            rawOpsMap[agentKey].push_back(
-                std::make_tuple(op.downlinkBytes,
-                                op.endMs,
-                                op.startOffsetMs,
-                                op.uplinkBytes));
-        }
-    }
-    // Pass station map directly (already uses string keys from agent-distribution)
-    apGen->SetAgentStationMap(agentStationMap);
-    apGen->SetAgentMap(rawOpsMap);
-
-    const uint32_t apNodeId = apNode.Get(0)->GetId();
-    wifiStatistics.ConnectApGenerator(apGen, apNodeId);
-
-    apNode.Get(0)->AddApplication(apGen);
-    apGen->SetStartTime(trafficGeneratorStart);
-
-    trafficCoordinator.AddGenerator(apGen);
-    trafficCoordinator.AddApplication(apGen);
-
-    NS_LOG_INFO("AP group " << apIndex << " setup complete: "
-                << agentMap.size() << " agents, " << staNum << " stations");
-}
-
-// ============================================================================
-//
-// ============================================================================
 
 int
 main(int argc, char* argv[])
 {
+    LogComponent& g_log = llm_example::GetScenarioLog();
+
     RngSeedManager::SetSeed(12345);
     RngSeedManager::SetRun(1);
 
-    // TcpCubic
-    // TcpHighSpeed
-    // TcpBbr
-    // TcpLinuxReno
     Config::SetDefault("ns3::TcpL4Protocol::SocketType", TypeIdValue(TcpHighSpeed::GetTypeId()));
 
-    // Parse command line
-    std::string jsonPath;
-    std::string statsOutputPath = "mac-node-stats.json";
-    std::string experimentTimeArg = "auto";
-    bool autoExperimentTime = true;
-    double fixedExperimentTimeMs = 0.0;
-    int bandwidthMhz = 20;
-    int apNum = 3;
-    int staNum = 30;
-
-    if (argc < 2)
+    const std::vector<std::string> arguments(argv + 1, argv + argc);
+    const ScenarioArgumentResult argumentResult = ParseScenarioArguments(arguments);
+    if (!argumentResult.valid)
     {
-        std::cerr << "Usage: " << argv[0]
-                  << " <traces.json> [bandwidth_mhz] [stats_output.json] [experiment_time]"
-                  << "\n  bandwidth_mhz: 20, 40, 80 or 160 (default: 20)"
-                  << "\n  stats_output.json: default mac-node-stats.json"
-                  << "\n  experiment_time: auto (JSON duration + 2s, default) or fixed seconds > 0"
-                  << std::endl;
-        return 1;
-    }
-
-    jsonPath = argv[1];
-    if (argc >= 3)
-    {
-        bandwidthMhz = std::stoi(argv[2]);
-    }
-    if (argc >= 4)
-    {
-        statsOutputPath = argv[3];
-    }
-    if (argc >= 5)
-    {
-        experimentTimeArg = argv[4];
-
-        if (experimentTimeArg != "auto")
+        if (argumentResult.printUsage)
         {
-            try
-            {
-                std::size_t parsedChars = 0;
-                const double fixedExperimentTimeSeconds =
-                    std::stod(experimentTimeArg, &parsedChars);
-
-                if (parsedChars != experimentTimeArg.size() ||
-                    !std::isfinite(fixedExperimentTimeSeconds) ||
-                    fixedExperimentTimeSeconds <= 0.0)
-                {
-                    throw std::invalid_argument("invalid experiment time");
-                }
-
-                autoExperimentTime = false;
-                fixedExperimentTimeMs = fixedExperimentTimeSeconds * 1000.0;
-            }
-            catch (const std::exception&)
-            {
-                std::cerr << "Invalid experiment_time: " << experimentTimeArg
-                          << ". Expected 'auto' or a positive number of seconds."
-                          << std::endl;
-                return 1;
-            }
+            PrintScenarioUsage(std::cerr, argv[0]);
         }
-    }
-    if (argc > 5)
-    {
-        std::cerr << "Too many command-line arguments." << std::endl;
+        else
+        {
+            std::cerr << argumentResult.error << std::endl;
+        }
         return 1;
     }
+    const ScenarioConfig& config = argumentResult.config;
 
-    if (bandwidthMhz != 20 &&
-        bandwidthMhz != 40 &&
-        bandwidthMhz != 80 &&
-        bandwidthMhz != 160)
-    {
-        std::cerr << "Unsupported bandwidth: " << bandwidthMhz
-                  << " MHz. Expected 20, 40, 80 or 160." << std::endl;
-        return 1;
-    }
-
-    std::cout << "=== ns-3 Sample Scenario: " << apNum << " APs x "
-              << staNum << " Stations ===" << std::endl;
-    std::cout << "JSON: " << jsonPath << std::endl;
-    std::cout << "Bandwidth: " << bandwidthMhz << " MHz" << std::endl;
-    std::cout << "MAC stats JSON: " << statsOutputPath << std::endl;
+    std::cout << "=== ns-3 Sample Scenario: " << config.bssCount << " APs x "
+              << config.stationsPerBss << " Stations ===" << std::endl;
+    std::cout << "JSON: " << config.tracePath << std::endl;
+    std::cout << "Bandwidth: " << config.bandwidthMhz << " MHz" << std::endl;
+    std::cout << "MAC stats JSON: " << config.statisticsOutputPath << std::endl;
     std::cout << "Standard: 802.11ax (Wi-Fi 6)" << std::endl;
     std::cout << "Transport: TCP" << std::endl;
     std::cout << "Channel model: separate YansWifiChannel per AP group" << std::endl;
     std::cout << "Channel policy: physically isolated AP groups; default 5 GHz channel"
               << std::endl;
 
-    // Enable logging
     LogComponentEnable("SampleScenario", LOG_LEVEL_INFO);
     LogComponentEnable("APGenerator", LOG_LEVEL_WARN);
     LogComponentEnable("StaLlmGenerator", LOG_LEVEL_WARN);
     LogComponentEnable("TrafficSink", LOG_LEVEL_WARN);
-    // LogComponentEnable("AgentDistribution", LOG_LEVEL_INFO);
     LogComponentEnable("ContentionAwareAgentDistribution", LOG_LEVEL_INFO);
 
-    // Parse and distribute agents
-    ParsedResult parsed = ParseJsonFile(jsonPath);
-    const double traceDurationMs = parsed.experimentDurationMs;
-    const double maxExperimentDurationMs =
-        autoExperimentTime ? traceDurationMs + kAutoExperimentTailMarginMs
-                           : fixedExperimentTimeMs;
+    ParsedResult parsedTrace = ParseJsonFile(config.tracePath);
+    const double traceDurationMs = parsedTrace.experimentDurationMs;
+    const double maxExperimentDurationMs = config.automaticDuration
+                                               ? traceDurationMs + kAutoExperimentTailMarginMs
+                                               : config.fixedDurationMs;
     TrafficCoordinator trafficCoordinator(traceDurationMs, maxExperimentDurationMs);
     WifiStatistics wifiStatistics(trafficCoordinator);
     TrafficFlowMonitor trafficFlowMonitor(trafficCoordinator, wifiStatistics);
 
-    // Default distribution
-    // DistributionResult dist = DistributeAgents(parsed, apNum, staNum, 3);
-
-    // Distribution with contention awareness
     ContentionAwareDistributionConfig distributionConfig;
-
-    distributionConfig.nAp = apNum;
-    distributionConfig.nStationsPerAp = staNum;
-    // 0 = unlimited application-level agents per physical STA.
+    distributionConfig.nAp = config.bssCount;
+    distributionConfig.nStationsPerAp = config.stationsPerBss;
+    // This cap is intentionally above the largest supported trace population.
     distributionConfig.maxAgentsPerStation = 832;
-
-    // true:
-    //   contention важнее количества используемых STA.
-    //
-    // false:
-    //   сначала стараемся задействовать максимально возможное число STA.
     distributionConfig.lowContentionPriority = true;
-
-    // Размер окна для приблизительного определения одновременного UL.
-    // Можно свободно менять для экспериментов.
     distributionConfig.slotMs = 10;
 
-    DistributionResult dist =
-        DistributeAgentsContentionAware(
-            parsed,
-            distributionConfig);
+    DistributionResult distribution =
+        DistributeAgentsContentionAware(parsedTrace, distributionConfig);
 
-    // Set up each AP group
-    for (int ap = 0; ap < apNum; ap++)
+    for (int bssIndex = 0; bssIndex < config.bssCount; ++bssIndex)
     {
-        SetupApGroup(ap,
-                     bandwidthMhz,
-                     dist.apStationMaps[ap],
-                     dist.apAgentMaps[ap],
-                     dist.apAddresses[ap],
-                     staNum,
+        SetupApGroup(bssIndex,
+                     config.bandwidthMhz,
+                     distribution.apStationMaps[bssIndex],
+                     distribution.apAgentMaps[bssIndex],
+                     distribution.apAddresses[bssIndex],
+                     config.stationsPerBss,
                      trafficCoordinator,
                      wifiStatistics);
     }
 
     trafficCoordinator.FinalizeRegistration();
 
-    if (autoExperimentTime)
+    if (config.automaticDuration)
     {
         std::cout << "\nExperiment time mode: auto" << std::endl;
         std::cout << "Experiment duration from JSON: "
                   << trafficCoordinator.GetTraceDurationMs() / 1000.0 << " seconds" << std::endl;
         std::cout << "Max experiment time: "
                   << trafficCoordinator.GetMaxExperimentDurationMs() / 1000.0
-                  << " seconds (JSON duration + "
-                  << kAutoExperimentTailMarginMs / 1000.0
+                  << " seconds (JSON duration + " << kAutoExperimentTailMarginMs / 1000.0
                   << " seconds)" << std::endl;
     }
     else
     {
         std::cout << "\nExperiment time mode: fixed" << std::endl;
         std::cout << "Max experiment time: "
-                  << trafficCoordinator.GetMaxExperimentDurationMs() / 1000.0
-                  << " seconds" << std::endl;
+                  << trafficCoordinator.GetMaxExperimentDurationMs() / 1000.0 << " seconds"
+                  << std::endl;
         std::cout << "Experiment duration from JSON: "
                   << trafficCoordinator.GetTraceDurationMs() / 1000.0 << " seconds" << std::endl;
 
@@ -544,9 +140,7 @@ main(int argc, char* argv[])
 
     trafficFlowMonitor.ConnectDeviceTraces();
 
-    Config::SetDefault(
-    "ns3::TcpL4Protocol::SocketType",
-    TypeIdValue(TcpLinuxReno::GetTypeId()));
+    Config::SetDefault("ns3::TcpL4Protocol::SocketType", TypeIdValue(TcpLinuxReno::GetTypeId()));
     Config::SetDefault("ns3::TcpSocket::SegmentSize", UintegerValue(1460));
     Config::SetDefault("ns3::TcpSocket::SndBufSize", UintegerValue(32 * 1024 * 1024));
     Config::SetDefault("ns3::TcpSocket::RcvBufSize", UintegerValue(32 * 1024 * 1024));
@@ -562,7 +156,7 @@ main(int argc, char* argv[])
     NS_ABORT_MSG_IF(trafficCoordinator.GetExperimentStartUs() < 0,
                     "Simulation ended before the global traffic barrier opened");
 
-    wifiStatistics.WriteJson(statsOutputPath);
+    wifiStatistics.WriteJson(config.statisticsOutputPath);
     trafficFlowMonitor.PrintTransmissionTimePerSender();
     wifiStatistics.PrintCrossLayerReport();
 
@@ -570,11 +164,9 @@ main(int argc, char* argv[])
 
     std::cout << "\n=== Simulation Complete ===" << std::endl;
     std::cout << "Total events: " << Simulator::GetEventCount() << std::endl;
-    NS_LOG_INFO("[Realtime] Simulator::Run wall-clock time: "
-                << std::fixed << std::setprecision(3)
-                << wallClockSeconds << " seconds");
-    std::cout << "Realtime simulation runtime: "
-              << std::fixed << std::setprecision(3)
+    NS_LOG_INFO("[Realtime] Simulator::Run wall-clock time: " << std::fixed << std::setprecision(3)
+                                                              << wallClockSeconds << " seconds");
+    std::cout << "Realtime simulation runtime: " << std::fixed << std::setprecision(3)
               << wallClockSeconds << " seconds" << std::endl;
 
     return 0;
