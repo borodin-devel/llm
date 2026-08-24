@@ -89,6 +89,7 @@ from trace_stream import TraceValidationError, open_trace_input, validate_stream
 
 
 VALID_DOCUMENT = {
+    "metadata": {"source": "fixture", "generator": "unit-test"},
     "traces": [
         {
             "agentId": 7,
@@ -214,12 +215,13 @@ Wrap `subprocess.CalledProcessError` and missing-file/tool errors as `TraceValid
 - [ ] **Step 5: Implement strict streaming validation**
 
 Implement item iteration with `ijson.parse()` and
-`ijson.common.ObjectBuilder`. Require exactly one root map key named `traces`,
-require its value to be an array, and reject missing or additional root keys.
-Feed `(event, value)` pairs whose prefix begins with `traces.item` into one
-builder. Track nested `start_map`/`start_array` and `end_map`/`end_array`
-events; yield `builder.value` when the item depth returns to zero. Never retain
-a yielded item.
+`ijson.common.ObjectBuilder`. Require one root map key named `traces` whose
+value is an array. Accept one optional `metadata` object and materialize it
+into a caller-supplied root-field dictionary. Reject duplicate or other root
+keys. Feed `(event, value)` pairs whose prefix begins with `traces.item` into
+one builder. Track nested `start_map`/`start_array` and
+`end_map`/`end_array` events; yield `builder.value` when the item depth returns
+to zero. Never retain a yielded trace item.
 
 Use this network predicate:
 
@@ -285,6 +287,7 @@ class Window:
     start_ms: float
     end_ms: float
     network_bytes: int
+    root_fields: dict[str, Any] = field(default_factory=dict, compare=False)
 
 @dataclass(frozen=True)
 class SliceSummary:
@@ -342,6 +345,7 @@ Extend the fixture with:
 
 ```python
 WINDOW_DOCUMENT = {
+    "metadata": {"source": "window-fixture", "generator": "unit-test"},
     "traces": [
         {
             "agentId": 1,
@@ -397,6 +401,8 @@ def test_writes_first_active_minute_with_metadata_and_dependencies(self):
     self.assertEqual(window.start_ms, 100000.0)
     self.assertEqual(window.end_ms, 160000.0)
     self.assertEqual(summary.network_bytes, 500)
+    self.assertEqual(sliced["metadata"],
+                     {"source": "window-fixture", "generator": "unit-test"})
     self.assertEqual(sliced["traces"][0]["metadata"], {"keep": True})
     task = sliced["traces"][0]["tasks"][0]
     self.assertEqual(task["arrivalOffsetMs"], 0.0)

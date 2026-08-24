@@ -24,6 +24,7 @@ from trace_stream import (
 
 
 VALID_DOCUMENT = {
+    "metadata": {"source": "fixture", "generator": "unit-test"},
     "traces": [
         {
             "agentId": 7,
@@ -57,6 +58,7 @@ VALID_DOCUMENT = {
 }
 
 WINDOW_DOCUMENT = {
+    "metadata": {"source": "window-fixture", "generator": "unit-test"},
     "traces": [
         {
             "agentId": 1,
@@ -176,6 +178,9 @@ class WindowSelectionTest(unittest.TestCase):
         self.assertEqual(window.start_ms, 100000.0)
         self.assertEqual(window.end_ms, 160000.0)
         self.assertEqual(summary.network_bytes, 500)
+        self.assertEqual(
+            sliced["metadata"], {"source": "window-fixture", "generator": "unit-test"}
+        )
         self.assertEqual(sliced["traces"][0]["metadata"], {"keep": True})
         task = sliced["traces"][0]["tasks"][0]
         self.assertEqual(task["arrivalOffsetMs"], 0.0)

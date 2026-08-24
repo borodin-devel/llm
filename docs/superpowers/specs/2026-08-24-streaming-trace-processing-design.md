@@ -18,7 +18,7 @@ statistics, or logs behind.
 - Rank candidate 10-minute windows by total `uplinkBytes + downlinkBytes`.
 - Include only network operations whose complete lifetime fits in the selected
   window when calculating load.
-- Preserve trace, task, and operation metadata in generated slices.
+- Preserve root, trace, task, and operation metadata in generated slices.
 - Keep memory bounded independently of expanded archive size.
 - Keep temporary slices, statistics, and logs under one cleanup-trapped
   temporary directory.
@@ -75,10 +75,10 @@ Responsibilities:
 6. Preserve arbitrary metadata dictionaries on trace, task, and operation
    objects.
 
-The real input root currently contains only `traces`, and the writer emits the
-same top-level shape. Metadata preservation applies to trace, task, and
-operation objects; additional top-level fields are outside this tool's input
-contract.
+The real input root contains `traces` plus a small `metadata` object. The
+stream parser accepts those two unique fields, preserves `metadata` in output,
+and rejects other top-level fields rather than risking an unbounded hidden
+collection.
 
 ### `scripts/find_window.py`
 

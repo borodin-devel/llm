@@ -11,7 +11,7 @@ import os
 import subprocess
 import tempfile
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, ContextManager, Iterator
@@ -43,6 +43,7 @@ class Window:
     start_ms: float
     end_ms: float
     network_bytes: int
+    root_fields: dict[str, Any] = field(default_factory=dict, compare=False)
 
 
 @dataclass(frozen=True)
@@ -115,15 +116,19 @@ def open_trace_input(path: Path) -> Iterator[BinaryIO]:
             raise TraceValidationError(f"unrar failed for {path}: {message}")
 
 
-def iter_trace_items(stream: BinaryIO) -> Iterator[dict[str, Any]]:
+def iter_trace_items(
+    stream: BinaryIO, root_fields: dict[str, Any] | None = None
+) -> Iterator[dict[str, Any]]:
     """Validate the root shape and yield one materialized trace item at a time."""
 
     saw_root_map = False
     saw_traces_key = False
+    saw_metadata_key = False
     saw_traces_array = False
     closed_traces_array = False
     closed_root_map = False
     builder: ObjectBuilder | None = None
+    builder_target: str | None = None
     item_depth = 0
 
     try:
@@ -136,11 +141,21 @@ def iter_trace_items(stream: BinaryIO) -> Iterator[dict[str, Any]]:
                 elif event in ("end_map", "end_array"):
                     item_depth -= 1
                     if item_depth == 0:
-                        trace = builder.value
+                        completed_value = builder.value
+                        completed_target = builder_target
                         builder = None
-                        if not isinstance(trace, dict):
-                            raise TraceValidationError("document.traces items must be objects")
-                        yield trace
+                        builder_target = None
+                        if completed_target == "trace":
+                            if not isinstance(completed_value, dict):
+                                raise TraceValidationError(
+                                    "document.traces items must be objects"
+                                )
+                            yield completed_value
+                        elif completed_target == "metadata":
+                            if not isinstance(completed_value, dict):
+                                raise TraceValidationError("document.metadata must be an object")
+                            if root_fields is not None:
+                                root_fields["metadata"] = completed_value
                 continue
 
             if prefix == "" and event == "start_map":
@@ -148,13 +163,24 @@ def iter_trace_items(stream: BinaryIO) -> Iterator[dict[str, Any]]:
                     raise TraceValidationError("document must contain one root object")
                 saw_root_map = True
             elif prefix == "" and event == "map_key":
-                if value != "traces" or saw_traces_key:
-                    raise TraceValidationError("document root must contain only the traces field")
-                saw_traces_key = True
+                if value == "traces" and not saw_traces_key:
+                    saw_traces_key = True
+                elif value == "metadata" and not saw_metadata_key:
+                    saw_metadata_key = True
+                else:
+                    raise TraceValidationError(
+                        "document root supports only unique traces and metadata fields"
+                    )
             elif prefix == "traces" and event == "start_array":
                 saw_traces_array = True
             elif prefix == "traces.item" and event == "start_map":
                 builder = ObjectBuilder()
+                builder_target = "trace"
+                item_depth = 1
+                builder.event(event, value)
+            elif prefix == "metadata" and event == "start_map":
+                builder = ObjectBuilder()
+                builder_target = "metadata"
                 item_depth = 1
                 builder.event(event, value)
             elif prefix == "traces" and event == "end_array":
@@ -163,6 +189,8 @@ def iter_trace_items(stream: BinaryIO) -> Iterator[dict[str, Any]]:
                 closed_root_map = True
             elif prefix.startswith("traces.item"):
                 raise TraceValidationError("document.traces items must be objects")
+            elif prefix.startswith("metadata"):
+                raise TraceValidationError("document.metadata must be an object")
     except ijson.JSONError as error:
         raise TraceValidationError(f"invalid JSON: {error}") from error
 
@@ -210,6 +238,7 @@ def is_network_operation(operation: dict[str, Any]) -> bool:
 def _summarize_stream(
     stream: BinaryIO,
     operation_observer: Callable[[dict[str, Any], float, float], None] | None = None,
+    root_fields: dict[str, Any] | None = None,
 ) -> TraceSummary:
     """Validate a stream, optionally observing each normalized operation."""
 
@@ -220,7 +249,7 @@ def _summarize_stream(
     earliest_network_start_ms: float | None = None
     maximum_operation_end_ms = 0.0
 
-    for trace_index, trace_value in enumerate(iter_trace_items(stream)):
+    for trace_index, trace_value in enumerate(iter_trace_items(stream, root_fields)):
         trace_location = f"document.traces[{trace_index}]"
         trace = _require_mapping(trace_value, trace_location)
         for field in ("agentId", "agentType", "tasks"):
@@ -308,6 +337,7 @@ def find_first_window(path: Path, window_ms: float) -> Window:
 
     window_ms = _require_window_ms(window_ms)
     earliest_start_ms: float | None = None
+    root_fields: dict[str, Any] = {}
 
     def observe(operation: dict[str, Any], start_ms: float, duration_ms: float) -> None:
         nonlocal earliest_start_ms
@@ -318,7 +348,7 @@ def find_first_window(path: Path, window_ms: float) -> Window:
                 earliest_start_ms = min(earliest_start_ms, start_ms)
 
     with open_trace_input(path) as stream:
-        _summarize_stream(stream, observe)
+        _summarize_stream(stream, observe, root_fields)
 
     if earliest_start_ms is None:
         raise TraceValidationError(f"{path}: no network operation fits in the requested window")
@@ -326,6 +356,7 @@ def find_first_window(path: Path, window_ms: float) -> Window:
         start_ms=earliest_start_ms,
         end_ms=earliest_start_ms + window_ms,
         network_bytes=0,
+        root_fields=root_fields,
     )
 
 
@@ -334,6 +365,7 @@ def find_high_load_window(path: Path, window_ms: float) -> Window:
 
     window_ms = _require_window_ms(window_ms)
     changes: dict[float, list[int]] = {}
+    root_fields: dict[str, Any] = {}
 
     def observe(operation: dict[str, Any], start_ms: float, duration_ms: float) -> None:
         if not is_network_operation(operation) or duration_ms > window_ms:
@@ -345,7 +377,7 @@ def find_high_load_window(path: Path, window_ms: float) -> Window:
         changes.setdefault(last_start_ms, [0, 0])[1] += weight
 
     with open_trace_input(path) as stream:
-        _summarize_stream(stream, observe)
+        _summarize_stream(stream, observe, root_fields)
 
     if not changes:
         raise TraceValidationError(f"{path}: no network operation fits in the requested window")
@@ -365,6 +397,7 @@ def find_high_load_window(path: Path, window_ms: float) -> Window:
         start_ms=best_start_ms,
         end_ms=best_start_ms + window_ms,
         network_bytes=best_bytes,
+        root_fields=root_fields,
     )
 
 
@@ -472,7 +505,19 @@ def write_window(path: Path, output_path: Path, window: Window) -> SliceSummary:
                         ),
                         network_bytes=totals.network_bytes + summary.network_bytes,
                     )
-            output.write("\n  ]\n}\n")
+            output.write("\n  ]")
+            for key, value in window.root_fields.items():
+                output.write(",\n  ")
+                json.dump(key, output, ensure_ascii=False)
+                output.write(": ")
+                json.dump(
+                    value,
+                    output,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                )
+            output.write("\n}\n")
 
         if totals.network_operation_count == 0:
             raise TraceValidationError("selected window contains no network operations")
