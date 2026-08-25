@@ -487,8 +487,10 @@ peers
 ```
 
 PHY peer entries contain peer identity plus the same directional payload,
-attempt, retransmission, airtime, rate, and throughput fields. Management and
-control airtime appears only through category-level busy time.
+attempt, retransmission, airtime, rate, and throughput fields. Complete MPDU
+count/bytes remain direction totals because one MPDU is counted once even when
+it carries several tagged spans; they are not repeated in peer entries.
+Management and control airtime appears only through category-level busy time.
 
 ## Overall Schema
 
