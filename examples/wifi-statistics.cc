@@ -171,72 +171,6 @@ RecordPhyStats(WifiStatisticsState& statistics,
 }
 
 static void
-StaAppTxTrace(WifiStatisticsState* statistics,
-              uint32_t nodeId,
-              std::string agentKey,
-              uint32_t bytes,
-              Time time)
-{
-    (void)agentKey;
-    if (auto* stats = GetNodeSecondStats(*statistics, nodeId, time.GetMicroSeconds()))
-    {
-        ++stats->appTxEvents;
-        stats->appTxBytes += bytes;
-    }
-}
-
-static void
-ApAppTxTrace(WifiStatisticsState* statistics,
-             uint32_t nodeId,
-             Address station,
-             std::string agentKey,
-             uint32_t bytes,
-             Time time)
-{
-    (void)station;
-    StaAppTxTrace(statistics, nodeId, std::move(agentKey), bytes, time);
-}
-
-static void
-RecordAppTxDropTrace(WifiStatisticsState& statistics,
-                     uint32_t nodeId,
-                     const std::string& agentKey,
-                     uint32_t bytes,
-                     Time time)
-{
-    if (auto* stats = GetNodeSecondStats(statistics, nodeId, time.GetMicroSeconds()))
-    {
-        ++stats->appDropEvents;
-        stats->appDropBytes += bytes;
-        auto& agentStats = stats->appDropsByAgent[agentKey];
-        ++agentStats.events;
-        agentStats.bytes += bytes;
-    }
-}
-
-static void
-StaAppTxDropTrace(WifiStatisticsState* statistics,
-                  uint32_t nodeId,
-                  std::string agentKey,
-                  uint32_t bytes,
-                  Time time)
-{
-    RecordAppTxDropTrace(*statistics, nodeId, agentKey, bytes, time);
-}
-
-static void
-ApAppTxDropTrace(WifiStatisticsState* statistics,
-                 uint32_t nodeId,
-                 Address station,
-                 std::string agentKey,
-                 uint32_t bytes,
-                 Time time)
-{
-    (void)station;
-    RecordAppTxDropTrace(*statistics, nodeId, agentKey, bytes, time);
-}
-
-static void
 MacTxDropTrace(WifiStatisticsState* statistics, uint32_t nodeId, Ptr<const Packet> packet)
 {
     if (auto* stats = GetNodeSecondStats(*statistics, nodeId, Simulator::Now().GetMicroSeconds()))
@@ -570,26 +504,6 @@ void
 WifiStatistics::RegisterWifiDevice(uint32_t nodeId, std::string nodeLabel, Ptr<NetDevice> device)
 {
     RegisterWifiObservability(m_state.get(), nodeId, nodeLabel, device);
-}
-
-void
-WifiStatistics::ConnectApGenerator(Ptr<APGenerator> generator, uint32_t nodeId)
-{
-    generator->TraceConnectWithoutContext("Tx",
-                                          MakeBoundCallback(&ApAppTxTrace, m_state.get(), nodeId));
-    generator->TraceConnectWithoutContext(
-        "AppTxDrop",
-        MakeBoundCallback(&ApAppTxDropTrace, m_state.get(), nodeId));
-}
-
-void
-WifiStatistics::ConnectStaGenerator(Ptr<StaLlmGenerator> generator, uint32_t nodeId)
-{
-    generator->TraceConnectWithoutContext("TxCustom",
-                                          MakeBoundCallback(&StaAppTxTrace, m_state.get(), nodeId));
-    generator->TraceConnectWithoutContext(
-        "AppTxDrop",
-        MakeBoundCallback(&StaAppTxDropTrace, m_state.get(), nodeId));
 }
 
 } // namespace ns3

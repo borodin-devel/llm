@@ -19,7 +19,6 @@ namespace ns3
 
 class Socket;
 class Packet;
-class TcpSocketBase;
 class Ipv4Address;
 
 /**
@@ -112,19 +111,6 @@ class APGenerator : public Application
                       double traceTimeMs);
 
     /**
-     * Record payload bytes accepted by a station socket.
-     *
-     * @param stationAddress Destination station address.
-     * @param agentKey Application-level agent identifier.
-     * @param acceptedBytes Bytes accepted by the socket.
-     * @param transmitTime Application transmit time.
-     */
-    void RecordAcceptedSend(const Address& stationAddress,
-                            const std::string& agentKey,
-                            uint32_t acceptedBytes,
-                            Time transmitTime);
-
-    /**
      * Consume received TCP data.
      *
      * @param socket Socket with available data.
@@ -149,17 +135,6 @@ class APGenerator : public Application
     void ReportReadyIfComplete();
 
     /**
-     * Record a congestion-window update.
-     *
-     * @param oldCwnd Previous congestion window in bytes.
-     * @param newCwnd New congestion window in bytes.
-     */
-    void OnCwndChange(uint32_t oldCwnd, uint32_t newCwnd);
-
-    /** Print final per-second metrics. */
-    void PrintPerSecondMetrics();
-
-    /**
      * Report agents that never reached scheduling.
      *
      * @param localAddress Local AP address shown in the diagnostic.
@@ -175,30 +150,11 @@ class APGenerator : public Application
     std::map<const void*, Address> m_socketToStation; ///< Station address by socket identity.
     std::map<Address, EventId> m_sendEventByStation;  ///< Pending send event by station.
 
-    /** Per-station transport metrics. */
-    struct StationMetrics
-    {
-        double currentCwnd{0}; ///< Most recently observed congestion window.
-    };
-
-    std::map<Address, StationMetrics> m_stationMetrics; ///< Transport metrics by station.
-
     uint64_t m_experimentStartMs{0}; ///< Simulation time corresponding to trace time zero.
     bool m_readyReported{false};     ///< Whether the readiness callback fired.
     bool m_trafficStarted{false};    ///< Whether payload scheduling started.
     Callback<void> m_readyCallback;  ///< Common-barrier readiness callback.
     std::vector<std::string> m_unscheduledAgentKeys; ///< Agent keys not yet scheduled.
-
-    /** Metrics for one absolute simulation-second bucket. */
-    struct PerSecondStats
-    {
-        uint64_t totalBytes{0};                     ///< Total accepted payload bytes.
-        std::map<std::string, uint64_t> agentBytes; ///< Accepted bytes by agent.
-        std::map<Address, uint64_t> stationBytes;   ///< Accepted bytes by station.
-        double lastCwnd{0.0};                       ///< Last congestion window in bytes.
-    };
-
-    std::map<uint32_t, PerSecondStats> m_metricsByAbsoluteSecond; ///< Metrics by absolute second.
 
     TracedCallback<Address, std::string, uint32_t, Time> m_txTrace;        ///< Accepted sends.
     TracedCallback<Address, std::string, uint32_t, Time> m_appTxDropTrace; ///< Rejected bytes.

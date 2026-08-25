@@ -102,10 +102,44 @@ struct DirectionPair
     }
 };
 
+/** Application send and drop totals for one agent. */
+struct AppAgentAccumulator
+{
+    uint64_t acceptedSendCount{0};    ///< Accepted send-event count.
+    uint64_t acceptedPayloadBytes{0}; ///< Payload bytes accepted by the socket.
+    uint64_t dropEventCount{0};       ///< Application drop-event count.
+    uint64_t droppedPayloadBytes{0};  ///< Payload bytes rejected by the socket.
+};
+
+/** Application send, receive, and drop totals for one peer node. */
+struct AppPeerAccumulator
+{
+    uint64_t acceptedSendCount{0};    ///< Accepted send-event count.
+    uint64_t acceptedPayloadBytes{0}; ///< Payload bytes accepted by the socket.
+    uint64_t receiveEventCount{0};    ///< Sink receive-event count.
+    uint64_t receivedPayloadBytes{0}; ///< Payload bytes received by the sink.
+    uint64_t dropEventCount{0};       ///< Application drop-event count.
+    uint64_t droppedPayloadBytes{0};  ///< Payload bytes rejected by the socket.
+};
+
+/** Application totals for one local entity and traffic direction. */
+struct AppDirectionAccumulator
+{
+    uint64_t acceptedSendCount{0};           ///< Accepted send-event count.
+    uint64_t acceptedPayloadBytes{0};        ///< Payload bytes accepted by the socket.
+    uint64_t receiveEventCount{0};           ///< Sink receive-event count.
+    uint64_t receivedPayloadBytes{0};        ///< Payload bytes received by the sink.
+    uint64_t dropEventCount{0};              ///< Application drop-event count.
+    uint64_t droppedPayloadBytes{0};         ///< Payload bytes rejected by the socket.
+    SampleAccumulator receiveInterArrivalUs; ///< Receive inter-arrival samples in microseconds.
+    std::map<std::string, AppAgentAccumulator> agents;    ///< Agent totals ordered by key.
+    std::map<uint32_t, AppPeerAccumulator> peersByNodeId; ///< Peer totals ordered by node ID.
+};
+
 /** Per-entity accumulator for one unified experiment window. */
 struct LocalEntityWindowAccumulator
 {
-    // Tasks 2-5 add one focused category at a time.
+    DirectionPair<AppDirectionAccumulator> app; ///< Application observations by direction.
 };
 
 /** Sparse per-window state keyed by entity node identifier. */

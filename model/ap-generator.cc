@@ -10,7 +10,6 @@
 #include "ns3/packet.h"
 #include "ns3/simulator.h"
 #include "ns3/socket.h"
-#include "ns3/tcp-socket-base.h"
 #include "ns3/tcp-socket-factory.h"
 #include "ns3/uinteger.h"
 
@@ -120,11 +119,6 @@ APGenerator::DoDispose()
     }
 
     ReportUnscheduledAgents(localIp);
-
-    NS_LOG_INFO("[APGenerator] stopping ap=" << localIp << ", effective seconds="
-                                             << m_metricsByAbsoluteSecond.size());
-
-    PrintPerSecondMetrics();
 
     for (auto& [stationAddress, socket] : m_socketByStation)
     {
@@ -249,13 +243,6 @@ APGenerator::ConfigureSocket(const Address& stationAddress, Ptr<Socket> socket)
                                MakeCallback(&APGenerator::OnConnectionFailed, this));
     socket->SetRecvCallback(MakeCallback(&APGenerator::HandleRead, this));
 
-    Ptr<TcpSocketBase> tcpSocket = DynamicCast<TcpSocketBase>(socket);
-    if (tcpSocket)
-    {
-        tcpSocket->TraceConnectWithoutContext("CongestionWindow",
-                                              MakeCallback(&APGenerator::OnCwndChange, this));
-    }
-
     socket->Connect(stationAddress);
 }
 
@@ -364,29 +351,10 @@ APGenerator::SendDownlink(const Address& stationAddress,
                 << " delta_ms=" << (actualTraceMs - traceTimeMs) << " expected_bytes="
                 << payloadBytes << " socket_accepted_bytes=" << acceptedBytes);
 
-    RecordAcceptedSend(stationAddress,
-                       agentKey,
-                       static_cast<uint32_t>(acceptedBytes),
-                       transmitTime);
-
     const Time endTime = Simulator::Now();
 
-    m_txTrace(stationAddress, agentKey, payloadBytes, transmitTime);
+    m_txTrace(stationAddress, agentKey, static_cast<uint32_t>(acceptedBytes), transmitTime);
     m_agentSendTrace(stationAddress, agentKey, payloadBytes, transmitTime, endTime);
-}
-
-void
-APGenerator::RecordAcceptedSend(const Address& stationAddress,
-                                const std::string& agentKey,
-                                uint32_t acceptedBytes,
-                                Time transmitTime)
-{
-    const uint32_t second = GetAbsoluteSecond(transmitTime);
-    PerSecondStats& statistics = m_metricsByAbsoluteSecond[second];
-    statistics.totalBytes += acceptedBytes;
-    statistics.agentBytes[agentKey] += acceptedBytes;
-    statistics.stationBytes[stationAddress] += acceptedBytes;
-    statistics.lastCwnd = m_stationMetrics[stationAddress].currentCwnd;
 }
 
 void
@@ -465,21 +433,6 @@ APGenerator::OnConnectionFailed(Ptr<Socket> socket)
 
     m_isConnectedByStation[stationAddress] = false;
     NS_FATAL_ERROR("[AP] Failed to connect to station " << stationAddress);
-}
-
-void
-APGenerator::OnCwndChange(uint32_t oldCwnd, uint32_t newCwnd)
-{
-    NS_LOG_FUNCTION(this << newCwnd);
-    (void)oldCwnd;
-
-    const uint32_t second = GetAbsoluteSecond(Simulator::Now());
-    if (newCwnd == 0)
-    {
-        return;
-    }
-    // All AP sockets share this aggregate bucket; the last callback wins.
-    m_metricsByAbsoluteSecond[second].lastCwnd = static_cast<double>(newCwnd);
 }
 
 } // namespace ns3

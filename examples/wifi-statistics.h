@@ -2,6 +2,7 @@
 #define WIFI_STATISTICS_H
 
 #include "experiment-output.h"
+#include "experiment-statistics-types.h"
 
 #include "ns3/address.h"
 #include "ns3/ipv4-address.h"
@@ -9,9 +10,11 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 class ExperimentJsonTestCase;
+class ExperimentAppTestCase;
 
 namespace ns3
 {
@@ -20,7 +23,9 @@ class APGenerator;
 class Ipv4InterfaceContainer;
 class NetDevice;
 class StaLlmGenerator;
+class Time;
 class TrafficCoordinator;
+class TrafficSink;
 struct ScenarioConfig;
 struct WifiStatisticsState;
 
@@ -143,6 +148,15 @@ class WifiStatistics
     void ConnectStaGenerator(Ptr<StaLlmGenerator> generator, uint32_t nodeId);
 
     /**
+     * Connect application sink traces.
+     *
+     * @param sink Traffic sink.
+     * @param nodeId Owning ns-3 node identifier.
+     * @param direction Receive direction at the local node.
+     */
+    void ConnectTrafficSink(Ptr<TrafficSink> sink, uint32_t nodeId, ExperimentDirection direction);
+
+    /**
      * Record one parsed MAC payload sample.
      *
      * @param nowUs Absolute simulation time in microseconds.
@@ -178,6 +192,91 @@ class WifiStatistics
 
   private:
     friend class ::ExperimentJsonTestCase;
+    friend class ::ExperimentAppTestCase;
+
+    /**
+     * Record one socket-accepted application send.
+     *
+     * @param nodeId Local sending node identifier.
+     * @param direction Traffic direction.
+     * @param peerNodeId Remote peer node identifier when resolved.
+     * @param agentKey Application-level agent identifier.
+     * @param acceptedBytes Payload bytes accepted by the socket.
+     * @param absoluteTimeUs Absolute send time in microseconds.
+     */
+    void RecordAcceptedApplicationSend(uint32_t nodeId,
+                                       ExperimentDirection direction,
+                                       std::optional<uint32_t> peerNodeId,
+                                       const std::string& agentKey,
+                                       uint32_t acceptedBytes,
+                                       int64_t absoluteTimeUs);
+
+    /**
+     * Record one application send rejection.
+     *
+     * @param nodeId Local sending node identifier.
+     * @param direction Traffic direction.
+     * @param peerNodeId Remote peer node identifier when resolved.
+     * @param agentKey Application-level agent identifier.
+     * @param droppedBytes Payload bytes rejected by the socket.
+     * @param absoluteTimeUs Absolute drop time in microseconds.
+     */
+    void RecordApplicationDrop(uint32_t nodeId,
+                               ExperimentDirection direction,
+                               std::optional<uint32_t> peerNodeId,
+                               const std::string& agentKey,
+                               uint32_t droppedBytes,
+                               int64_t absoluteTimeUs);
+
+    /**
+     * Record one application sink receive.
+     *
+     * @param nodeId Local receiving node identifier.
+     * @param direction Traffic direction.
+     * @param peerNodeId Remote peer node identifier when resolved.
+     * @param receivedBytes Payload bytes received by the sink.
+     * @param absoluteTimeUs Absolute receive time in microseconds.
+     */
+    void RecordApplicationReceive(uint32_t nodeId,
+                                  ExperimentDirection direction,
+                                  std::optional<uint32_t> peerNodeId,
+                                  uint32_t receivedBytes,
+                                  int64_t absoluteTimeUs);
+
+    /** Adapt an AP accepted-send trace to the central recording interface. */
+    void RecordApAcceptedApplicationSend(uint32_t nodeId,
+                                         Address station,
+                                         std::string agentKey,
+                                         uint32_t acceptedBytes,
+                                         Time transmitTime);
+
+    /** Adapt an AP drop trace to the central recording interface. */
+    void RecordApApplicationDrop(uint32_t nodeId,
+                                 Address station,
+                                 std::string agentKey,
+                                 uint32_t droppedBytes,
+                                 Time transmitTime);
+
+    /** Adapt a station accepted-send trace to the central recording interface. */
+    void RecordStaAcceptedApplicationSend(uint32_t nodeId,
+                                          std::optional<uint32_t> peerNodeId,
+                                          std::string agentKey,
+                                          uint32_t acceptedBytes,
+                                          Time transmitTime);
+
+    /** Adapt a station drop trace to the central recording interface. */
+    void RecordStaApplicationDrop(uint32_t nodeId,
+                                  std::optional<uint32_t> peerNodeId,
+                                  std::string agentKey,
+                                  uint32_t droppedBytes,
+                                  Time transmitTime);
+
+    /** Adapt a sink receive trace to the central recording interface. */
+    void RecordTrafficSinkReceive(uint32_t nodeId,
+                                  ExperimentDirection direction,
+                                  uint64_t receivedBytes,
+                                  Address remoteAddress);
+
     std::unique_ptr<WifiStatisticsState> m_state; ///< Scenario statistics state.
 };
 

@@ -198,10 +198,9 @@ RegisterTopology(int bssIndex,
                                            topology.stationNodes.Get(stationIndex)->GetId(),
                                            stationLabel,
                                            topology.stationInterfaces.GetAddress(stationIndex));
-        statistics.RegisterWifiDevice(
-            topology.stationNodes.Get(stationIndex)->GetId(),
-            stationLabel,
-            topology.stationDevices.Get(stationIndex));
+        statistics.RegisterWifiDevice(topology.stationNodes.Get(stationIndex)->GetId(),
+                                      stationLabel,
+                                      topology.stationDevices.Get(stationIndex));
     }
 
     const double coordinate = topologyConfig.bssSpacingM * bssIndex;
@@ -216,10 +215,14 @@ RegisterTopology(int bssIndex,
 void
 InstallTrafficSinks(const TopologyConfig& topologyConfig,
                     const BssTopology& topology,
-                    TrafficCoordinator& coordinator)
+                    TrafficCoordinator& coordinator,
+                    WifiStatistics& statistics)
 {
     Ptr<TrafficSink> accessPointSink = CreateObject<TrafficSink>();
     accessPointSink->SetAttribute("Port", UintegerValue(topologyConfig.apSinkPort));
+    statistics.ConnectTrafficSink(accessPointSink,
+                                  topology.accessPointNode.Get(0)->GetId(),
+                                  ExperimentDirection::UPLINK);
     topology.accessPointNode.Get(0)->AddApplication(accessPointSink);
     accessPointSink->SetStartTime(Seconds(0));
     coordinator.AddApplication(accessPointSink);
@@ -231,6 +234,9 @@ InstallTrafficSinks(const TopologyConfig& topologyConfig,
             "Port",
             UintegerValue(static_cast<uint32_t>(topologyConfig.stationSinkBasePort) +
                           stationIndex));
+        statistics.ConnectTrafficSink(stationSink,
+                                      topology.stationNodes.Get(stationIndex)->GetId(),
+                                      ExperimentDirection::DOWNLINK);
         topology.stationNodes.Get(stationIndex)->AddApplication(stationSink);
         stationSink->SetStartTime(Seconds(0));
         coordinator.AddApplication(stationSink);
@@ -412,7 +418,7 @@ SetupApGroup(int bssIndex,
     const BssTopology topology =
         CreateBssTopology(bssIndex, topologyConfig, wifiConfig, sharedChannel);
     RegisterTopology(bssIndex, topologyConfig, topology, statistics);
-    InstallTrafficSinks(topologyConfig, topology, coordinator);
+    InstallTrafficSinks(topologyConfig, topology, coordinator, statistics);
 
     // Generator start opens TCP setup; payload remains behind the common barrier.
     const Time generatorStart = Seconds(topologyConfig.generatorStartSeconds);

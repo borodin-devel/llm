@@ -11,7 +11,6 @@
 #include "ns3/packet.h"
 #include "ns3/simulator.h"
 #include "ns3/socket.h"
-#include "ns3/tcp-socket-base.h"
 #include "ns3/tcp-socket-factory.h"
 #include "ns3/trace-source-accessor.h"
 #include "ns3/uinteger.h"
@@ -123,16 +122,6 @@ StaLlmGenerator::DoStartApplication()
 {
     NS_LOG_FUNCTION(this);
 
-    Ptr<TcpSocketBase> tcpSocket = DynamicCast<TcpSocketBase>(m_socket);
-    if (tcpSocket)
-    {
-        tcpSocket->TraceConnectWithoutContext("CongestionWindow",
-                                              MakeCallback(&StaLlmGenerator::OnCwndChange, this));
-        tcpSocket->TraceConnectWithoutContext(
-            "LastRTT",
-            MakeCallback(&StaLlmGenerator::OnLastRttChange, this));
-    }
-
     m_socket->SetRecvCallback(MakeCallback(&StaLlmGenerator::HandleRead, this));
 
     // Connection success only opens this generator's side of the readiness
@@ -158,11 +147,7 @@ StaLlmGenerator::DoStopApplication()
 
     ReportUnscheduledAgents(localIp);
 
-    NS_LOG_INFO("[StaLlmGenerator] stopping sta=" << localIp << ", effective seconds="
-                                                  << m_metricsByAbsoluteSecond.size());
-
     CancelEvents();
-    PrintPerSecondMetrics();
 }
 
 void
@@ -313,24 +298,10 @@ StaLlmGenerator::SendAgentData(std::string agentKey, uint32_t payloadBytes, doub
                 << (actualTraceMs - traceTimeMs) << " expected_bytes=" << payloadBytes
                 << " socket_accepted_bytes=" << acceptedBytes);
 
-    RecordAcceptedSend(agentKey, static_cast<uint32_t>(acceptedBytes), transmitTime);
-
     const Time endTime = Simulator::Now();
 
-    m_txTraceCustom(agentKey, payloadBytes, transmitTime);
+    m_txTraceCustom(agentKey, static_cast<uint32_t>(acceptedBytes), transmitTime);
     m_agentSendTrace(agentKey, payloadBytes, transmitTime, endTime);
-}
-
-void
-StaLlmGenerator::RecordAcceptedSend(const std::string& agentKey,
-                                    uint32_t acceptedBytes,
-                                    Time transmitTime)
-{
-    const uint32_t second = GetAbsoluteSecond(transmitTime);
-    PerSecondStats& statistics = m_metricsByAbsoluteSecond[second];
-    statistics.totalBytes += acceptedBytes;
-    statistics.agentBytes[agentKey] += acceptedBytes;
-    statistics.lastCwnd = m_currentCwnd;
 }
 
 void
@@ -342,37 +313,6 @@ StaLlmGenerator::HandleRead(Ptr<Socket> socket)
     {
         NS_LOG_DEBUG("Received " << packet->GetSize() << " bytes from " << from);
     }
-}
-
-void
-StaLlmGenerator::OnCwndChange(uint32_t oldCwnd, uint32_t newCwnd)
-{
-    NS_LOG_FUNCTION(this << newCwnd);
-    (void)oldCwnd;
-
-    m_currentCwnd = static_cast<double>(newCwnd);
-
-    const uint32_t second = GetAbsoluteSecond(Simulator::Now());
-
-    m_metricsByAbsoluteSecond[second].lastCwnd = static_cast<double>(newCwnd);
-}
-
-void
-StaLlmGenerator::OnLastRttChange(Time oldRtt, Time lastRtt)
-{
-    NS_LOG_FUNCTION(this << lastRtt);
-    (void)oldRtt;
-
-    if (lastRtt.GetMicroSeconds() == 0)
-    {
-        return;
-    }
-
-    const uint32_t second = GetAbsoluteSecond(Simulator::Now());
-
-    auto& stats = m_metricsByAbsoluteSecond[second];
-    stats.rttSamples++;
-    stats.rttSumUs += lastRtt.GetMicroSeconds();
 }
 
 } // namespace ns3

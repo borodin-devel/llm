@@ -1,8 +1,8 @@
 #ifndef WIFI_STATISTICS_INTERNAL_H
 #define WIFI_STATISTICS_INTERNAL_H
 
-#include "wifi-statistics.h"
 #include "experiment-statistics-types.h"
+#include "wifi-statistics.h"
 
 #include "ns3/abort.h"
 
@@ -111,6 +111,17 @@ struct NodeSecondStats
 
 using PhyMpduKey = std::tuple<uint32_t, std::string, std::string, uint16_t, uint8_t, uint64_t>;
 
+/** Identity of one application receive stream across experiment windows. */
+struct AppReceiveStreamKey
+{
+    uint32_t nodeId;                    ///< Local receiving node identifier.
+    ExperimentDirection direction;      ///< Traffic direction at the local node.
+    std::optional<uint32_t> peerNodeId; ///< Remote peer node identifier when resolved.
+
+    /** @return True when this key sorts before @p other. */
+    bool operator<(const AppReceiveStreamKey& other) const;
+};
+
 /** All mutable Wi-Fi statistics state for one scenario. */
 struct WifiStatisticsState
 {
@@ -138,9 +149,11 @@ struct WifiStatisticsState
     std::map<uint64_t, std::map<int, MacWindowStats>> phyWindows; ///< PHY windows by node.
     std::map<uint32_t, std::map<uint64_t, NodeSecondStats>> nodeSeconds; ///< Node seconds.
     std::map<uint32_t, std::string> nodeLabels;                          ///< Report label by node.
-    std::set<PhyMpduKey> seenTaggedMpdus; ///< Tagged MPDUs already counted as unique.
-    ExperimentEntityRegistry entityRegistry; ///< Registered AP and station identities.
+    std::set<PhyMpduKey> seenTaggedMpdus;        ///< Tagged MPDUs already counted as unique.
+    ExperimentEntityRegistry entityRegistry;     ///< Registered AP and station identities.
     UnifiedExperimentWindowStore unifiedWindows; ///< Sparse unified experiment windows.
+    std::map<AppReceiveStreamKey, int64_t>
+        lastApplicationReceiveTimeUs; ///< Last receive time by local direction and peer.
 };
 
 /**

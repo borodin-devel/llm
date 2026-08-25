@@ -57,12 +57,7 @@ class TrafficSink : public SinkApplication
     /** @param socket Socket reporting an error. */
     void HandleError(Ptr<Socket> socket);
 
-    /** @param receiveTime Current packet receive time. */
-    void RecordInterArrivalTime(Time receiveTime);
-
     std::vector<Ptr<Socket>> m_acceptedSockets;        ///< Accepted TCP sockets.
-    std::vector<double> m_iatSamplesUs;                ///< Inter-arrival samples in microseconds.
-    Time m_lastPacketTime;                             ///< Previous packet receive time.
     TracedCallback<uint64_t, Address> m_rxTraceCustom; ///< Received-payload trace.
 };
 

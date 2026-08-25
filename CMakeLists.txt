@@ -10,9 +10,7 @@ set(source_files
     model/traffic-sink.cc
     model/traffic-schedule.cc
     model/ap-generator.cc
-    model/ap-generator-report.cc
     model/sta-llm-generator.cc
-    model/sta-llm-generator-report.cc
 )
 
 set(header_files
@@ -44,6 +42,7 @@ set(test_sources
     test/scenario-topology-test-suite.cc
     test/experiment-json-test-suite.cc
     test/experiment-window-test-suite.cc
+    test/experiment-app-test-suite.cc
     examples/scenario-log.cc
     examples/scenario-config.cc
     examples/scenario-config-json.cc
@@ -59,6 +58,7 @@ set(test_sources
     examples/transmission-summary-json.cc
     examples/cross-layer-summary-json.cc
     examples/experiment-statistics-window.cc
+    examples/experiment-statistics-app.cc
     examples/wifi-statistics.cc
     examples/wifi-statistics-json.cc
     examples/wifi-statistics-owner.cc

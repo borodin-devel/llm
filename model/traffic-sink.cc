@@ -3,9 +3,7 @@
 #include "ns3/inet-socket-address.h"
 #include "ns3/inet6-socket-address.h"
 #include "ns3/log.h"
-#include "ns3/nstime.h"
 #include "ns3/packet.h"
-#include "ns3/simulator.h"
 #include "ns3/socket.h"
 #include "ns3/tcp-socket-factory.h"
 #include "ns3/trace-source-accessor.h"
@@ -37,7 +35,6 @@ TrafficSink::GetTypeId()
 }
 
 TrafficSink::TrafficSink()
-    : m_lastPacketTime(Seconds(0))
 {
     NS_LOG_FUNCTION(this);
 }
@@ -123,43 +120,6 @@ TrafficSink::DoStopApplication()
 {
     NS_LOG_FUNCTION(this);
 
-    const auto layer3PacketCount = static_cast<uint32_t>(m_iatSamplesUs.size());
-
-    // A TrafficSink is installed on every STA, but not every STA is
-    // necessarily used by the distribution algorithm.
-    //
-    // In particular, low-contention placement may intentionally put several
-    // agents on the same STA and leave other STAs completely unused.
-    //
-    // An unused STA never accepts a TCP connection, therefore
-    // m_acceptedSockets can legitimately be empty here.
-    if (!m_acceptedSockets.empty() && m_acceptedSockets.front())
-    {
-        Address address;
-        m_acceptedSockets.front()->GetSockName(address);
-
-        if (InetSocketAddress::IsMatchingType(address))
-        {
-            const InetSocketAddress inetLocal = InetSocketAddress::ConvertFrom(address);
-
-            NS_LOG_WARN("[Received Stats] " << inetLocal.GetIpv4() << ":" << inetLocal.GetPort()
-                                            << " L3_packets=" << layer3PacketCount);
-        }
-        else
-        {
-            NS_LOG_WARN("[Received Stats] " << "L3_packets=" << layer3PacketCount);
-        }
-    }
-    else
-    {
-        // This is a valid state, not an error:
-        // no sender was mapped to this sink/STA.
-        NS_LOG_WARN("[Received Stats] " << "no accepted TCP connections"
-                                        << ", sinkPort=" << m_port
-                                        << ", L3_packets=" << layer3PacketCount);
-    }
-
-    // Close every connection that was actually accepted.
     for (auto& socket : m_acceptedSockets)
     {
         if (socket)
@@ -170,7 +130,6 @@ TrafficSink::DoStopApplication()
 
     m_acceptedSockets.clear();
 
-    // Let SinkApplication close its listening sockets as well.
     CloseAllSockets();
 }
 
@@ -207,8 +166,6 @@ TrafficSink::HandleRead(Ptr<Socket> socket)
 
         const uint32_t receivedBytes = packet->GetSize();
         m_rxTraceCustom(receivedBytes, from);
-
-        RecordInterArrivalTime(Simulator::Now());
     }
 }
 
@@ -224,18 +181,6 @@ TrafficSink::HandleError(Ptr<Socket> socket)
 {
     NS_LOG_FUNCTION(this << socket);
     NS_LOG_ERROR("TCP error on socket");
-}
-
-void
-TrafficSink::RecordInterArrivalTime(Time receiveTime)
-{
-    if (m_lastPacketTime != Seconds(0))
-    {
-        const int64_t interArrivalUs = (receiveTime - m_lastPacketTime).GetMicroSeconds();
-        m_iatSamplesUs.push_back(static_cast<double>(interArrivalUs));
-        NS_LOG_DEBUG("[IAT] Inter-arrival time: " << interArrivalUs << " us");
-    }
-    m_lastPacketTime = receiveTime;
 }
 
 } // namespace ns3

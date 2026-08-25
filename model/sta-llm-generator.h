@@ -93,39 +93,11 @@ class StaLlmGenerator : public SourceApplication
     void SendAgentData(std::string agentKey, uint32_t payloadBytes, double traceTimeMs);
 
     /**
-     * Record bytes accepted by the station socket.
-     *
-     * @param agentKey Application-level agent identifier.
-     * @param acceptedBytes Bytes accepted by the socket.
-     * @param transmitTime Application transmit time.
-     */
-    void RecordAcceptedSend(const std::string& agentKey, uint32_t acceptedBytes, Time transmitTime);
-
-    /**
      * Consume received TCP data.
      *
      * @param socket Socket with available data.
      */
     void HandleRead(Ptr<Socket> socket);
-
-    /**
-     * Record a congestion-window update.
-     *
-     * @param oldCwnd Previous congestion window in bytes.
-     * @param newCwnd New congestion window in bytes.
-     */
-    void OnCwndChange(uint32_t oldCwnd, uint32_t newCwnd);
-
-    /**
-     * Record a round-trip-time sample.
-     *
-     * @param oldRtt Previous RTT sample.
-     * @param lastRtt New RTT sample.
-     */
-    void OnLastRttChange(Time oldRtt, Time lastRtt);
-
-    /** Print final per-second metrics. */
-    void PrintPerSecondMetrics();
 
     /**
      * Report agents that never reached scheduling.
@@ -144,18 +116,6 @@ class StaLlmGenerator : public SourceApplication
     bool m_readyReported{false};          ///< Whether the readiness callback fired.
     std::vector<std::string> m_unscheduledAgentKeys; ///< Agent keys not yet scheduled.
 
-    /** Metrics for one absolute simulation-second bucket. */
-    struct PerSecondStats
-    {
-        uint64_t totalBytes{0};                     ///< Total accepted payload bytes.
-        std::map<std::string, uint64_t> agentBytes; ///< Accepted bytes by agent.
-        double lastCwnd{0.0};                       ///< Last congestion window in bytes.
-        uint64_t rttSamples{0};                     ///< Number of nonzero RTT samples.
-        double rttSumUs{0.0};                       ///< Sum of RTT samples in microseconds.
-    };
-
-    std::map<uint32_t, PerSecondStats> m_metricsByAbsoluteSecond; ///< Metrics by absolute second.
-    double m_currentCwnd{0.0}; ///< Most recently observed congestion window in bytes.
     TracedCallback<std::string, uint32_t, Time> m_txTraceCustom;  ///< Accepted sends.
     TracedCallback<std::string, uint32_t, Time> m_appTxDropTrace; ///< Rejected bytes.
 
