@@ -63,8 +63,7 @@ MacToString(Mac48Address address)
 int64_t
 GetExperimentDurationUs(const WifiStatisticsState& statistics)
 {
-    return static_cast<int64_t>(
-        std::ceil(statistics.coordinator.GetMaxExperimentDurationMs() * 1000.0));
+    return ConvertExperimentDurationMsToUs(statistics.coordinator.GetMaxExperimentDurationMs());
 }
 
 std::optional<PhyFlowAttribution>

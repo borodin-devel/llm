@@ -220,8 +220,8 @@ MacSummaryEqual(const MacSummaryStats& left, const MacSummaryStats& right)
 WifiJsonValidation
 WriteWifiStatisticsJsonMembers(std::ostream& output, const WifiStatisticsState& statistics)
 {
-    const int64_t statisticsDurationUs = static_cast<int64_t>(
-        std::ceil(statistics.coordinator.GetMaxExperimentDurationMs() * 1000.0));
+    const int64_t statisticsDurationUs =
+        ConvertExperimentDurationMsToUs(statistics.coordinator.GetMaxExperimentDurationMs());
     uint64_t windowCount = 0;
     if (statisticsDurationUs > 0)
     {

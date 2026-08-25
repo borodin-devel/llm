@@ -8,6 +8,8 @@
 #include "ns3/network-module.h"
 
 #include <cmath>
+#include <limits>
+#include <stdexcept>
 #include <vector>
 
 using namespace ns3;
@@ -125,11 +127,12 @@ ExperimentSummaryTestCase::DoRun()
     secondTcp.lastCongestionWindowBytes = 2400;
     window0[10].phy.busyTimeUs = 1000;
     window0[20].phy.busyTimeUs = 6000;
-    window0[20].mac.uplink.mpduDropCount = 2;
-    window0[20].mac.uplink.mpduDropBytes = 300;
-    window0[20].mac.uplink.dataFailureCount = 3;
-    window0[20].mac.uplink.finalDataFailureCount = 1;
+    window0[20].mac.uplink.mpduDropCount = 3;
+    window0[20].mac.uplink.mpduDropBytes = 350;
+    window0[20].mac.uplink.dataFailureCount = 5;
+    window0[20].mac.uplink.finalDataFailureCount = 3;
     window0[20].mac.uplink.mpduDropsByReason[9] = 1;
+    window0[20].mac.uplink.mpduDropsByReason[7] = 1;
     window0[20].mac.uplink.mpduDropsByReason[4] = 1;
     auto& stationMacPeer = window0[20].mac.uplink.peersByNodeId[10];
     stationMacPeer.mpduDropCount = 2;
@@ -187,6 +190,30 @@ ExperimentSummaryTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(parent0.macStats.uplink.peers.at(0).mpduDropsByReason.at(0).reasonCode,
                           4,
                           "AP peer reasons are not numerically ordered");
+    NS_TEST_ASSERT_MSG_EQ(parent0.macStats.uplink.mpduDropsByReason.at(0).reasonCode,
+                          4,
+                          "AP direction reasons lost numeric order");
+    NS_TEST_ASSERT_MSG_EQ(parent0.macStats.uplink.mpduDropsByReason.at(1).reasonCode,
+                          7,
+                          "Unresolved AP direction reason was not retained");
+    NS_TEST_ASSERT_MSG_EQ(parent0.macStats.uplink.mpduDropsByReason.at(2).reasonCode,
+                          9,
+                          "AP direction reasons lost final numeric value");
+    NS_TEST_ASSERT_MSG_EQ(parent0.macStats.uplink.peers.at(0).mpduDropCount,
+                          2,
+                          "Unresolved MPDU drop leaked into AP peer detail");
+    NS_TEST_ASSERT_MSG_EQ(parent0.macStats.uplink.mpduDropCount,
+                          3,
+                          "Unresolved MPDU drop was lost from AP direction totals");
+    NS_TEST_ASSERT_MSG_EQ(parent0.macStats.uplink.mpduDropBytes,
+                          350,
+                          "Unresolved MPDU bytes were lost from AP direction totals");
+    NS_TEST_ASSERT_MSG_EQ(parent0.macStats.uplink.dataFailureCount,
+                          5,
+                          "Unresolved data failures were lost from AP direction totals");
+    NS_TEST_ASSERT_MSG_EQ(parent0.macStats.uplink.finalDataFailureCount,
+                          3,
+                          "Unresolved final failures were lost from AP direction totals");
     NS_TEST_ASSERT_MSG_EQ(
         summary.windows.at(0).stations.at(0).statistics.appStats.uplink.acceptedPayloadBytes,
         1000,
@@ -368,6 +395,55 @@ ExperimentOverallTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(noDuration.phyStats.channelUtilizationPercent.has_value(),
                           false,
                           "Zero-duration utilization is not null");
+
+    const double largestDurationMs = 0x1.0624dd2f1a9fbp+53;
+    NS_TEST_ASSERT_MSG_EQ(ConvertExperimentDurationMsToUs(largestDurationMs),
+                          9223372036854774000LL,
+                          "Largest representable duration was not converted exactly");
+    bool overflowRejected = false;
+    try
+    {
+        (void)ConvertExperimentDurationMsToUs(
+            std::nextafter(largestDurationMs, std::numeric_limits<double>::infinity()));
+    }
+    catch (const std::overflow_error&)
+    {
+        overflowRejected = true;
+    }
+    NS_TEST_ASSERT_MSG_EQ(overflowRejected, true, "Overflowing duration was not rejected");
+    bool nonFiniteRejected = false;
+    try
+    {
+        (void)ConvertExperimentDurationMsToUs(std::numeric_limits<double>::infinity());
+    }
+    catch (const std::invalid_argument&)
+    {
+        nonFiniteRejected = true;
+    }
+    NS_TEST_ASSERT_MSG_EQ(nonFiniteRejected, true, "Non-finite duration was not rejected");
+
+    LocalEntityWindowAccumulator largeDurationRaw;
+    auto& largeTransmission = largeDurationRaw.deviceTransmission.uplink;
+    largeTransmission.estimatedMatchedTcpPayloadBytes = 8;
+    largeTransmission.matchedPacketCount = 1;
+    largeTransmission.transmissionDurationUs.count = 1;
+    largeTransmission.transmissionDurationUs.sum = 9223372036854775808.0L;
+    largeTransmission.transmissionDurationUs.sumSquares =
+        largeTransmission.transmissionDurationUs.sum * largeTransmission.transmissionDurationUs.sum;
+    largeTransmission.transmissionDurationUs.minimum = 9223372036854775808.0;
+    largeTransmission.transmissionDurationUs.maximum = 9223372036854775808.0;
+    const auto largeDurationOutput =
+        FinalizeEntityStatistics(largeDurationRaw, 1, *statistics.m_state).generalStats.uplink;
+    NS_TEST_ASSERT_MSG_EQ(largeDurationOutput.totalTransmissionDurationUs,
+                          uint64_t{1} << 63,
+                          "Large raw duration did not retain its unsigned value");
+    NS_TEST_ASSERT_MSG_EQ(largeDurationOutput.effectiveThroughputMbps.has_value(),
+                          true,
+                          "Positive uint64 duration produced a null rate");
+    NS_TEST_ASSERT_MSG_EQ_TOL(largeDurationOutput.effectiveThroughputMbps.value(),
+                              64.0 / 9223372036854775808.0,
+                              1e-30,
+                              "Large uint64 duration produced the wrong rate");
 }
 
 std::vector<TestCase*>

@@ -42,8 +42,8 @@ GetLegacyNodeSecond(WifiStatisticsState& statistics, uint32_t nodeId, int64_t ab
     {
         return nullptr;
     }
-    const int64_t durationUs = static_cast<int64_t>(
-        std::ceil(statistics.coordinator.GetMaxExperimentDurationMs() * 1000.0));
+    const int64_t durationUs =
+        ConvertExperimentDurationMsToUs(statistics.coordinator.GetMaxExperimentDurationMs());
     uint64_t secondIndex = 0;
     if (!GetNodeSecondIndex(absoluteTimeUs - experimentStartUs, durationUs, secondIndex))
     {

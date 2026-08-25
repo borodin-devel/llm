@@ -1,6 +1,8 @@
 #include "experiment-statistics-types.h"
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <tuple>
 
@@ -202,6 +204,21 @@ SampleAccumulator::Merge(const SampleAccumulator& other)
     sumSquares += other.sumSquares;
     minimum = std::min(minimum, other.minimum);
     maximum = std::max(maximum, other.maximum);
+}
+
+int64_t
+ConvertExperimentDurationMsToUs(double durationMs)
+{
+    if (!std::isfinite(durationMs) || durationMs < 0.0)
+    {
+        throw std::invalid_argument("Experiment duration must be finite and non-negative");
+    }
+    const long double durationUs = static_cast<long double>(durationMs) * 1000.0L;
+    if (durationUs > static_cast<long double>(std::numeric_limits<int64_t>::max()))
+    {
+        throw std::overflow_error("Experiment duration exceeds the microsecond range");
+    }
+    return static_cast<int64_t>(std::ceil(durationUs));
 }
 
 void

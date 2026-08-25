@@ -64,8 +64,7 @@ GetStatisticsWindowIndex(int64_t absoluteUs,
     }
 
     const int64_t relativeUs = absoluteUs - experimentStartUs;
-    const int64_t experimentDurationUs =
-        static_cast<int64_t>(std::ceil(maxExperimentDurationMs * 1000.0));
+    const int64_t experimentDurationUs = ConvertExperimentDurationMsToUs(maxExperimentDurationMs);
     if (relativeUs >= experimentDurationUs)
     {
         return false;
@@ -187,7 +186,7 @@ WifiStatistics::RecordMacPayload(int64_t nowUs,
 
     const int64_t relativeUs = nowUs - state.coordinator.GetExperimentStartUs();
     const int64_t statsEndUs =
-        static_cast<int64_t>(std::ceil(state.coordinator.GetMaxExperimentDurationMs() * 1000.0));
+        ConvertExperimentDurationMsToUs(state.coordinator.GetMaxExperimentDurationMs());
     if (relativeUs >= statsEndUs)
     {
         return;

@@ -77,6 +77,7 @@ ExperimentValidationTestCase::DoRun()
 
     statistics.RegisterAccessPointIdentity(0, 10, "AP0", Ipv4Address("10.1.0.1"));
     statistics.RegisterStationIdentity(0, 0, 20, "STA0", Ipv4Address("10.1.0.2"));
+    statistics.RegisterStationIdentity(0, 1, 21, "STA1", Ipv4Address("10.1.0.3"));
     auto& station = statistics.m_state->unifiedWindows[0][20];
     station.app.uplink.acceptedSendCount = 1;
     station.app.uplink.acceptedPayloadBytes = 100;
@@ -88,40 +89,92 @@ ExperimentValidationTestCase::DoRun()
     station.mac.uplink.estimatedTransmittedTcpPayloadBytes = 80;
     station.mac.uplink.transmitDropCount = 1;
     station.mac.uplink.transmitDropPacketBytes = 20;
-    station.mac.uplink.peersByNodeId[10].estimatedTransmitEventCount = 1;
-    station.mac.uplink.peersByNodeId[10].estimatedTransmittedTcpPayloadBytes = 80;
+    station.mac.uplink.mpduDropCount = 3;
+    station.mac.uplink.mpduDropBytes = 350;
+    station.mac.uplink.dataFailureCount = 5;
+    station.mac.uplink.finalDataFailureCount = 3;
+    station.mac.uplink.mpduDropsByReason[9] = 1;
+    station.mac.uplink.mpduDropsByReason[7] = 1;
+    station.mac.uplink.mpduDropsByReason[4] = 1;
+    auto& macPeer = station.mac.uplink.peersByNodeId[10];
+    macPeer.estimatedTransmitEventCount = 1;
+    macPeer.estimatedTransmittedTcpPayloadBytes = 80;
+    macPeer.mpduDropCount = 2;
+    macPeer.mpduDropBytes = 300;
+    macPeer.dataFailureCount = 3;
+    macPeer.finalDataFailureCount = 1;
+    macPeer.mpduDropsByReason[9] = 1;
+    macPeer.mpduDropsByReason[4] = 1;
     station.phy.uplink.taggedPayloadBytes = 70;
     station.phy.uplink.uniqueTaggedPayloadBytes = 60;
     station.phy.uplink.transmissionAttemptCount = 1;
     station.phy.uplink.transmissionAirtimeUs = 10.0L;
-    station.phy.uplink.dataRateBpsUs = 100e6L;
+    const long double largeRateProduct = 1e20L;
+    station.phy.uplink.dataRateBpsUs = largeRateProduct;
     station.phy.uplink.peersByNodeId[10].taggedPayloadBytes = 70;
     station.phy.uplink.peersByNodeId[10].uniqueTaggedPayloadBytes = 60;
     station.phy.uplink.peersByNodeId[10].transmissionAttemptCount = 1;
     station.phy.uplink.peersByNodeId[10].transmissionAirtimeUs = 10.0L;
-    station.phy.uplink.peersByNodeId[10].dataRateBpsUs = 100e6L;
+    station.phy.uplink.peersByNodeId[10].dataRateBpsUs = largeRateProduct;
+
+    auto& secondStation = statistics.m_state->unifiedWindows[0][21];
+    secondStation.phy.uplink.taggedPayloadBytes = 1;
+    secondStation.phy.uplink.uniqueTaggedPayloadBytes = 1;
+    secondStation.phy.uplink.transmissionAttemptCount = 1;
+    secondStation.phy.uplink.transmissionAirtimeUs = 1.0L;
+    secondStation.phy.uplink.dataRateBpsUs = 8.0L;
+    secondStation.phy.uplink.peersByNodeId[10].taggedPayloadBytes = 1;
+    secondStation.phy.uplink.peersByNodeId[10].uniqueTaggedPayloadBytes = 1;
+    secondStation.phy.uplink.peersByNodeId[10].transmissionAttemptCount = 1;
+    secondStation.phy.uplink.peersByNodeId[10].transmissionAirtimeUs = 1.0L;
+    secondStation.phy.uplink.peersByNodeId[10].dataRateBpsUs = 8.0L;
 
     auto& accessPoint = statistics.m_state->unifiedWindows[0][10];
     accessPoint.app.uplink.receiveEventCount = 1;
     accessPoint.app.uplink.receivedPayloadBytes = 90;
     accessPoint.app.uplink.peersByNodeId[20].receiveEventCount = 1;
     accessPoint.app.uplink.peersByNodeId[20].receivedPayloadBytes = 90;
+    accessPoint.app.downlink.acceptedSendCount = 1;
+    accessPoint.app.downlink.acceptedPayloadBytes = 200;
+    accessPoint.app.downlink.agents["downlink-agent"].acceptedSendCount = 1;
+    accessPoint.app.downlink.agents["downlink-agent"].acceptedPayloadBytes = 200;
+    accessPoint.app.downlink.peersByNodeId[20].acceptedSendCount = 1;
+    accessPoint.app.downlink.peersByNodeId[20].acceptedPayloadBytes = 200;
+    station.app.downlink.receiveEventCount = 1;
+    station.app.downlink.receivedPayloadBytes = 50;
+    station.app.downlink.peersByNodeId[10].receiveEventCount = 1;
+    station.app.downlink.peersByNodeId[10].receivedPayloadBytes = 50;
     accessPoint.mac.uplink.estimatedReceiveEventCount = 1;
     accessPoint.mac.uplink.estimatedReceivedTcpPayloadBytes = 75;
     accessPoint.mac.uplink.peersByNodeId[20].estimatedReceiveEventCount = 1;
     accessPoint.mac.uplink.peersByNodeId[20].estimatedReceivedTcpPayloadBytes = 75;
-    accessPoint.phy.uplink.taggedPayloadBytes = 70;
-    accessPoint.phy.uplink.uniqueTaggedPayloadBytes = 60;
-    accessPoint.phy.uplink.transmissionAttemptCount = 1;
-    accessPoint.phy.uplink.transmissionAirtimeUs = 10.0L;
-    accessPoint.phy.uplink.dataRateBpsUs = 100e6L;
+    accessPoint.phy.busyTimeUs = 100;
+    accessPoint.phy.uplink.taggedPayloadBytes = 71;
+    accessPoint.phy.uplink.uniqueTaggedPayloadBytes = 61;
+    accessPoint.phy.uplink.transmissionAttemptCount = 2;
+    accessPoint.phy.uplink.transmissionAirtimeUs = 11.0L;
+    long double eventOrderRateProduct = largeRateProduct;
+    eventOrderRateProduct += 4.0L;
+    eventOrderRateProduct += 4.0L;
+    accessPoint.phy.uplink.dataRateBpsUs = eventOrderRateProduct;
     accessPoint.phy.uplink.peersByNodeId[20].taggedPayloadBytes = 70;
     accessPoint.phy.uplink.peersByNodeId[20].uniqueTaggedPayloadBytes = 60;
     accessPoint.phy.uplink.peersByNodeId[20].transmissionAttemptCount = 1;
     accessPoint.phy.uplink.peersByNodeId[20].transmissionAirtimeUs = 10.0L;
-    accessPoint.phy.uplink.peersByNodeId[20].dataRateBpsUs = 100e6L;
+    accessPoint.phy.uplink.peersByNodeId[20].dataRateBpsUs = largeRateProduct;
+    accessPoint.phy.uplink.peersByNodeId[21].taggedPayloadBytes = 1;
+    accessPoint.phy.uplink.peersByNodeId[21].uniqueTaggedPayloadBytes = 1;
+    accessPoint.phy.uplink.peersByNodeId[21].transmissionAttemptCount = 1;
+    accessPoint.phy.uplink.peersByNodeId[21].transmissionAirtimeUs = 1.0L;
+    accessPoint.phy.uplink.peersByNodeId[21].dataRateBpsUs = 8.0L;
 
     const UnifiedSummaryRawState base = BuildUnifiedSummaryRawState(*statistics.m_state);
+    const auto& parentPhy = base.accessPointWindows.at(0).at(10).phy.uplink;
+    const long double peerOrderRateProduct =
+        parentPhy.peersByNodeId.at(20).dataRateBpsUs + parentPhy.peersByNodeId.at(21).dataRateBpsUs;
+    NS_TEST_ASSERT_MSG_NE(parentPhy.dataRateBpsUs,
+                          peerOrderRateProduct,
+                          "Fixture did not change raw accumulation order");
     const ExperimentValidationOutput valid =
         ValidateUnifiedSummaryRawState(statistics.m_state->entityRegistry, base);
     NS_TEST_ASSERT_MSG_EQ(valid.entityInventoryReferencesValid, true, "Base inventory is invalid");
@@ -161,9 +214,33 @@ ExperimentValidationTestCase::DoRun()
         raw.stationOverall[20].mac.uplink.peersByNodeId[10].estimatedTransmittedTcpPayloadBytes =
             81;
     });
+    Check("mac-peers", [](auto& raw) {
+        raw.stationWindows[0][20].mac.uplink.peersByNodeId[10].mpduDropCount = 3;
+        raw.stationOverall[20].mac.uplink.peersByNodeId[10].mpduDropCount = 3;
+    });
+    Check("mac-peers", [](auto& raw) {
+        raw.stationWindows[0][20].mac.uplink.peersByNodeId[10].mpduDropBytes = 351;
+        raw.stationOverall[20].mac.uplink.peersByNodeId[10].mpduDropBytes = 351;
+    });
+    Check("mac-peers", [](auto& raw) {
+        raw.stationWindows[0][20].mac.uplink.peersByNodeId[10].mpduDropsByReason[4] = 2;
+        raw.stationOverall[20].mac.uplink.peersByNodeId[10].mpduDropsByReason[4] = 2;
+    });
+    Check("mac-peers", [](auto& raw) {
+        raw.stationWindows[0][20].mac.uplink.peersByNodeId[10].dataFailureCount = 6;
+        raw.stationOverall[20].mac.uplink.peersByNodeId[10].dataFailureCount = 6;
+    });
+    Check("mac-peers", [](auto& raw) {
+        raw.stationWindows[0][20].mac.uplink.peersByNodeId[10].finalDataFailureCount = 4;
+        raw.stationOverall[20].mac.uplink.peersByNodeId[10].finalDataFailureCount = 4;
+    });
     Check("phy-peers", [](auto& raw) {
         raw.stationWindows[0][20].phy.uplink.peersByNodeId[10].taggedPayloadBytes = 71;
         raw.stationOverall[20].phy.uplink.peersByNodeId[10].taggedPayloadBytes = 71;
+    });
+    Check("phy-peers", [](auto& raw) {
+        raw.stationWindows[0][20].phy.uplink.peersByNodeId[10].dataRateBpsUs += 1e6L;
+        raw.stationOverall[20].phy.uplink.peersByNodeId[10].dataRateBpsUs += 1e6L;
     });
     Check("parent-child", [](auto& raw) {
         raw.accessPointWindows[0][10].app.uplink.acceptedPayloadBytes = 101;
@@ -171,18 +248,46 @@ ExperimentValidationTestCase::DoRun()
         raw.accessPointOverall[10].app.uplink.acceptedPayloadBytes = 101;
         raw.accessPointOverall[10].app.uplink.agents["agent"].acceptedPayloadBytes = 101;
     });
+    Check("parent-child", [](auto& raw) {
+        raw.accessPointWindows[0][10].app.downlink.acceptedPayloadBytes = 201;
+        raw.accessPointWindows[0][10].app.downlink.agents["downlink-agent"].acceptedPayloadBytes =
+            201;
+        raw.accessPointWindows[0][10].app.downlink.peersByNodeId[20].acceptedPayloadBytes = 201;
+        raw.accessPointOverall[10].app.downlink.acceptedPayloadBytes = 201;
+        raw.accessPointOverall[10].app.downlink.agents["downlink-agent"].acceptedPayloadBytes = 201;
+        raw.accessPointOverall[10].app.downlink.peersByNodeId[20].acceptedPayloadBytes = 201;
+    });
+    Check("parent-child", [](auto& raw) {
+        raw.accessPointWindows[0][10].app.uplink.receivedPayloadBytes = 91;
+        raw.accessPointWindows[0][10].app.uplink.peersByNodeId[20].receivedPayloadBytes = 91;
+        raw.accessPointOverall[10].app.uplink.receivedPayloadBytes = 91;
+        raw.accessPointOverall[10].app.uplink.peersByNodeId[20].receivedPayloadBytes = 91;
+    });
+    Check("parent-child", [](auto& raw) {
+        raw.accessPointWindows[0][10].app.downlink.receivedPayloadBytes = 51;
+        raw.accessPointWindows[0][10].app.downlink.peersByNodeId[20].receivedPayloadBytes = 51;
+        raw.accessPointOverall[10].app.downlink.receivedPayloadBytes = 51;
+        raw.accessPointOverall[10].app.downlink.peersByNodeId[20].receivedPayloadBytes = 51;
+    });
+    Check("parent-child", [](auto& raw) {
+        raw.accessPointWindows[0][10].phy.busyTimeUs = 101;
+        raw.accessPointOverall[10].phy.busyTimeUs = 101;
+    });
     Check("overall", [](auto& raw) {
-        raw.accessPointOverall[10].deviceTransmission.downlink.estimatedTransmittedTcpPayloadBytes =
-            1;
+        raw.stationOverall[20].deviceTransmission.downlink.estimatedTransmittedTcpPayloadBytes = 1;
     });
     Check("unique-phy", [](auto& raw) {
+        raw.localWindows[0][20].phy.uplink.uniqueTaggedPayloadBytes = 71;
+        raw.localWindows[0][20].phy.uplink.peersByNodeId[10].uniqueTaggedPayloadBytes = 71;
+        raw.localWindows[0][10].phy.uplink.uniqueTaggedPayloadBytes = 72;
+        raw.localWindows[0][10].phy.uplink.peersByNodeId[20].uniqueTaggedPayloadBytes = 71;
         raw.stationWindows[0][20].phy.uplink.uniqueTaggedPayloadBytes = 71;
         raw.stationWindows[0][20].phy.uplink.peersByNodeId[10].uniqueTaggedPayloadBytes = 71;
         raw.stationOverall[20].phy.uplink.uniqueTaggedPayloadBytes = 71;
         raw.stationOverall[20].phy.uplink.peersByNodeId[10].uniqueTaggedPayloadBytes = 71;
-        raw.accessPointWindows[0][10].phy.uplink.uniqueTaggedPayloadBytes = 71;
+        raw.accessPointWindows[0][10].phy.uplink.uniqueTaggedPayloadBytes = 72;
         raw.accessPointWindows[0][10].phy.uplink.peersByNodeId[20].uniqueTaggedPayloadBytes = 71;
-        raw.accessPointOverall[10].phy.uplink.uniqueTaggedPayloadBytes = 71;
+        raw.accessPointOverall[10].phy.uplink.uniqueTaggedPayloadBytes = 72;
         raw.accessPointOverall[10].phy.uplink.peersByNodeId[20].uniqueTaggedPayloadBytes = 71;
     });
 

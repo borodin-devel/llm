@@ -92,8 +92,8 @@ GetLegacyApplicationAccumulator(WifiStatisticsState& statistics,
                                 int64_t absoluteTimeUs)
 {
     const int64_t relativeUs = absoluteTimeUs - statistics.coordinator.GetExperimentStartUs();
-    const int64_t durationUs = static_cast<int64_t>(
-        std::ceil(statistics.coordinator.GetMaxExperimentDurationMs() * 1000.0));
+    const int64_t durationUs =
+        ConvertExperimentDurationMsToUs(statistics.coordinator.GetMaxExperimentDurationMs());
     uint64_t secondIndex = 0;
     if (!GetNodeSecondIndex(relativeUs, durationUs, secondIndex))
     {

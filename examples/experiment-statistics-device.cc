@@ -147,8 +147,8 @@ ResolveStatisticsEventWindow(const WifiStatisticsState& statistics,
     {
         return false;
     }
-    const int64_t experimentDurationUs = static_cast<int64_t>(
-        std::ceil(statistics.coordinator.GetMaxExperimentDurationMs() * 1000.0));
+    const int64_t experimentDurationUs =
+        ConvertExperimentDurationMsToUs(statistics.coordinator.GetMaxExperimentDurationMs());
     return ResolveExperimentWindow(absoluteTimeUs - experimentStartUs,
                                    experimentDurationUs,
                                    statistics.windowUs,

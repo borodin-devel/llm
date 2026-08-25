@@ -337,6 +337,16 @@ using UnifiedEntityAccumulatorMap = std::map<uint32_t, LocalEntityWindowAccumula
 /** Sparse experiment windows keyed by window index and entity node identifier. */
 using UnifiedExperimentWindowStore = std::map<uint64_t, UnifiedEntityAccumulatorMap>;
 
+/**
+ * Convert an experiment duration from milliseconds to integral microseconds.
+ *
+ * @param durationMs Duration in milliseconds.
+ * @return Duration rounded upward to microseconds.
+ * @throws std::invalid_argument if @p durationMs is negative or non-finite.
+ * @throws std::overflow_error if the rounded duration cannot fit in @c int64_t.
+ */
+int64_t ConvertExperimentDurationMsToUs(double durationMs);
+
 /** Register and resolve stable experiment entity identities. */
 class ExperimentEntityRegistry
 {

@@ -86,10 +86,12 @@ BuildIntervalSummary(uint64_t intervalIndex,
 CrossLayerSummary
 BuildCrossLayerSummary(const WifiStatisticsState& statistics)
 {
-    const double durationMs = statistics.coordinator.GetMaxExperimentDurationMs();
-    const double durationS = durationMs / 1000.0;
+    const int64_t durationUs =
+        ConvertExperimentDurationMsToUs(statistics.coordinator.GetMaxExperimentDurationMs());
+    const double durationS = static_cast<double>(durationUs) / 1e6;
     const uint64_t totalSecondBuckets =
-        durationMs > 0.0 ? static_cast<uint64_t>(std::ceil(durationMs / 1000.0)) : 0;
+        durationUs > 0 ? static_cast<uint64_t>(durationUs / 1000000 + (durationUs % 1000000 != 0))
+                       : 0;
 
     CrossLayerSummary summary;
     summary.nodes.reserve(statistics.nodeLabels.size());

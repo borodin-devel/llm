@@ -1,5 +1,8 @@
 #include "wifi-statistics-internal.h"
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <map>
 
 namespace ns3
@@ -7,6 +10,128 @@ namespace ns3
 
 namespace
 {
+
+/**
+ * Compare nonnegative raw floating-point accumulators with a fixed roundoff bound.
+ *
+ * The 64-epsilon relative bound covers only low-bit changes caused by reassociating a modest
+ * number of additions. Integer raw totals remain exact, and non-finite unequal values never match.
+ */
+bool
+RawLongDoubleEqual(long double left, long double right)
+{
+    if (left == right)
+    {
+        return true;
+    }
+    if (!std::isfinite(left) || !std::isfinite(right))
+    {
+        return false;
+    }
+    const long double scale = std::max(std::fabs(left), std::fabs(right));
+    const long double bound = 64.0L * std::numeric_limits<long double>::epsilon() * scale;
+    return std::fabs(left - right) <= bound;
+}
+
+template <typename Map, typename Equal>
+bool
+RawMapEqual(const Map& left, const Map& right, Equal equal)
+{
+    if (left.size() != right.size())
+    {
+        return false;
+    }
+    auto leftIterator = left.begin();
+    auto rightIterator = right.begin();
+    while (leftIterator != left.end())
+    {
+        if (leftIterator->first != rightIterator->first ||
+            !equal(leftIterator->second, rightIterator->second))
+        {
+            return false;
+        }
+        ++leftIterator;
+        ++rightIterator;
+    }
+    return true;
+}
+
+bool
+RawSampleEqual(const SampleAccumulator& left, const SampleAccumulator& right)
+{
+    return left.count == right.count && RawLongDoubleEqual(left.sum, right.sum) &&
+           RawLongDoubleEqual(left.sumSquares, right.sumSquares) && left.minimum == right.minimum &&
+           left.maximum == right.maximum;
+}
+
+bool
+RawAppEqual(const AppDirectionAccumulator& left, const AppDirectionAccumulator& right)
+{
+    return left.acceptedSendCount == right.acceptedSendCount &&
+           left.acceptedPayloadBytes == right.acceptedPayloadBytes &&
+           left.receiveEventCount == right.receiveEventCount &&
+           left.receivedPayloadBytes == right.receivedPayloadBytes &&
+           left.dropEventCount == right.dropEventCount &&
+           left.droppedPayloadBytes == right.droppedPayloadBytes &&
+           RawSampleEqual(left.receiveInterArrivalUs, right.receiveInterArrivalUs) &&
+           left.agents == right.agents && left.peersByNodeId == right.peersByNodeId;
+}
+
+bool
+RawDeviceEqual(const DeviceTransmissionAccumulator& left,
+               const DeviceTransmissionAccumulator& right)
+{
+    return left.estimatedTransmittedTcpPayloadBytes == right.estimatedTransmittedTcpPayloadBytes &&
+           left.estimatedMatchedTcpPayloadBytes == right.estimatedMatchedTcpPayloadBytes &&
+           left.matchedPacketCount == right.matchedPacketCount &&
+           RawSampleEqual(left.transmissionDurationUs, right.transmissionDurationUs);
+}
+
+bool
+RawPhyPeerEqual(const PhyPeerAccumulator& left, const PhyPeerAccumulator& right)
+{
+    return left.taggedPayloadBytes == right.taggedPayloadBytes &&
+           left.uniqueTaggedPayloadBytes == right.uniqueTaggedPayloadBytes &&
+           left.transmissionAttemptCount == right.transmissionAttemptCount &&
+           left.retransmissionCount == right.retransmissionCount &&
+           RawLongDoubleEqual(left.dataRateBpsUs, right.dataRateBpsUs) &&
+           RawLongDoubleEqual(left.transmissionAirtimeUs, right.transmissionAirtimeUs);
+}
+
+bool
+RawPhyEqual(const PhyDirectionAccumulator& left, const PhyDirectionAccumulator& right)
+{
+    return RawPhyPeerEqual(left, right) && left.taggedMpduCount == right.taggedMpduCount &&
+           left.completeTaggedMpduBytes == right.completeTaggedMpduBytes &&
+           RawMapEqual(left.peersByNodeId, right.peersByNodeId, RawPhyPeerEqual);
+}
+
+bool
+RawTcpEqual(const TcpWindowAccumulator& left, const TcpWindowAccumulator& right)
+{
+    return RawLongDoubleEqual(left.congestionWindowBytesUs, right.congestionWindowBytesUs) &&
+           left.congestionWindowObservationDurationUs ==
+               right.congestionWindowObservationDurationUs &&
+           left.lastCongestionWindowBytes == right.lastCongestionWindowBytes &&
+           RawSampleEqual(left.roundTripTimeUs, right.roundTripTimeUs);
+}
+
+bool
+RawEntityEqual(const LocalEntityWindowAccumulator& left, const LocalEntityWindowAccumulator& right)
+{
+    return RawAppEqual(left.app.uplink, right.app.uplink) &&
+           RawAppEqual(left.app.downlink, right.app.downlink) &&
+           RawDeviceEqual(left.deviceTransmission.uplink, right.deviceTransmission.uplink) &&
+           RawDeviceEqual(left.deviceTransmission.downlink, right.deviceTransmission.downlink) &&
+           RawSampleEqual(left.applicationToPhyDelayUs.uplink,
+                          right.applicationToPhyDelayUs.uplink) &&
+           RawSampleEqual(left.applicationToPhyDelayUs.downlink,
+                          right.applicationToPhyDelayUs.downlink) &&
+           left.mac == right.mac && left.phy.busyTimeUs == right.phy.busyTimeUs &&
+           RawPhyEqual(left.phy.uplink, right.phy.uplink) &&
+           RawPhyEqual(left.phy.downlink, right.phy.downlink) &&
+           RawMapEqual(left.tcpConnections, right.tcpConnections, RawTcpEqual);
+}
 
 template <typename Callback>
 void
@@ -202,7 +327,7 @@ PhyPeersConsistent(const PhyDirectionAccumulator& direction)
         total.dataRateBpsUs += peer.dataRateBpsUs;
         total.transmissionAirtimeUs += peer.transmissionAirtimeUs;
     }
-    return total == static_cast<const PhyPeerAccumulator&>(direction);
+    return RawPhyPeerEqual(total, direction);
 }
 
 bool
@@ -224,137 +349,107 @@ PhyUniqueValid(const PhyDirectionAccumulator& direction)
 }
 
 bool
-AppSenderEqual(const AppDirectionAccumulator& parent, const AppDirectionAccumulator& children)
-{
-    return parent.acceptedSendCount == children.acceptedSendCount &&
-           parent.acceptedPayloadBytes == children.acceptedPayloadBytes &&
-           parent.dropEventCount == children.dropEventCount &&
-           parent.droppedPayloadBytes == children.droppedPayloadBytes;
-}
-
-bool
-MacSenderEqual(const MacDirectionAccumulator& parent, const MacDirectionAccumulator& children)
-{
-    return parent.estimatedTransmitEventCount == children.estimatedTransmitEventCount &&
-           parent.estimatedTransmittedTcpPayloadBytes ==
-               children.estimatedTransmittedTcpPayloadBytes &&
-           parent.transmitDropCount == children.transmitDropCount &&
-           parent.transmitDropPacketBytes == children.transmitDropPacketBytes &&
-           parent.mpduDropCount == children.mpduDropCount &&
-           parent.mpduDropBytes == children.mpduDropBytes &&
-           parent.dataFailureCount == children.dataFailureCount &&
-           parent.finalDataFailureCount == children.finalDataFailureCount &&
-           parent.mpduDropsByReason == children.mpduDropsByReason;
-}
-
-bool
 PhyDirectionTotalsEqual(const PhyDirectionAccumulator& parent,
                         const PhyDirectionAccumulator& children)
 {
-    return static_cast<const PhyPeerAccumulator&>(parent) ==
-               static_cast<const PhyPeerAccumulator&>(children) &&
+    return RawPhyPeerEqual(parent, children) &&
            parent.taggedMpduCount == children.taggedMpduCount &&
            parent.completeTaggedMpduBytes == children.completeTaggedMpduBytes;
 }
 
-bool
-TcpUplinkEqual(const LocalEntityWindowAccumulator& parent,
-               const UnifiedEntityAccumulatorMap& stations,
-               uint32_t accessPointId,
-               const ExperimentEntityRegistry& registry)
+LocalEntityWindowAccumulator
+ReconstructAccessPoint(const UnifiedEntityAccumulatorMap& localEntities,
+                       const ExperimentEntityIdentity& accessPoint,
+                       const ExperimentEntityRegistry& registry)
 {
-    std::map<uint32_t, TcpWindowAccumulator> expected;
+    LocalEntityWindowAccumulator expected;
+    if (const auto local = localEntities.find(accessPoint.nodeId); local != localEntities.end())
+    {
+        expected = local->second;
+    }
+    for (const auto& stationIdentity : registry.GetStations())
+    {
+        if (stationIdentity.accessPointId != accessPoint.accessPointId)
+        {
+            continue;
+        }
+        const auto station = localEntities.find(stationIdentity.nodeId);
+        if (station == localEntities.end())
+        {
+            continue;
+        }
+        MergeStationIntoAccessPoint(expected,
+                                    station->second,
+                                    accessPoint.nodeId,
+                                    stationIdentity.nodeId);
+    }
+    return expected;
+}
+
+bool
+AttributedPhyMatchesChildren(const LocalEntityWindowAccumulator& parent,
+                             const UnifiedEntityAccumulatorMap& localEntities,
+                             uint32_t accessPointId,
+                             const ExperimentEntityRegistry& registry)
+{
+    LocalEntityWindowAccumulator children;
     for (const auto& stationIdentity : registry.GetStations())
     {
         if (stationIdentity.accessPointId != accessPointId)
         {
             continue;
         }
-        const auto station = stations.find(stationIdentity.nodeId);
-        if (station == stations.end())
+        if (const auto station = localEntities.find(stationIdentity.nodeId);
+            station != localEntities.end())
         {
-            continue;
-        }
-        for (const auto& [key, connection] : station->second.tcpConnections)
-        {
-            if (key.first != ExperimentDirection::UPLINK)
-            {
-                continue;
-            }
-            auto& target = expected[stationIdentity.nodeId];
-            target.congestionWindowBytesUs += connection.congestionWindowBytesUs;
-            target.congestionWindowObservationDurationUs +=
-                connection.congestionWindowObservationDurationUs;
-            if (connection.lastCongestionWindowBytes)
-            {
-                target.lastCongestionWindowBytes = connection.lastCongestionWindowBytes;
-            }
-            target.roundTripTimeUs.Merge(connection.roundTripTimeUs);
+            MergeLocalEntityWindowAccumulator(children, station->second);
         }
     }
-    std::map<uint32_t, TcpWindowAccumulator> actual;
-    for (const auto& [key, connection] : parent.tcpConnections)
-    {
-        if (key.first == ExperimentDirection::UPLINK)
-        {
-            actual[key.second] = connection;
-        }
-    }
-    return actual == expected;
-}
-
-bool
-ParentTotalsForMaps(const UnifiedEntityAccumulatorMap& accessPoints,
-                    const UnifiedEntityAccumulatorMap& stations,
-                    const ExperimentEntityRegistry& registry)
-{
-    for (const auto& accessPointIdentity : registry.GetAccessPoints())
-    {
-        const auto parentIterator = accessPoints.find(accessPointIdentity.nodeId);
-        const LocalEntityWindowAccumulator empty;
-        const auto& parent = parentIterator == accessPoints.end() ? empty : parentIterator->second;
-        LocalEntityWindowAccumulator children;
-        for (const auto& stationIdentity : registry.GetStations())
-        {
-            if (stationIdentity.accessPointId != accessPointIdentity.accessPointId)
-            {
-                continue;
-            }
-            if (const auto station = stations.find(stationIdentity.nodeId);
-                station != stations.end())
-            {
-                MergeLocalEntityWindowAccumulator(children, station->second);
-            }
-        }
-        if (!(parent.deviceTransmission.uplink == children.deviceTransmission.uplink) ||
-            !(parent.applicationToPhyDelayUs.uplink == children.applicationToPhyDelayUs.uplink) ||
-            !AppSenderEqual(parent.app.uplink, children.app.uplink) ||
-            !MacSenderEqual(parent.mac.uplink, children.mac.uplink) ||
-            !PhyDirectionTotalsEqual(parent.phy.uplink, children.phy.uplink) ||
-            !PhyDirectionTotalsEqual(parent.phy.downlink, children.phy.downlink) ||
-            !TcpUplinkEqual(parent, stations, accessPointIdentity.accessPointId, registry))
-        {
-            return false;
-        }
-    }
-    return true;
+    return PhyDirectionTotalsEqual(parent.phy.uplink, children.phy.uplink) &&
+           PhyDirectionTotalsEqual(parent.phy.downlink, children.phy.downlink);
 }
 
 bool
 ParentTotalsConsistent(const UnifiedSummaryRawState& raw, const ExperimentEntityRegistry& registry)
 {
-    for (const auto& [windowIndex, accessPoints] : raw.accessPointWindows)
+    if (raw.accessPointWindows.size() != raw.localWindows.size())
     {
-        const auto stations = raw.stationWindows.find(windowIndex);
-        const UnifiedEntityAccumulatorMap empty;
-        if (!ParentTotalsForMaps(accessPoints,
-                                 stations == raw.stationWindows.end() ? empty : stations->second,
-                                 registry))
+        return false;
+    }
+
+    UnifiedEntityAccumulatorMap expectedOverall;
+    for (const auto& accessPoint : registry.GetAccessPoints())
+    {
+        expectedOverall[accessPoint.nodeId];
+    }
+    for (const auto& [windowIndex, localEntities] : raw.localWindows)
+    {
+        const auto materializedWindow = raw.accessPointWindows.find(windowIndex);
+        if (materializedWindow == raw.accessPointWindows.end() ||
+            materializedWindow->second.size() != registry.GetAccessPoints().size())
         {
             return false;
         }
+        for (const auto& accessPoint : registry.GetAccessPoints())
+        {
+            const auto actual = materializedWindow->second.find(accessPoint.nodeId);
+            if (actual == materializedWindow->second.end())
+            {
+                return false;
+            }
+            const auto expected = ReconstructAccessPoint(localEntities, accessPoint, registry);
+            if (!RawEntityEqual(actual->second, expected) ||
+                !AttributedPhyMatchesChildren(expected,
+                                              localEntities,
+                                              accessPoint.accessPointId,
+                                              registry))
+            {
+                return false;
+            }
+            MergeLocalEntityWindowAccumulator(expectedOverall[accessPoint.nodeId], expected);
+        }
     }
-    return ParentTotalsForMaps(raw.accessPointOverall, raw.stationOverall, registry);
+    return RawMapEqual(expectedOverall, raw.accessPointOverall, RawEntityEqual);
 }
 
 bool
@@ -375,7 +470,7 @@ OverallForMapsMatches(const UnifiedExperimentWindowStore& windows,
             MergeLocalEntityWindowAccumulator(expected[nodeId], entity);
         }
     }
-    return expected == overall;
+    return RawMapEqual(expected, overall, RawEntityEqual);
 }
 
 } // namespace

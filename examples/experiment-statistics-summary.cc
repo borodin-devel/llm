@@ -36,14 +36,16 @@ HasPhyPeer(const PhyPeerAccumulator& value)
            value.dataRateBpsUs != 0.0L || value.transmissionAirtimeUs != 0.0L;
 }
 
+template <typename Duration>
 std::optional<double>
-RateMbps(uint64_t bytes, int64_t durationUs)
+RateMbps(uint64_t bytes, Duration durationUs)
 {
     if (durationUs <= 0)
     {
         return std::nullopt;
     }
-    return static_cast<double>(bytes) * 8.0 / static_cast<double>(durationUs);
+    return static_cast<double>(static_cast<long double>(bytes) * 8.0L /
+                               static_cast<long double>(durationUs));
 }
 
 std::optional<double>
@@ -96,8 +98,7 @@ FinalizeGeneral(const DeviceTransmissionAccumulator& device, const SampleAccumul
     output.minimumTransmissionDurationUs = duration.minimumUs;
     output.maximumTransmissionDurationUs = duration.maximumUs;
     output.effectiveThroughputMbps =
-        RateMbps(device.estimatedMatchedTcpPayloadBytes,
-                 static_cast<int64_t>(output.totalTransmissionDurationUs));
+        RateMbps(device.estimatedMatchedTcpPayloadBytes, output.totalTransmissionDurationUs);
     output.applicationToPhyDelay = FinalizeDistribution(delay);
     return output;
 }
@@ -284,8 +285,7 @@ FinalizePhy(const PhyDirectionAccumulator& raw,
 int64_t
 ExperimentDurationUs(const WifiStatisticsState& statistics)
 {
-    return static_cast<int64_t>(
-        std::ceil(statistics.coordinator.GetMaxExperimentDurationMs() * 1000.0));
+    return ConvertExperimentDurationMsToUs(statistics.coordinator.GetMaxExperimentDurationMs());
 }
 
 AccessPointStatisticsOutput
