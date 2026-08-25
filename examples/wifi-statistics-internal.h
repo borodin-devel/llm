@@ -165,6 +165,14 @@ bool RecordMacPayloadInWindow(WifiStatisticsState& statistics,
  */
 void WriteWifiStatisticsJson(const WifiStatisticsState& statistics, const std::string& outputPath);
 
+/**
+ * Build typed cross-layer measurements from collected trace data.
+ *
+ * @param statistics Scenario statistics state.
+ * @return Per-node interval and overall cross-layer measurements.
+ */
+CrossLayerSummary BuildCrossLayerSummary(const WifiStatisticsState& statistics);
+
 } // namespace ns3
 
 #endif // WIFI_STATISTICS_INTERNAL_H

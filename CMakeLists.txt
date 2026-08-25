@@ -59,6 +59,7 @@ set(test_sources
     examples/wifi-statistics-report.cc
     test/wifi-statistics-test-suite.cc
     test/traffic-flow-summary-test-suite.cc
+    test/cross-layer-summary-test-suite.cc
 )
 
 build_lib(

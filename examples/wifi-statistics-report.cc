@@ -5,173 +5,284 @@
 
 #include <algorithm>
 #include <cmath>
-#include <iomanip>
+#include <cstdint>
 #include <map>
+#include <utility>
 
 namespace ns3
 {
 
 static LogComponent& g_log = llm_example::GetScenarioLog();
 
-static void
-PrintCrossLayerStats(const WifiStatisticsState& statistics)
+static DelaySummary
+BuildDelaySummary(const DelayAccumulator& accumulator)
 {
-    NS_LOG_WARN("========== App -> PHY / reliability statistics ==========");
+    return {
+        .sampleCount = accumulator.count,
+        .meanUs = accumulator.MeanUs(),
+        .standardDeviationUs = accumulator.StdDevUs(),
+        .minimumUs = accumulator.count > 0 ? accumulator.minUs : 0.0,
+        .maximumUs = accumulator.count > 0 ? accumulator.maxUs : 0.0,
+    };
+}
 
-    const uint32_t totalSecondBuckets =
-        statistics.coordinator.GetMaxExperimentDurationMs() > 0.0
-            ? static_cast<uint32_t>(
-                  std::ceil(statistics.coordinator.GetMaxExperimentDurationMs() / 1000.0))
-            : 0;
-    const double experimentDurationSeconds =
-        statistics.coordinator.GetMaxExperimentDurationMs() / 1000.0;
-
-    // Iterate the topology registry, not only the sparse statistics map.  This
-    // makes unused STAs visible too (all-zero rows are meaningful diagnostics).
-    for (const auto& [nodeId, label] : statistics.nodeLabels)
+static std::vector<MacDropReasonSummary>
+BuildMacDropReasonSummaries(const std::map<int, uint64_t>& dropsByReason)
+{
+    std::vector<MacDropReasonSummary> summaries;
+    summaries.reserve(dropsByReason.size());
+    for (const auto& [reasonCode, dropCount] : dropsByReason)
     {
+        summaries.push_back({reasonCode, dropCount});
+    }
+    return summaries;
+}
+
+static std::vector<AgentDropSummary>
+BuildAgentDropSummaries(const std::map<std::string, AgentDropStats>& dropsByAgent)
+{
+    std::vector<AgentDropSummary> summaries;
+    summaries.reserve(dropsByAgent.size());
+    for (const auto& [agentKey, drop] : dropsByAgent)
+    {
+        summaries.push_back({agentKey, drop.events, drop.bytes});
+    }
+    return summaries;
+}
+
+static CrossLayerIntervalSummary
+BuildIntervalSummary(uint64_t intervalIndex,
+                     double intervalDurationS,
+                     const NodeSecondStats& statistics)
+{
+    const double denominator = intervalDurationS > 0.0 ? intervalDurationS : 1.0;
+    return {
+        .intervalIndex = intervalIndex,
+        .intervalStartS = static_cast<double>(intervalIndex),
+        .intervalDurationS = intervalDurationS,
+        .applicationToPhyDelay = BuildDelaySummary(statistics.appToPhy),
+        .applicationTransmitThroughputMbps =
+            static_cast<double>(statistics.appTxBytes) * 8.0 / 1e6 / denominator,
+        .phyPayloadThroughputMbps =
+            static_cast<double>(statistics.phyPayloadBytes) * 8.0 / 1e6 / denominator,
+        .uniquePhyPayloadThroughputMbps =
+            static_cast<double>(statistics.phyUniquePayloadBytes) * 8.0 / 1e6 / denominator,
+        .channelUtilizationPercent = intervalDurationS > 0.0
+                                         ? std::min(100.0,
+                                                    static_cast<double>(statistics.phyBusyUs) /
+                                                        (intervalDurationS * 1e6) * 100.0)
+                                         : 0.0,
+        .phyRetransmissionCount = statistics.phyRetransmissions,
+        .macTransmitDropCount = statistics.macTxDrops,
+        .macTransmitDropBytes = statistics.macTxDropBytes,
+        .macMpduDropCount = statistics.macMpduDrops,
+        .macMpduDropBytes = statistics.macMpduDropBytes,
+        .macDataFailureCount = statistics.macDataFailures,
+        .macFinalDataFailureCount = statistics.macFinalDataFailures,
+        .applicationDropEventCount = statistics.appDropEvents,
+        .applicationDropBytes = statistics.appDropBytes,
+        .macMpduDropsByReason = BuildMacDropReasonSummaries(statistics.macMpduDropsByReason),
+        .applicationDropsByAgent = BuildAgentDropSummaries(statistics.appDropsByAgent),
+    };
+}
+
+CrossLayerSummary
+BuildCrossLayerSummary(const WifiStatisticsState& statistics)
+{
+    const double durationMs = statistics.coordinator.GetMaxExperimentDurationMs();
+    const double durationS = durationMs / 1000.0;
+    const uint64_t totalSecondBuckets =
+        durationMs > 0.0 ? static_cast<uint64_t>(std::ceil(durationMs / 1000.0)) : 0;
+
+    CrossLayerSummary summary;
+    summary.nodes.reserve(statistics.nodeLabels.size());
+    for (const auto& [nodeId, nodeLabel] : statistics.nodeLabels)
+    {
+        CrossLayerNodeSummary nodeSummary;
+        nodeSummary.nodeId = nodeId;
+        nodeSummary.nodeLabel = nodeLabel;
+        nodeSummary.oneSecondIntervals.reserve(totalSecondBuckets);
+
         DelayAccumulator overallDelay;
         uint64_t totalAppTxBytes = 0;
-        uint64_t totalPhyPayload = 0;
-        uint64_t totalUniquePayload = 0;
+        uint64_t totalPhyPayloadBytes = 0;
+        uint64_t totalUniquePhyPayloadBytes = 0;
         uint64_t totalPhyMpduBytes = 0;
-        uint64_t totalRetransmissions = 0;
-        uint64_t totalMacDrops = 0;
-        uint64_t totalMacDropBytes = 0;
+        uint64_t totalPhyRetransmissions = 0;
+        uint64_t totalMacTransmitDrops = 0;
+        uint64_t totalMacTransmitDropBytes = 0;
         uint64_t totalMacMpduDrops = 0;
         uint64_t totalMacMpduDropBytes = 0;
-        std::map<int, uint64_t> totalMacMpduDropsByReason;
-        uint64_t totalMacFailures = 0;
-        uint64_t totalMacFinalFailures = 0;
-        uint64_t totalAppDrops = 0;
-        uint64_t totalAppDropBytes = 0;
+        uint64_t totalMacDataFailures = 0;
+        uint64_t totalMacFinalDataFailures = 0;
+        uint64_t totalApplicationDrops = 0;
+        uint64_t totalApplicationDropBytes = 0;
         int64_t totalBusyUs = 0;
+        std::map<int, uint64_t> totalMacMpduDropsByReason;
 
         const auto nodeIt = statistics.nodeSeconds.find(nodeId);
-
-        for (uint32_t second = 0; second < totalSecondBuckets; ++second)
+        for (uint64_t intervalIndex = 0; intervalIndex < totalSecondBuckets; ++intervalIndex)
         {
-            static const NodeSecondStats emptyStats;
-            const NodeSecondStats* stats = &emptyStats;
+            static const NodeSecondStats emptyStatistics;
+            const NodeSecondStats* intervalStatistics = &emptyStatistics;
             if (nodeIt != statistics.nodeSeconds.end())
             {
-                const auto secondIt = nodeIt->second.find(second);
-                if (secondIt != nodeIt->second.end())
+                const auto intervalIt = nodeIt->second.find(intervalIndex);
+                if (intervalIt != nodeIt->second.end())
                 {
-                    stats = &secondIt->second;
+                    intervalStatistics = &intervalIt->second;
                 }
             }
 
-            const double bucketStartSeconds = static_cast<double>(second);
-            const double bucketDurationSeconds =
-                std::max(0.0, std::min(1.0, experimentDurationSeconds - bucketStartSeconds));
-            const double denominator = bucketDurationSeconds > 0.0 ? bucketDurationSeconds : 1.0;
+            const double intervalDurationS =
+                std::max(0.0, std::min(1.0, durationS - static_cast<double>(intervalIndex)));
+            nodeSummary.oneSecondIntervals.push_back(
+                BuildIntervalSummary(intervalIndex, intervalDurationS, *intervalStatistics));
 
-            const double appThroughputMbps =
-                static_cast<double>(stats->appTxBytes) * 8.0 / 1e6 / denominator;
-            const double throughputMbps =
-                static_cast<double>(stats->phyPayloadBytes) * 8.0 / 1e6 / denominator;
-            const double uniqueThroughputMbps =
-                static_cast<double>(stats->phyUniquePayloadBytes) * 8.0 / 1e6 / denominator;
-            const double channelUtilization =
-                bucketDurationSeconds > 0.0 ? std::min(100.0,
-                                                       static_cast<double>(stats->phyBusyUs) /
-                                                           (bucketDurationSeconds * 1e6) * 100.0)
-                                            : 0.0;
+            overallDelay.Merge(intervalStatistics->appToPhy);
+            totalAppTxBytes += intervalStatistics->appTxBytes;
+            totalPhyPayloadBytes += intervalStatistics->phyPayloadBytes;
+            totalUniquePhyPayloadBytes += intervalStatistics->phyUniquePayloadBytes;
+            totalPhyMpduBytes += intervalStatistics->phyMpduBytes;
+            totalPhyRetransmissions += intervalStatistics->phyRetransmissions;
+            totalMacTransmitDrops += intervalStatistics->macTxDrops;
+            totalMacTransmitDropBytes += intervalStatistics->macTxDropBytes;
+            totalMacMpduDrops += intervalStatistics->macMpduDrops;
+            totalMacMpduDropBytes += intervalStatistics->macMpduDropBytes;
+            totalMacDataFailures += intervalStatistics->macDataFailures;
+            totalMacFinalDataFailures += intervalStatistics->macFinalDataFailures;
+            totalApplicationDrops += intervalStatistics->appDropEvents;
+            totalApplicationDropBytes += intervalStatistics->appDropBytes;
+            totalBusyUs += intervalStatistics->phyBusyUs;
+            for (const auto& [reasonCode, dropCount] : intervalStatistics->macMpduDropsByReason)
+            {
+                totalMacMpduDropsByReason[reasonCode] += dropCount;
+            }
+        }
 
+        nodeSummary.overall = {
+            .experimentDurationS = durationS,
+            .applicationToPhyDelay = BuildDelaySummary(overallDelay),
+            .applicationTransmittedPayloadBytes = totalAppTxBytes,
+            .phyPayloadBytes = totalPhyPayloadBytes,
+            .uniquePhyPayloadBytes = totalUniquePhyPayloadBytes,
+            .phyMpduBytes = totalPhyMpduBytes,
+            .averageApplicationTransmitThroughputMbps =
+                durationS > 0.0 ? static_cast<double>(totalAppTxBytes) * 8.0 / 1e6 / durationS
+                                : 0.0,
+            .averagePhyPayloadThroughputMbps =
+                durationS > 0.0 ? static_cast<double>(totalPhyPayloadBytes) * 8.0 / 1e6 / durationS
+                                : 0.0,
+            .averageChannelUtilizationPercent =
+                durationS > 0.0
+                    ? std::min(100.0, static_cast<double>(totalBusyUs) / (durationS * 1e6) * 100.0)
+                    : 0.0,
+            .phyRetransmissionCount = totalPhyRetransmissions,
+            .macTransmitDropCount = totalMacTransmitDrops,
+            .macTransmitDropBytes = totalMacTransmitDropBytes,
+            .macMpduDropCount = totalMacMpduDrops,
+            .macMpduDropBytes = totalMacMpduDropBytes,
+            .macDataFailureCount = totalMacDataFailures,
+            .macFinalDataFailureCount = totalMacFinalDataFailures,
+            .applicationDropEventCount = totalApplicationDrops,
+            .applicationDropBytes = totalApplicationDropBytes,
+            .macMpduDropsByReason = BuildMacDropReasonSummaries(totalMacMpduDropsByReason),
+        };
+        summary.nodes.push_back(std::move(nodeSummary));
+    }
+    return summary;
+}
+
+static void
+PrintCrossLayerStats(const CrossLayerSummary& summary)
+{
+    NS_LOG_WARN("========== App -> PHY / reliability statistics ==========");
+    for (const auto& node : summary.nodes)
+    {
+        for (const auto& interval : node.oneSecondIntervals)
+        {
             NS_LOG_WARN(
                 "[Node stats] node="
-                << label << " second=" << second << " app_to_phy_count=" << stats->appToPhy.count
-                << " app_to_phy_mean_us=" << stats->appToPhy.MeanUs()
-                << " app_to_phy_stddev_us=" << stats->appToPhy.StdDevUs()
-                << " app_to_phy_min_us=" << (stats->appToPhy.count ? stats->appToPhy.minUs : 0.0)
-                << " app_to_phy_max_us=" << stats->appToPhy.maxUs
-                << " app_tx_mbps=" << appThroughputMbps << " phy_payload_mbps=" << throughputMbps
-                << " phy_unique_payload_mbps=" << uniqueThroughputMbps
-                << " channel_utilization=" << channelUtilization << "%"
-                << " phy_retrans=" << stats->phyRetransmissions << " mac_tx_drops="
-                << stats->macTxDrops << " mac_tx_drop_bytes=" << stats->macTxDropBytes
-                << " mac_mpdu_drops=" << stats->macMpduDrops << " mac_mpdu_drop_bytes="
-                << stats->macMpduDropBytes << " mac_data_failed=" << stats->macDataFailures
-                << " mac_final_data_failed=" << stats->macFinalDataFailures << " app_drop_events="
-                << stats->appDropEvents << " app_drop_bytes=" << stats->appDropBytes);
+                << node.nodeLabel << " second=" << interval.intervalIndex
+                << " app_to_phy_count=" << interval.applicationToPhyDelay.sampleCount
+                << " app_to_phy_mean_us=" << interval.applicationToPhyDelay.meanUs
+                << " app_to_phy_stddev_us=" << interval.applicationToPhyDelay.standardDeviationUs
+                << " app_to_phy_min_us=" << interval.applicationToPhyDelay.minimumUs
+                << " app_to_phy_max_us=" << interval.applicationToPhyDelay.maximumUs
+                << " app_tx_mbps=" << interval.applicationTransmitThroughputMbps
+                << " phy_payload_mbps=" << interval.phyPayloadThroughputMbps
+                << " phy_unique_payload_mbps=" << interval.uniquePhyPayloadThroughputMbps
+                << " channel_utilization=" << interval.channelUtilizationPercent
+                << "% phy_retrans=" << interval.phyRetransmissionCount
+                << " mac_tx_drops=" << interval.macTransmitDropCount << " mac_tx_drop_bytes="
+                << interval.macTransmitDropBytes << " mac_mpdu_drops=" << interval.macMpduDropCount
+                << " mac_mpdu_drop_bytes=" << interval.macMpduDropBytes
+                << " mac_data_failed=" << interval.macDataFailureCount
+                << " mac_final_data_failed=" << interval.macFinalDataFailureCount
+                << " app_drop_events=" << interval.applicationDropEventCount
+                << " app_drop_bytes=" << interval.applicationDropBytes);
 
-            for (const auto& [reason, count] : stats->macMpduDropsByReason)
+            for (const auto& reason : interval.macMpduDropsByReason)
             {
-                NS_LOG_WARN("[MAC MPDU drop] node=" << label << " second=" << second
-                                                    << " reason=" << reason << " count=" << count);
+                NS_LOG_WARN("[MAC MPDU drop] node="
+                            << node.nodeLabel << " second=" << interval.intervalIndex
+                            << " reason=" << reason.reasonCode << " count=" << reason.dropCount);
             }
-
-            for (const auto& [agentKey, drop] : stats->appDropsByAgent)
+            for (const auto& agent : interval.applicationDropsByAgent)
             {
-                NS_LOG_WARN("[App drop] node="
-                            << label << " second=" << second << " agent=\"" << agentKey << "\""
-                            << " events=" << drop.events << " bytes=" << drop.bytes);
+                NS_LOG_WARN("[App drop] node=" << node.nodeLabel
+                                               << " second=" << interval.intervalIndex
+                                               << " agent=\"" << agent.agentKey << "\""
+                                               << " events=" << agent.dropEventCount
+                                               << " bytes=" << agent.droppedPayloadBytes);
             }
-
-            overallDelay.Merge(stats->appToPhy);
-            totalAppTxBytes += stats->appTxBytes;
-            totalPhyPayload += stats->phyPayloadBytes;
-            totalUniquePayload += stats->phyUniquePayloadBytes;
-            totalPhyMpduBytes += stats->phyMpduBytes;
-            totalRetransmissions += stats->phyRetransmissions;
-            totalMacDrops += stats->macTxDrops;
-            totalMacDropBytes += stats->macTxDropBytes;
-            totalMacMpduDrops += stats->macMpduDrops;
-            totalMacMpduDropBytes += stats->macMpduDropBytes;
-            for (const auto& [reason, count] : stats->macMpduDropsByReason)
-            {
-                totalMacMpduDropsByReason[reason] += count;
-            }
-            totalMacFailures += stats->macDataFailures;
-            totalMacFinalFailures += stats->macFinalDataFailures;
-            totalAppDrops += stats->appDropEvents;
-            totalAppDropBytes += stats->appDropBytes;
-            totalBusyUs += stats->phyBusyUs;
         }
 
-        NS_LOG_WARN(
-            "[Node overall] node="
-            << label << " seconds=" << experimentDurationSeconds << " app_to_phy_count="
-            << overallDelay.count << " app_to_phy_mean_us=" << overallDelay.MeanUs()
-            << " app_to_phy_stddev_us=" << overallDelay.StdDevUs()
-            << " app_to_phy_min_us=" << (overallDelay.count ? overallDelay.minUs : 0.0)
-            << " app_to_phy_max_us=" << overallDelay.maxUs << " app_tx_bytes=" << totalAppTxBytes
-            << " phy_payload_bytes=" << totalPhyPayload << " phy_unique_payload_bytes="
-            << totalUniquePayload << " phy_mpdu_bytes=" << totalPhyMpduBytes << " avg_app_tx_mbps="
-            << (experimentDurationSeconds > 0.0
-                    ? static_cast<double>(totalAppTxBytes) * 8.0 / 1e6 / experimentDurationSeconds
-                    : 0.0)
-            << " avg_phy_payload_mbps="
-            << (experimentDurationSeconds > 0.0
-                    ? static_cast<double>(totalPhyPayload) * 8.0 / 1e6 / experimentDurationSeconds
-                    : 0.0)
-            << " avg_channel_utilization="
-            << (experimentDurationSeconds > 0.0
-                    ? std::min(100.0,
-                               static_cast<double>(totalBusyUs) /
-                                   (experimentDurationSeconds * 1e6) * 100.0)
-                    : 0.0)
-            << "% phy_retrans=" << totalRetransmissions << " mac_tx_drops=" << totalMacDrops
-            << " mac_tx_drop_bytes=" << totalMacDropBytes << " mac_mpdu_drops=" << totalMacMpduDrops
-            << " mac_mpdu_drop_bytes=" << totalMacMpduDropBytes << " mac_data_failed="
-            << totalMacFailures << " mac_final_data_failed=" << totalMacFinalFailures
-            << " app_drop_events=" << totalAppDrops << " app_drop_bytes=" << totalAppDropBytes);
+        const auto& overall = node.overall;
+        NS_LOG_WARN("[Node overall] node="
+                    << node.nodeLabel << " seconds=" << overall.experimentDurationS
+                    << " app_to_phy_count=" << overall.applicationToPhyDelay.sampleCount
+                    << " app_to_phy_mean_us=" << overall.applicationToPhyDelay.meanUs
+                    << " app_to_phy_stddev_us=" << overall.applicationToPhyDelay.standardDeviationUs
+                    << " app_to_phy_min_us=" << overall.applicationToPhyDelay.minimumUs
+                    << " app_to_phy_max_us=" << overall.applicationToPhyDelay.maximumUs
+                    << " app_tx_bytes=" << overall.applicationTransmittedPayloadBytes
+                    << " phy_payload_bytes=" << overall.phyPayloadBytes
+                    << " phy_unique_payload_bytes=" << overall.uniquePhyPayloadBytes
+                    << " phy_mpdu_bytes=" << overall.phyMpduBytes
+                    << " avg_app_tx_mbps=" << overall.averageApplicationTransmitThroughputMbps
+                    << " avg_phy_payload_mbps=" << overall.averagePhyPayloadThroughputMbps
+                    << " avg_channel_utilization=" << overall.averageChannelUtilizationPercent
+                    << "% phy_retrans=" << overall.phyRetransmissionCount
+                    << " mac_tx_drops=" << overall.macTransmitDropCount
+                    << " mac_tx_drop_bytes=" << overall.macTransmitDropBytes
+                    << " mac_mpdu_drops=" << overall.macMpduDropCount
+                    << " mac_mpdu_drop_bytes=" << overall.macMpduDropBytes
+                    << " mac_data_failed=" << overall.macDataFailureCount
+                    << " mac_final_data_failed=" << overall.macFinalDataFailureCount
+                    << " app_drop_events=" << overall.applicationDropEventCount
+                    << " app_drop_bytes=" << overall.applicationDropBytes);
 
-        for (const auto& [reason, count] : totalMacMpduDropsByReason)
+        for (const auto& reason : overall.macMpduDropsByReason)
         {
-            NS_LOG_WARN("[MAC MPDU drop overall] node=" << label << " reason=" << reason
-                                                        << " count=" << count);
+            NS_LOG_WARN("[MAC MPDU drop overall] node=" << node.nodeLabel
+                                                        << " reason=" << reason.reasonCode
+                                                        << " count=" << reason.dropCount);
         }
     }
-
     NS_LOG_WARN("==========================================================");
+}
+
+CrossLayerSummary
+WifiStatistics::BuildCrossLayerSummary() const
+{
+    return ns3::BuildCrossLayerSummary(*m_state);
 }
 
 void
 WifiStatistics::PrintCrossLayerReport() const
 {
-    PrintCrossLayerStats(*m_state);
+    PrintCrossLayerStats(BuildCrossLayerSummary());
 }
 
 } // namespace ns3

@@ -1,6 +1,8 @@
 #ifndef WIFI_STATISTICS_H
 #define WIFI_STATISTICS_H
 
+#include "experiment-output.h"
+
 #include "ns3/address.h"
 #include "ns3/ipv4-address.h"
 #include "ns3/ptr.h"
@@ -129,6 +131,13 @@ class WifiStatistics
      * @throws std::runtime_error if the output cannot be exclusively created or fully written.
      */
     void WriteJson(const std::string& outputPath) const;
+
+    /**
+     * Build cross-layer measurements for every registered node and interval.
+     *
+     * @return Typed per-node cross-layer measurements.
+     */
+    CrossLayerSummary BuildCrossLayerSummary() const;
 
     /** Print the final cross-layer consistency report. */
     void PrintCrossLayerReport() const;
