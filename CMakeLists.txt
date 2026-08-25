@@ -38,6 +38,7 @@ set(test_sources
     test/scenario-config-test-suite.cc
     test/scenario-config-json-test-suite.cc
     test/scenario-config-validation-test-suite.cc
+    test/scenario-logging-test-suite.cc
     test/scenario-run-path-test-suite.cc
     test/scenario-topology-test-suite.cc
     test/experiment-json-test-suite.cc
@@ -83,7 +84,6 @@ build_lib(
   HEADER_FILES ${header_files}
   LIBRARIES_TO_LINK
     ${libinternet-apps}
-    ${libflow-monitor}
     ${libspectrum}
     ${libbuildings}
     ${libvirtual-net-device}
