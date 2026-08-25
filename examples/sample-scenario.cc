@@ -1,5 +1,5 @@
 // examples/sample-scenario.cc
-// Sample ns-3 scenario: 3 APs x 30 stations, 802.11ax, TCP, isolated YansWifiChannels
+// Configurable ns-3 scenario: 802.11ax infrastructure BSSs with TCP trace replay
 //
 // Usage: ./sample-scenario --config <config.toml> [--section-field <value> ...]
 //
@@ -15,6 +15,7 @@
 #include "ns3/core-module.h"
 
 #include <chrono>
+#include <exception>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -26,23 +27,57 @@ using namespace ns3;
 int
 main(int argc, char* argv[])
 {
-    LogComponent& g_log = llm_example::GetScenarioLog();
-
+    const auto launchTime = std::chrono::system_clock::now();
+    const auto workingDirectory = std::filesystem::current_path();
     const std::vector<std::string> arguments(argv + 1, argv + argc);
     const ScenarioCommandLineResult commandLine =
-        ParseScenarioArguments(arguments, std::filesystem::current_path());
-    if (commandLine.printUsage)
+        ParseScenarioArguments(arguments, workingDirectory);
+    if (commandLine.valid && commandLine.printUsage)
     {
-        PrintScenarioUsage(commandLine.valid ? std::cout : std::cerr, argv[0]);
-        return commandLine.valid ? 0 : 1;
+        PrintScenarioUsage(std::cout, argv[0]);
+        return 0;
     }
     if (!commandLine.valid)
     {
-        std::cerr << commandLine.error << std::endl;
+        std::cerr << "error: " << commandLine.error << "\n\n";
+        PrintScenarioUsage(std::cerr, argv[0]);
         return 1;
     }
     const ScenarioConfig& config = commandLine.launch.scenario;
 
+    ResolvedRunPaths resolvedPaths;
+    try
+    {
+        ValidateScenarioConfig(config);
+        resolvedPaths = ResolveRunPaths(commandLine.launch, launchTime);
+        PrepareRunDirectory(resolvedPaths);
+    }
+    catch (const ScenarioConfigError& error)
+    {
+        std::cerr << "error: " << error.what() << "\n\n";
+        PrintScenarioUsage(std::cerr, argv[0]);
+        return 1;
+    }
+
+    ParsedResult parsedTrace;
+    try
+    {
+        parsedTrace = ParseJsonFile(resolvedPaths.traceFile.string());
+    }
+    catch (const std::exception& error)
+    {
+        std::cerr << "error: cannot parse trace '" << resolvedPaths.traceFile.string()
+                  << "': " << error.what() << "\n\n";
+        PrintScenarioUsage(std::cerr, argv[0]);
+        return 1;
+    }
+
+    const double maximumDurationMs =
+        config.simulation.durationMode == DurationMode::AUTO
+            ? parsedTrace.experimentDurationMs + config.simulation.autoTailSeconds * 1000.0
+            : config.simulation.fixedDurationSeconds * 1000.0;
+
+    LogComponent& g_log = llm_example::GetScenarioLog();
     RngSeedManager::SetSeed(config.simulation.rngSeed);
     RngSeedManager::SetRun(config.simulation.rngRun);
     ConfigureScenarioLogging(config.logging);
@@ -53,25 +88,38 @@ main(int argc, char* argv[])
     Config::SetDefault("ns3::TcpSocket::SndBufSize", UintegerValue(config.tcp.sendBufferBytes));
     Config::SetDefault("ns3::TcpSocket::RcvBufSize", UintegerValue(config.tcp.receiveBufferBytes));
 
-    std::cout << "=== ns-3 Sample Scenario: " << config.topology.bssCount << " APs x "
-              << config.topology.stationsPerBss << " Stations ===" << std::endl;
-    std::cout << "JSON: " << config.general.traceFile << std::endl;
-    std::cout << "Bandwidth: " << config.wifi.bandwidthMhz << " MHz" << std::endl;
-    std::cout << "MAC stats JSON: " << config.general.outputName << std::endl;
-    std::cout << "Standard: 802.11ax (Wi-Fi 6)" << std::endl;
-    std::cout << "Transport: TCP" << std::endl;
+    std::cout << "=== ns-3 configurable LLM trace replay ===\n";
+    std::cout << "Config file: " << resolvedPaths.configFile << '\n';
+    std::cout << "Trace file: " << resolvedPaths.traceFile << '\n';
+    std::cout << "Run folder: " << resolvedPaths.runFolder << '\n';
+    std::cout << "Output file: " << resolvedPaths.outputFile << '\n';
+    std::cout << "Duration: " << config.simulation.durationMode << ", maximum "
+              << maximumDurationMs / 1000.0 << " s\n";
+    std::cout << "RNG: seed " << config.simulation.rngSeed << ", run " << config.simulation.rngRun
+              << '\n';
+    std::cout << "Topology: " << config.topology.bssCount << " BSSs x "
+              << config.topology.stationsPerBss << " STAs, AP sink port "
+              << config.topology.apSinkPort << ", STA sink base port "
+              << config.topology.stationSinkBasePort << '\n';
     std::cout << "Channel model: "
               << (config.topology.isolateBssChannels ? "separate YansWifiChannel per AP group"
                                                      : "shared YansWifiChannel across AP groups")
-              << std::endl;
+              << '\n';
+    std::cout << "Distribution: max " << config.distribution.maxAgentsPerStation << " agents/STA, "
+              << (config.distribution.lowContentionPriority ? "low-contention priority"
+                                                            : "STA-use priority")
+              << ", " << config.distribution.slotMs << " ms slots\n";
+    std::cout << "Wi-Fi: 802.11ax, " << config.wifi.band << ", channel "
+              << config.wifi.channelNumber << ", " << config.wifi.bandwidthMhz
+              << " MHz, primary-20 index " << static_cast<uint32_t>(config.wifi.primary20Index)
+              << ", rate manager " << config.wifi.rateManager << '\n';
+    std::cout << "TCP: " << config.tcp.congestionControl << ", segment "
+              << config.tcp.segmentSizeBytes << " bytes, send/receive buffers "
+              << config.tcp.sendBufferBytes << '/' << config.tcp.receiveBufferBytes << " bytes\n";
+    std::cout << "Statistics: " << config.statistics.windowMs << " ms windows" << std::endl;
 
-    ParsedResult parsedTrace = ParseJsonFile(config.general.traceFile);
     const double traceDurationMs = parsedTrace.experimentDurationMs;
-    const double maxExperimentDurationMs =
-        config.simulation.durationMode == DurationMode::AUTO
-            ? traceDurationMs + config.simulation.autoTailSeconds * 1000.0
-            : config.simulation.fixedDurationSeconds * 1000.0;
-    TrafficCoordinator trafficCoordinator(traceDurationMs, maxExperimentDurationMs);
+    TrafficCoordinator trafficCoordinator(traceDurationMs, maximumDurationMs);
     WifiStatistics wifiStatistics(trafficCoordinator, config.statistics.windowMs);
     TrafficFlowMonitor trafficFlowMonitor(trafficCoordinator, wifiStatistics);
 
@@ -151,7 +199,7 @@ main(int argc, char* argv[])
     NS_ABORT_MSG_IF(trafficCoordinator.GetExperimentStartUs() < 0,
                     "Simulation ended before the global traffic barrier opened");
 
-    wifiStatistics.WriteJson(config.general.outputName);
+    wifiStatistics.WriteJson(resolvedPaths.outputFile.string());
     trafficFlowMonitor.PrintTransmissionTimePerSender();
     wifiStatistics.PrintCrossLayerReport();
 

@@ -77,7 +77,7 @@ JSON trace
   -> replay uplink/downlink payloads against that epoch
   -> carry application metadata through TCP with AppTxTag
   -> observe MAC/PHY attempts, airtime, rate, delay, retries, and drops
-  -> write sparse 10 ms JSON statistics and detailed log reports
+  -> write sparse configurable-window JSON statistics and detailed log reports
 ```
 
 The implementation uses five main methods to achieve its goal:
@@ -95,9 +95,9 @@ The implementation uses five main methods to achieve its goal:
 
 ## Default scenario
 
-The executable is `llm_sample`. Its defaults are defined by
-[`ScenarioConfig`](examples/scenario-config.h) and
-[`sample-scenario.cc`](examples/sample-scenario.cc).
+The executable is `llm_sample`. Its typed defaults are defined by
+[`ScenarioConfig`](examples/scenario-config.h); a complete documented launch
+configuration is in [`config/basic_config.toml`](config/basic_config.toml).
 
 | Setting | Default | Meaning |
 |---|---:|---|
@@ -105,7 +105,7 @@ The executable is `llm_sample`. Its defaults are defined by
 | Physical STAs per BSS | 30 | 90 physical STAs total |
 | Wi-Fi standard | 802.11ax | ns-3 `WIFI_STANDARD_80211ax` |
 | Band | 5 GHz | `BAND_5GHZ` |
-| Channel width | 20 MHz | CLI also accepts 40, 80, or 160 MHz |
+| Channel width | 20 MHz | TOML/CLI also accepts 40, 80, or 160 MHz |
 | Channel number | 0 | ns-3 selects the first valid channel for the standard/band/width |
 | Primary 20 MHz index | 0 | Lowest-frequency primary 20 MHz subchannel |
 | Rate manager | MinstrelHt | Dynamic rate selection, including HE groups in current ns-3 |
@@ -118,11 +118,13 @@ The executable is `llm_sample`. Its defaults are defined by
 | Statistics window | 10 ms | Sparse PHY JSON buckets |
 | Automatic tail margin | 2 s | Added to trace duration in `auto` mode |
 
-Each BSS uses its own `YansWifiChannel`. `YansWifiChannelHelper::Default()`
-uses `ConstantSpeedPropagationDelayModel` and
-`LogDistancePropagationLossModel`. Because the BSSs do not share a channel
-object, a transmission in BSS 0 cannot interfere with a device in BSS 1 or 2,
-even if their nominal channel settings or coordinates overlap.
+By default, each BSS uses its own `YansWifiChannel`.
+`YansWifiChannelHelper::Default()` uses `ConstantSpeedPropagationDelayModel`
+and `LogDistancePropagationLossModel`. With isolated channels, a transmission
+in BSS 0 cannot interfere with a device in BSS 1 or 2, even if their nominal
+channel settings or coordinates overlap. Setting
+`topology.isolate_bss_channels = false` instead gives every BSS the same
+channel object, so transmissions share the modeled medium.
 
 Infrastructure association is real ns-3 MAC behavior: each BSS has a unique
 SSID (`llm-ap-0`, `llm-ap-1`, or `llm-ap-2`), AP devices use `ApWifiMac`, STA
@@ -303,23 +305,23 @@ Applications stop at:
 common epoch + configured experiment duration
 ```
 
-Duration modes:
+Duration modes use milliseconds internally:
 
-- `auto`: maximum trace end plus a 2-second tail margin;
-- fixed seconds: stop after the requested duration and warn if it truncates
-  the trace.
+```text
+auto:  maximum_duration_ms = trace_duration_ms + auto_tail_seconds * 1000
+fixed: maximum_duration_ms = fixed_duration_seconds * 1000
+```
+
+A fixed duration that is shorter than the trace produces a truncation warning.
 
 ### TCP configuration caveat
 
-The scenario sets `TcpHighSpeed` before installing the Internet stack. It sets
-the default to `TcpLinuxReno` later, after the existing `TcpL4Protocol`
-objects have been constructed. `Config::SetDefault()` does not rewrite
-attributes on existing objects, so the late setting should not be read as a
-runtime change of those stacks. With the current construction order, the
-installed stacks use the earlier `TcpHighSpeed` socket type.
-
-TCP sockets are created later, after defaults for 1460-byte segments and
-32 MiB send/receive buffers are set.
+The configured congestion-control TypeId is validated as a `TcpCongestionOps`
+subclass and installed as the `TcpL4Protocol::SocketType` default before any
+Internet stack is created. Segment size and send/receive buffer defaults are
+also applied before applications create sockets. The default configuration
+therefore uses `TcpHighSpeed`, 1460-byte segments, and 32 MiB buffers without
+any later congestion-control replacement.
 
 ## Application-to-PHY attribution
 
@@ -342,7 +344,7 @@ At PHY transmission:
 
 1. tagged byte spans are found in the MPDU payload;
 2. source/destination addresses determine BSS, STA, and direction;
-3. tagged bytes are added to the 10 ms PHY window;
+3. tagged bytes are added to the configured PHY statistics window;
 4. the first observed transmission contributes unique bytes and
    application-to-PHY delay;
 5. a repeated MPDU identity increments retransmission counters;
@@ -366,8 +368,8 @@ in the `WifiTxVector` for an actual PPDU attempt.
 
 ## Output metrics
 
-The third CLI argument selects the primary JSON output path. Its source is
-`PhyTxBegin + PhyTxPsduBegin + AppTxTag`.
+`general.output_name` selects the primary JSON filename inside the resolved
+run folder. Its source is `PhyTxBegin + PhyTxPsduBegin + AppTxTag`.
 
 ### Top-level JSON fields
 
@@ -376,7 +378,7 @@ The third CLI argument selects the primary JSON output path. Its source is
 | `source` | Trace sources used for collection |
 | `byte_semantics` | Tagged application bytes observed at PHY; retries included |
 | `phy_rate_semantics` | Airtime-weighted nominal TXVECTOR rate; retries included |
-| `window_ms` | Fixed window size, currently 10 ms |
+| `window_ms` | Configured statistics window size in milliseconds |
 | `windows` | Sparse non-empty time windows |
 | `summary` | Totals over all emitted windows |
 | `validation` | Internal byte-total consistency checks |
@@ -389,7 +391,7 @@ Each window contains a timestamp and per-AP statistics:
 
 | Field | Unit | Meaning |
 |---|---:|---|
-| `timestamp` | ms | End of the 10 ms window relative to trace epoch |
+| `timestamp` | ms | End of the configured window relative to trace epoch |
 | `ap_id` | index | Zero-based BSS/AP identifier |
 | `up_flows` | array | STA-to-AP flows with nonzero tagged bytes |
 | `down_flows` | array | AP-to-STA flows with nonzero tagged bytes |
@@ -402,12 +404,19 @@ Each flow contains:
 |---|---:|---|
 | `host_id` | IPv4 string | STA source for uplink or destination for downlink |
 | `bytes` | bytes | Tagged application payload observed at PHY, retries included |
-| `bw` | Mbit/s | Window goodput-like rate: `bytes * 8 / 10000 us` |
+| `bw` | Mbit/s | Window goodput-like rate using the formula below |
 | `avg_phy_data_rate_mbps` | Mbit/s | Airtime-weighted nominal PHY data rate, or `null` |
 | `phy_tx_attempts` | attempts | PPDUs representing that host/direction |
 | `phy_tx_airtime_us` | us | Allocated share of PPDU airtime |
 
-`bw` example:
+Window units and the `bw` calculation are:
+
+```text
+window_us = window_ms * 1000
+bw_mbps = bytes * 8 / window_us
+```
+
+For the default 10 ms window:
 
 ```text
 125,000 bytes observed in 10 ms
@@ -472,12 +481,12 @@ JSON uses `AppTxTag` byte spans and is the preferred payload accounting path.
 |---|---|
 | Standard selection | `WIFI_STANDARD_80211ax` selects ns-3 HE PHY/MAC behavior |
 | Infrastructure topology | AP and non-AP STA MACs with SSID association |
-| Channel widths | 20/40/80/160 MHz are accepted for 802.11ax in 5 GHz by ns-3 |
-| Channel tuple | `{0, width, BAND_5GHZ, 0}` follows ns-3 `ChannelSettings` semantics |
+| Channel widths | 20/40/80/160 MHz are schema choices; ns-3 validates the final standard/band/channel tuple |
+| Channel tuple | `{number, width, band, primary20}` follows ns-3 `ChannelSettings` semantics |
 | Frame exchange | ns-3 MAC/PHY handles data frames, ACK behavior, queues, aggregation, retries, and rate selection |
 | PHY timing | PPDU duration is calculated by the active PHY entity and TXVECTOR |
 | Medium state | TX, RX, and CCA_BUSY come from `WifiPhyStateHelper` |
-| Association | Active scanning/association is performed by `StaWifiMac` |
+| Association | `StaWifiMac` performs association; active probing is configurable |
 
 Channel number zero does not mean IEEE channel 0. In ns-3 it means
 "unspecified"; after the standard, band, and width are known, ns-3 selects the
@@ -490,9 +499,10 @@ uses the ns-3 default.
 1. **Not a conformance test.** ns-3 implements substantial 802.11 behavior but
    is an abstract discrete-event model. Passing this scenario does not prove
    compliance of hardware or firmware.
-2. **No inter-BSS interference.** Independent `YansWifiChannel` objects are a
-   stronger isolation assumption than merely assigning different IEEE
-   channels.
+2. **Default inter-BSS isolation.** The default independent
+   `YansWifiChannel` objects are a stronger isolation assumption than merely
+   assigning different IEEE channels. Set `isolate_bss_channels = false` to
+   use one shared modeled channel, while retaining the Yans abstraction.
 3. **No regulatory domain.** Country code, DFS, transmit limits, and channel
    availability are not configured.
 4. **No explicit OFDMA scheduler.** The AP does not aggregate an ns-3
@@ -513,8 +523,8 @@ uses the ns-3 default.
    being derived from the standard.
 
 The configuration is therefore suitable for controlled **802.11ax-mode
-network experiments with isolated BSSs**, but should not be described as full
-IEEE 802.11ax compliance.
+network experiments with isolated or shared-channel BSSs**, but should not be
+described as full IEEE 802.11ax compliance.
 
 Official references:
 
@@ -558,27 +568,155 @@ git lfs pull
 
 ```bash
 ./ns3 run \
-  "llm_sample contrib/llm/test/data/minimal-trace.json 20 build/llm-stats.json auto"
+  "llm_sample --config contrib/llm/config/basic_config.toml"
 ```
 
-Arguments:
+Every real launch requires exactly one `--config PATH`. `--config` and all
+overrides are position-independent, and each may appear only once. Show the
+complete generated help without a configuration file:
+
+```bash
+./ns3 run "llm_sample --help"
+```
+
+The merged value order is:
 
 ```text
-llm_sample TRACE_JSON [BANDWIDTH_MHZ] [STATS_JSON] [EXPERIMENT_TIME]
+compiled defaults < TOML values < CLI overrides
 ```
 
-| Argument | Values | Default |
+Override names are section-prefixed kebab-case forms of the TOML keys.
+Boolean overrides require the exact lowercase values `true` or `false`.
+Unknown fields/flags, duplicate flags, positional arguments, wrong scalar
+types, and invalid cross-field combinations stop startup with an error and
+usage.
+
+### Complete TOML and CLI reference
+
+The eight TOML sections contain 36 fields. The shipped configuration assigns
+35; optional `general.run_folder` is deliberately commented to demonstrate
+automatic run-directory creation.
+
+#### `[general]`
+
+| TOML field | CLI override | Default / meaning |
 |---|---|---|
-| `TRACE_JSON` | JSON path | Required |
-| `BANDWIDTH_MHZ` | 20, 40, 80, 160 | 20 |
-| `STATS_JSON` | Output path | `mac-node-stats.json` |
-| `EXPERIMENT_TIME` | `auto` or positive seconds | `auto` |
+| `trace_file` | `--general-trace-file` | Required input JSON trace |
+| `run_folder` | `--general-run-folder` | Omitted; exact output directory when set |
+| `output_name` | `--general-output-name` | `mac-node-stats.json`; plain `.json` filename |
+
+#### `[simulation]`
+
+| TOML field | CLI override | Default / meaning |
+|---|---|---|
+| `duration_mode` | `--simulation-duration-mode` | `auto`; also accepts `fixed` |
+| `fixed_duration_seconds` | `--simulation-fixed-duration-seconds` | `0.0`; must be positive in fixed mode |
+| `auto_tail_seconds` | `--simulation-auto-tail-seconds` | `2.0`; non-negative tail after trace end |
+| `rng_seed` | `--simulation-rng-seed` | `12345`; deterministic ns-3 seed |
+| `rng_run` | `--simulation-rng-run` | `1`; deterministic run/substream number |
+
+#### `[topology]`
+
+| TOML field | CLI override | Default / meaning |
+|---|---|---|
+| `bss_count` | `--topology-bss-count` | `3` AP/BSS groups |
+| `stations_per_bss` | `--topology-stations-per-bss` | `30` physical STAs per BSS |
+| `bss_spacing_m` | `--topology-bss-spacing-m` | `100.0` m increment on X, Y, and Z |
+| `station_radius_m` | `--topology-station-radius-m` | `5.0` m uniform STA-disc radius |
+| `isolate_bss_channels` | `--topology-isolate-bss-channels` | `true`; one channel object per BSS, or one shared object when false |
+| `ssid_prefix` | `--topology-ssid-prefix` | `llm-ap-`; BSS index is appended |
+| `ap_sink_port` | `--topology-ap-sink-port` | `10000`; uplink TCP sink on every AP |
+| `station_sink_base_port` | `--topology-station-sink-base-port` | `9000`; STA index is added for downlink sinks |
+| `generator_start_seconds` | `--topology-generator-start-seconds` | `1.0`; TCP setup start, not payload start |
+
+#### `[distribution]`
+
+| TOML field | CLI override | Default / meaning |
+|---|---|---|
+| `max_agents_per_station` | `--distribution-max-agents-per-station` | `832`; zero means unlimited |
+| `low_contention_priority` | `--distribution-low-contention-priority` | `true`; false maximizes initial STA use |
+| `slot_ms` | `--distribution-slot-ms` | `10` ms uplink-overlap slot |
+
+#### `[wifi]`
+
+| TOML field | CLI override | Default / meaning |
+|---|---|---|
+| `band` | `--wifi-band` | `5GHz`; also accepts `2.4GHz` and `6GHz` |
+| `channel_number` | `--wifi-channel-number` | `0`; ns-3 selects the first valid channel |
+| `bandwidth_mhz` | `--wifi-bandwidth-mhz` | `20`; accepts 20, 40, 80, or 160 MHz |
+| `primary_20_index` | `--wifi-primary-20-index` | `0`; index within the configured width |
+| `rate_manager` | `--wifi-rate-manager` | `ns3::MinstrelHtWifiManager` TypeId |
+| `active_probing` | `--wifi-active-probing` | `true`; active SSID probing by STAs |
+
+The Wi-Fi standard remains fixed to 802.11ax; these fields configure that
+scenario rather than selecting an arbitrary standard.
+
+#### `[tcp]`
+
+| TOML field | CLI override | Default / meaning |
+|---|---|---|
+| `congestion_control` | `--tcp-congestion-control` | `ns3::TcpHighSpeed` TypeId |
+| `segment_size_bytes` | `--tcp-segment-size-bytes` | `1460` bytes |
+| `send_buffer_bytes` | `--tcp-send-buffer-bytes` | `33554432` bytes |
+| `receive_buffer_bytes` | `--tcp-receive-buffer-bytes` | `33554432` bytes |
+
+Transport remains fixed to TCP. The configured congestion control and socket
+defaults are applied before Internet-stack and socket creation.
+
+#### `[statistics]`
+
+| TOML field | CLI override | Default / meaning |
+|---|---|---|
+| `window_ms` | `--statistics-window-ms` | `10` ms sparse PHY window |
+
+#### `[logging]`
+
+| TOML field | CLI override | Default / meaning |
+|---|---|---|
+| `sample_scenario_level` | `--logging-sample-scenario-level` | `info` |
+| `ap_generator_level` | `--logging-ap-generator-level` | `warn` |
+| `sta_generator_level` | `--logging-sta-generator-level` | `warn` |
+| `traffic_sink_level` | `--logging-traffic-sink-level` | `warn` |
+| `contention_distribution_level` | `--logging-contention-distribution-level` | `info` |
+
+Every log field accepts `off`, `error`, `warn`, `info`, `debug`, `function`,
+`logic`, or `all`. `off` leaves that component disabled.
+
+### Path and output rules
+
+The process current working directory is captured once at startup. Relative
+config paths, `general.trace_file`, and `general.run_folder` all resolve
+against that same directory, never against the directory containing the TOML
+file.
+
+- With an explicit `general.run_folder`, that path is the exact output
+  directory. Missing parents are created and an existing directory is
+  allowed.
+- Without `general.run_folder`, the program creates
+  `./run/YY-MM-DD_hh-mm-ss` using local launch time. The parent `./run` may be
+  created, but an existing timestamp directory is a collision and startup is
+  refused.
+- `general.output_name` must be a plain `.json` filename, not a path. The
+  final output is `<run_folder>/<output_name>` and an existing file is never
+  overwritten.
+
+Validation, path resolution, and directory preparation finish before ns-3
+topology objects are created. Startup prints the resolved config, trace, run,
+and output paths plus the major duration, topology, distribution, Wi-Fi, TCP,
+RNG, and statistics choices. Statistics are written only to the printed
+output file.
 
 Fixed-duration example:
 
 ```bash
 ./ns3 run \
-  "llm_sample contrib/llm/traces/1W_high_load_10m.json 80 build/high-load.json 600"
+  "llm_sample --config contrib/llm/config/basic_config.toml \
+  --general-trace-file contrib/llm/traces/1W_high_load_10m.json \
+  --general-run-folder build/high-load \
+  --general-output-name high-load.json \
+  --wifi-bandwidth-mhz 80 \
+  --simulation-duration-mode fixed \
+  --simulation-fixed-duration-seconds 600"
 ```
 
 The 10-minute high-load trace is large and may require substantial simulation
@@ -636,20 +774,22 @@ The writer:
 ```
 
 Covered behavior includes trace parsing, both distribution policies, schedule
-ordering, `AppTxTag`, readiness timing and fatal invariants, statistics
-attribution/JSON, and argument parsing.
+ordering, `AppTxTag`, readiness timing and fatal invariants, typed TOML/CLI
+configuration, safe run paths, topology choices, and statistics
+attribution/JSON.
 
 ### Registered example smoke test
 
-The example has required arguments, so select its registered parameterized
-entry with a wildcard:
+The example requires `--config`, so select its registered parameterized entry
+with a wildcard:
 
 ```bash
 ./test.py -e 'llm_sample*'
 ```
 
 Running `./test.py -e llm_sample` without `*` invokes the executable without
-the registered arguments and prints usage instead.
+the registered arguments; it reports the missing configuration and prints
+usage.
 
 ### Streaming-script tests
 
@@ -664,7 +804,7 @@ subprocess stderr handling.
 
 ### Logging
 
-The sample enables these components explicitly:
+The `[logging]` section configures these components independently:
 
 - `SampleScenario` at INFO;
 - `ContentionAwareAgentDistribution` at INFO;
@@ -673,7 +813,8 @@ The sample enables these components explicitly:
 For debugger use:
 
 ```bash
-./ns3 run llm_sample --command-template="gdb --args %s"
+./ns3 run "llm_sample --config contrib/llm/config/basic_config.toml" \
+  --command-template="gdb --args %s"
 ```
 
 Pass the normal program arguments through the `./ns3 run` command when using
@@ -686,9 +827,11 @@ contrib/llm/
 |-- CMakeLists.txt                    ns-3 module and test registration
 |-- README.md                         English documentation
 |-- README_RU.md                      Russian documentation
+|-- config/basic_config.toml          Complete documented scenario configuration
 |-- examples/
 |   |-- sample-scenario.cc            Main executable orchestration
-|   |-- scenario-config.*             CLI parsing and validation
+|   |-- scenario-config*              TOML/CLI parsing, validation, and option registry
+|   |-- scenario-run-path.cc          CWD-based collision-safe run paths
 |   |-- scenario-topology.*           BSS/STA/IP/application construction
 |   |-- traffic-coordinator.*         Global TCP readiness barrier
 |   |-- traffic-flow-monitor.*        Device-level TX/RX diagnostics
@@ -713,6 +856,7 @@ contrib/llm/
 |   `-- *-test-suite.cc               C++ unit/characterization tests
 |-- traces/                            Git LFS datasets and derived trace
 |-- lib/json.hpp                       Vendored nlohmann JSON header
+|-- lib/toml.hpp                       Vendored toml++ 3.4.0 single header
 `-- docs/superpowers/                  Refactor/streaming design history
 ```
 
@@ -743,7 +887,7 @@ contrib/llm/
 | Tagged bytes | Application payload range carrying `AppTxTag` |
 | Unique bytes | Tagged bytes counted only on their first observed attempt |
 | Airtime | Modeled PPDU transmission duration, allocated by tagged bytes |
-| Sparse window | A 10 ms bucket emitted only when tagged traffic exists |
+| Sparse window | A configured-width bucket emitted only when tagged traffic exists |
 
 ## Known limitations
 
@@ -751,8 +895,9 @@ contrib/llm/
   not multi-gigabyte source documents.
 - Only operations with both byte directions positive are replayed.
 - The trace's LLM/token/model metadata is not used in network behavior.
-- The three BSSs are physically isolated by construction; this is unsuitable
-  for studying inter-BSS interference or OBSS spatial reuse.
+- BSSs use physically isolated channel objects by default. Shared-channel
+  mode models common-medium interaction but remains unsuitable for detailed
+  OBSS spatial-reuse studies.
 - The scenario does not model a detailed building/campus radio environment.
 - It does not explicitly configure OFDMA, MU-MIMO, beamforming, TWT,
   BSS coloring, OBSS-PD, authentication, or encryption.

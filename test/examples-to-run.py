@@ -2,8 +2,12 @@
 
 cpp_examples = [
     (
-        "llm_sample ../../contrib/llm/test/data/minimal-trace.json "
-        "20 ../../build/llm-smoke-stats.json 0.2",
+        "llm_sample --config ../../contrib/llm/config/basic_config.toml "
+        "--general-trace-file ../../contrib/llm/test/data/minimal-trace.json "
+        "--general-run-folder . "
+        "--general-output-name llm-smoke-stats.json "
+        "--simulation-duration-mode fixed "
+        "--simulation-fixed-duration-seconds 0.2",
         "True",
         "False",
     ),
