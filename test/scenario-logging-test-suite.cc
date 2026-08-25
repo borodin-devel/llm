@@ -167,6 +167,25 @@ ScenarioLoggingTestCase::DoRun()
             GetEnabledPublicBits(GetLogComponent("ContentionAwareAgentDistribution")),
             LOG_NONE,
             "Off distribution logging changed the cleared component state");
+
+        constexpr auto distributionName = "ContentionAwareAgentDistribution";
+        constexpr auto preservedOffBits =
+            static_cast<LogLevel>(LOG_INFO | LOG_PREFIX_TIME | LOG_PREFIX_LEVEL);
+        SetEnabledPublicBits(distributionName, preservedOffBits);
+        const LogLevel expectedOffBits = GetEnabledPublicBits(GetLogComponent(distributionName));
+
+        ConfigureScenarioLogging(logging);
+
+        const auto& distribution = GetLogComponent(distributionName);
+        NS_TEST_ASSERT_MSG_EQ(GetEnabledPublicBits(distribution),
+                              expectedOffBits,
+                              "Off distribution logging did not preserve exact public state");
+        for (const auto bit : g_publicLogComponentBits)
+        {
+            NS_TEST_ASSERT_MSG_EQ(distribution.IsEnabled(bit),
+                                  (static_cast<uint32_t>(expectedOffBits) & bit) != 0,
+                                  "Off distribution logging changed public bit " << bit);
+        }
     }
 
     for (const auto& [name, expectedBits] : seededStates)
