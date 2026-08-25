@@ -28,7 +28,7 @@ TrafficSink::GetTypeId()
                                           MakeTypeIdAccessor(&TrafficSink::m_protocolTid),
                                           MakeTypeIdChecker())
                             .AddTraceSource("RxCustom",
-                                            "A packet has been received.",
+                                            "Received-payload observation for central statistics.",
                                             MakeTraceSourceAccessor(&TrafficSink::m_rxTraceCustom),
                                             "ns3::TrafficSink::RxCallback");
     return tid;

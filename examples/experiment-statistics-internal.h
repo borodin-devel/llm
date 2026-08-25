@@ -81,7 +81,12 @@ struct AppReceiveStreamKey
     ExperimentDirection direction;      ///< Traffic direction at the local node.
     std::optional<uint32_t> peerNodeId; ///< Remote peer node identifier when resolved.
 
-    /** @return True when this key sorts before @p other. */
+    /**
+     * Compare receive-stream identities for deterministic map ordering.
+     *
+     * @param other Receive-stream identity to compare.
+     * @return True when this key sorts before @p other.
+     */
     bool operator<(const AppReceiveStreamKey& other) const;
 };
 
@@ -206,7 +211,7 @@ bool ResolveStatisticsEventWindow(const ExperimentStatisticsState& statistics,
                                   ExperimentWindowBounds& bounds);
 
 /**
- * Record one tagged MPDU transmission attempt in configured and legacy windows.
+ * Record one tagged MPDU transmission attempt in the configured statistics window.
  *
  * @param statistics Scenario statistics state.
  * @param transmitterNodeId Local PHY transmitter node identifier.
@@ -280,7 +285,7 @@ void RecordPhyTxPsduBegin(ExperimentStatisticsState& statistics,
 std::optional<double> CalculateAveragePhyDataRateMbps(const PhyPeerAccumulator& accumulator);
 
 /**
- * Record one local PHY busy interval in configured and legacy windows.
+ * Record one local PHY busy interval across configured statistics windows.
  *
  * @param statistics Scenario statistics state.
  * @param nodeId Local PHY node identifier.
@@ -345,7 +350,7 @@ bool RecordDeviceTransmitPacket(ExperimentStatisticsState& statistics,
 void FinalizeDeviceStatistics(ExperimentStatisticsState& statistics);
 
 /**
- * Record one MAC transmit drop in configured and legacy windows.
+ * Record one MAC transmit drop in the configured statistics window.
  *
  * @param statistics Scenario statistics state.
  * @param nodeId Local transmitter node identifier.
@@ -358,7 +363,7 @@ void RecordMacTransmitDrop(ExperimentStatisticsState& statistics,
                            uint32_t packetBytes);
 
 /**
- * Record one MAC MPDU drop in configured and legacy windows.
+ * Record one MAC MPDU drop in the configured statistics window.
  *
  * @param statistics Scenario statistics state.
  * @param nodeId Local transmitter node identifier.
@@ -375,7 +380,7 @@ void RecordMacMpduDrop(ExperimentStatisticsState& statistics,
                        std::optional<uint32_t> peerNodeId = std::nullopt);
 
 /**
- * Record one MAC data failure in configured and legacy windows.
+ * Record one MAC data failure in the configured statistics window.
  *
  * @param statistics Scenario statistics state.
  * @param nodeId Local transmitter node identifier.

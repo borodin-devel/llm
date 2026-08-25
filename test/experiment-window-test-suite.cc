@@ -104,12 +104,19 @@ ExperimentEntityRegistryTestCase::DoRun()
     unsortedRegistry.RegisterAccessPoint(0, 10, "AP0", "10.1.0.1");
     unsortedRegistry.RegisterStation(1, 1, 13, "AP1/STA1", "10.1.1.3");
     unsortedRegistry.RegisterStation(0, 1, 12, "AP0/STA1", "10.1.0.2");
+    unsortedRegistry.RegisterStation(0, 0, 14, "AP0/STA0", "10.1.0.3");
     NS_TEST_ASSERT_MSG_EQ(unsortedRegistry.GetAccessPoints().at(0).accessPointId,
                           0,
                           "AP ordering depends on registration order");
     NS_TEST_ASSERT_MSG_EQ(unsortedRegistry.GetStations().at(0).accessPointId,
                           0,
                           "Station AP ordering depends on registration order");
+    NS_TEST_ASSERT_MSG_EQ(unsortedRegistry.GetStations().at(0).stationIndex.value(),
+                          0,
+                          "Station index ordering depends on registration order");
+    NS_TEST_ASSERT_MSG_EQ(unsortedRegistry.GetStations().at(1).stationIndex.value(),
+                          1,
+                          "Second station index ordering is incorrect");
 }
 
 /**

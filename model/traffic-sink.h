@@ -18,7 +18,10 @@ class Packet;
 /**
  * @ingroup applications
  *
- * TCP traffic sink that records received-packet timing.
+ * TCP traffic sink that emits received-payload observations.
+ *
+ * The central experiment statistics owner derives receive timing and
+ * inter-arrival measurements from these observations.
  */
 class TrafficSink : public SinkApplication
 {
@@ -72,7 +75,7 @@ class TrafficSink : public SinkApplication
     std::vector<Ptr<Socket>> m_acceptedSockets;        ///< Accepted TCP sockets.
     TracedCallback<uint64_t, Address> m_rxTraceCustom; ///< Received-payload trace.
 
-    /** Received application-payload trace callback signature. */
+    /** Received application-payload observation callback signature. */
     using RxCallback = void (*)(uint64_t receivedBytes, Address from);
 };
 

@@ -262,35 +262,74 @@ class ExperimentStatistics
                                   uint32_t receivedBytes,
                                   int64_t absoluteTimeUs);
 
-    /** Adapt an AP accepted-send trace to the central recording interface. */
+    /**
+     * Adapt an AP accepted-send trace to the central recording interface.
+     *
+     * @param nodeId Local AP node identifier.
+     * @param station Remote station socket address.
+     * @param agentKey Application-level agent identifier.
+     * @param acceptedBytes Payload bytes accepted by the socket.
+     * @param transmitTime Absolute send time.
+     */
     void RecordApAcceptedApplicationSend(uint32_t nodeId,
                                          Address station,
                                          std::string agentKey,
                                          uint32_t acceptedBytes,
                                          Time transmitTime);
 
-    /** Adapt an AP drop trace to the central recording interface. */
+    /**
+     * Adapt an AP drop trace to the central recording interface.
+     *
+     * @param nodeId Local AP node identifier.
+     * @param station Remote station socket address.
+     * @param agentKey Application-level agent identifier.
+     * @param droppedBytes Payload bytes rejected by the socket.
+     * @param transmitTime Absolute drop time.
+     */
     void RecordApApplicationDrop(uint32_t nodeId,
                                  Address station,
                                  std::string agentKey,
                                  uint32_t droppedBytes,
                                  Time transmitTime);
 
-    /** Adapt a station accepted-send trace to the central recording interface. */
+    /**
+     * Adapt a station accepted-send trace to the central recording interface.
+     *
+     * @param nodeId Local station node identifier.
+     * @param peerNodeId Remote AP node identifier when resolved.
+     * @param agentKey Application-level agent identifier.
+     * @param acceptedBytes Payload bytes accepted by the socket.
+     * @param transmitTime Absolute send time.
+     */
     void RecordStaAcceptedApplicationSend(uint32_t nodeId,
                                           std::optional<uint32_t> peerNodeId,
                                           std::string agentKey,
                                           uint32_t acceptedBytes,
                                           Time transmitTime);
 
-    /** Adapt a station drop trace to the central recording interface. */
+    /**
+     * Adapt a station drop trace to the central recording interface.
+     *
+     * @param nodeId Local station node identifier.
+     * @param peerNodeId Remote AP node identifier when resolved.
+     * @param agentKey Application-level agent identifier.
+     * @param droppedBytes Payload bytes rejected by the socket.
+     * @param transmitTime Absolute drop time.
+     */
     void RecordStaApplicationDrop(uint32_t nodeId,
                                   std::optional<uint32_t> peerNodeId,
                                   std::string agentKey,
                                   uint32_t droppedBytes,
                                   Time transmitTime);
 
-    /** Adapt a sink receive trace to the central recording interface. */
+    /**
+     * Adapt a sink receive trace to the central recording interface.
+     *
+     * @param nodeId Local receiving node identifier.
+     * @param direction Traffic direction at the local node.
+     * @param receivedBytes Received application payload bytes.
+     * @param remoteAddress Remote peer socket address.
+     */
     void RecordTrafficSinkReceive(uint32_t nodeId,
                                   ExperimentDirection direction,
                                   uint64_t receivedBytes,
