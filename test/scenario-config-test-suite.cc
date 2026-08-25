@@ -1,7 +1,12 @@
 #include "../examples/scenario-config.h"
 #include "llm-test-suite.h"
 
+#include <algorithm>
+#include <fstream>
+#include <map>
+#include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace ns3;
@@ -70,6 +75,212 @@ ScenarioConfigDefaultsTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(config.logging.contentionDistributionLevel,
                           "info",
                           "Wrong placement log");
+}
+
+/**
+ * @ingroup tests
+ *
+ * Verify that the public option metadata is complete and unambiguous.
+ */
+class ScenarioConfigRegistryTestCase : public TestCase
+{
+  public:
+    ScenarioConfigRegistryTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+ScenarioConfigRegistryTestCase::ScenarioConfigRegistryTestCase()
+    : TestCase("scenario configuration option registry")
+{
+}
+
+void
+ScenarioConfigRegistryTestCase::DoRun()
+{
+    const auto& options = GetScenarioConfigOptionInfo();
+    NS_TEST_ASSERT_MSG_EQ(options.size(), 36, "Wrong option count");
+
+    std::set<std::string> tomlPaths;
+    std::set<std::string> cliFlags;
+    std::map<std::string, std::size_t> sectionCounts;
+    for (const auto& option : options)
+    {
+        NS_TEST_ASSERT_MSG_EQ(tomlPaths.insert(std::string(option.tomlPath)).second,
+                              true,
+                              "Duplicate TOML path " << option.tomlPath);
+        NS_TEST_ASSERT_MSG_EQ(cliFlags.insert(std::string(option.cliFlag)).second,
+                              true,
+                              "Duplicate CLI flag " << option.cliFlag);
+
+        std::string expectedFlag{"--"};
+        expectedFlag.append(option.tomlPath);
+        std::replace(expectedFlag.begin(), expectedFlag.end(), '.', '-');
+        std::replace(expectedFlag.begin(), expectedFlag.end(), '_', '-');
+        NS_TEST_ASSERT_MSG_EQ(option.cliFlag,
+                              expectedFlag,
+                              "CLI flag is not derived from " << option.tomlPath);
+
+        const auto separator = option.tomlPath.find('.');
+        NS_TEST_ASSERT_MSG_NE(separator, std::string_view::npos, "Option lacks a section");
+        ++sectionCounts[std::string(option.tomlPath.substr(0, separator))];
+    }
+
+    const std::map<std::string, std::size_t> expectedCounts{{"general", 3},
+                                                            {"simulation", 5},
+                                                            {"topology", 9},
+                                                            {"distribution", 3},
+                                                            {"wifi", 6},
+                                                            {"tcp", 4},
+                                                            {"statistics", 1},
+                                                            {"logging", 5}};
+    NS_TEST_ASSERT_MSG_EQ(sectionCounts.size(), expectedCounts.size(), "Wrong section count");
+    for (const auto& [section, count] : expectedCounts)
+    {
+        NS_TEST_ASSERT_MSG_EQ(sectionCounts[section],
+                              count,
+                              "Wrong option count for section " << section);
+    }
+}
+
+/**
+ * @ingroup tests
+ *
+ * Verify strict TOML loading and typed assignment.
+ */
+class ScenarioConfigTomlTestCase : public TestCase
+{
+  public:
+    ScenarioConfigTomlTestCase();
+
+  private:
+    void DoRun() override;
+    std::string WriteFixture(const std::string& name, std::string_view contents);
+    void CheckFailure(const std::string& name,
+                      std::string_view contents,
+                      std::string_view expectedMessage);
+};
+
+ScenarioConfigTomlTestCase::ScenarioConfigTomlTestCase()
+    : TestCase("strict scenario TOML loading")
+{
+}
+
+std::string
+ScenarioConfigTomlTestCase::WriteFixture(const std::string& name, std::string_view contents)
+{
+    const std::string path = CreateTempDirFilename(name);
+    std::ofstream output(path);
+    output << contents;
+    output.close();
+    return path;
+}
+
+void
+ScenarioConfigTomlTestCase::CheckFailure(const std::string& name,
+                                         std::string_view contents,
+                                         std::string_view expectedMessage)
+{
+    const auto path = WriteFixture(name, contents);
+    try
+    {
+        LoadTomlConfig(path);
+        NS_TEST_ASSERT_MSG_EQ(true, false, "Invalid fixture accepted: " << name);
+    }
+    catch (const ScenarioConfigError& error)
+    {
+        const std::string message = error.what();
+        NS_TEST_ASSERT_MSG_NE(message.find(expectedMessage),
+                              std::string::npos,
+                              "Wrong error for " << name << ": " << message);
+    }
+}
+
+void
+ScenarioConfigTomlTestCase::DoRun()
+{
+    const auto validPath = WriteFixture("scenario-valid.toml",
+                                        "[general]\n"
+                                        "trace_file = \"trace.json\"\n"
+                                        "output_name = \"custom.json\"\n"
+                                        "[simulation]\n"
+                                        "duration_mode = \"fixed\"\n"
+                                        "fixed_duration_seconds = 12.5\n"
+                                        "[topology]\n"
+                                        "bss_count = 4\n"
+                                        "[distribution]\n"
+                                        "low_contention_priority = false\n"
+                                        "[wifi]\n"
+                                        "band = \"6GHz\"\n"
+                                        "bandwidth_mhz = 80\n"
+                                        "[tcp]\n"
+                                        "segment_size_bytes = 1200\n"
+                                        "[statistics]\n"
+                                        "window_ms = 25\n"
+                                        "[logging]\n"
+                                        "sample_scenario_level = \"debug\"\n");
+    const auto config = LoadTomlConfig(validPath);
+    NS_TEST_ASSERT_MSG_EQ(config.general.traceFile, "trace.json", "Wrong trace file");
+    NS_TEST_ASSERT_MSG_EQ(config.general.outputName, "custom.json", "Wrong output name");
+    NS_TEST_ASSERT_MSG_EQ(config.general.runFolder.has_value(), false, "Wrong run folder");
+    NS_TEST_ASSERT_MSG_EQ(config.simulation.durationMode,
+                          DurationMode::FIXED,
+                          "Wrong duration mode");
+    NS_TEST_ASSERT_MSG_EQ_TOL(config.simulation.fixedDurationSeconds,
+                              12.5,
+                              1e-12,
+                              "Wrong fixed duration");
+    NS_TEST_ASSERT_MSG_EQ_TOL(config.simulation.autoTailSeconds,
+                              2.0,
+                              1e-12,
+                              "Omission did not preserve default");
+    NS_TEST_ASSERT_MSG_EQ(config.topology.bssCount, 4, "Wrong BSS count");
+    NS_TEST_ASSERT_MSG_EQ(config.distribution.lowContentionPriority,
+                          false,
+                          "Wrong contention policy");
+    NS_TEST_ASSERT_MSG_EQ(config.wifi.band, WifiBandConfig::BAND_6_GHZ, "Wrong Wi-Fi band");
+    NS_TEST_ASSERT_MSG_EQ(config.wifi.bandwidthMhz, 80, "Wrong bandwidth");
+    NS_TEST_ASSERT_MSG_EQ(config.tcp.segmentSizeBytes, 1200, "Wrong segment size");
+    NS_TEST_ASSERT_MSG_EQ(config.statistics.windowMs, 25, "Wrong statistics window");
+    NS_TEST_ASSERT_MSG_EQ(config.logging.sampleScenarioLevel, "debug", "Wrong log level");
+
+    CheckFailure("scenario-missing-general.toml",
+                 "[wifi]\nbandwidth_mhz = 20\n",
+                 "general.trace_file");
+    CheckFailure("scenario-missing-trace.toml",
+                 "[general]\noutput_name = \"out.json\"\n",
+                 "general.trace_file");
+    CheckFailure("scenario-empty-trace.toml", "[general]\ntrace_file = \"\"\n", "non-empty");
+    CheckFailure("scenario-unknown-section.toml",
+                 "[general]\ntrace_file = \"trace.json\"\n[unknown]\nvalue = 1\n",
+                 "unknown");
+    CheckFailure("scenario-unknown-field.toml",
+                 "[general]\ntrace_file = \"trace.json\"\nunknown = true\n",
+                 "general.unknown");
+    CheckFailure("scenario-wrong-type.toml",
+                 "[general]\ntrace_file = \"trace.json\"\n[topology]\nbss_count = \"4\"\n",
+                 "topology.bss_count");
+    CheckFailure("scenario-integer-overflow.toml",
+                 "[general]\ntrace_file = \"trace.json\"\n[statistics]\nwindow_ms = 4294967296\n",
+                 "statistics.window_ms");
+
+    const auto malformedPath = WriteFixture("scenario-malformed.toml", "[general]\ntrace_file =\n");
+    try
+    {
+        LoadTomlConfig(malformedPath);
+        NS_TEST_ASSERT_MSG_EQ(true, false, "Malformed TOML accepted");
+    }
+    catch (const ScenarioConfigError& error)
+    {
+        const std::string message = error.what();
+        NS_TEST_ASSERT_MSG_NE(message.find(malformedPath),
+                              std::string::npos,
+                              "Parse error lacks source path: " << message);
+        NS_TEST_ASSERT_MSG_NE(message.find(":2:"),
+                              std::string::npos,
+                              "Parse error lacks line 2: " << message);
+    }
 }
 
 /**
@@ -188,6 +399,8 @@ std::vector<TestCase*>
 CreateScenarioConfigTestCases()
 {
     return {new ScenarioConfigDefaultsTestCase,
+            new ScenarioConfigRegistryTestCase,
+            new ScenarioConfigTomlTestCase,
             new ValidLegacyScenarioArgumentsTestCase,
             new InvalidLegacyScenarioArgumentsTestCase};
 }

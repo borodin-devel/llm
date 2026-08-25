@@ -2,9 +2,12 @@
 #define SCENARIO_CONFIG_H
 
 #include <cstdint>
+#include <filesystem>
 #include <iosfwd>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace ns3
@@ -131,6 +134,55 @@ struct ScenarioConfig
     StatisticsConfig statistics; ///< Statistics collection configuration.
     LoggingConfig logging; ///< Component logging configuration.
 };
+
+/** Scalar categories supported by scenario configuration options. */
+enum class ConfigValueType
+{
+    STRING,  ///< TOML string value.
+    INTEGER, ///< TOML integer value.
+    FLOAT,   ///< TOML floating-point value.
+    BOOLEAN, ///< TOML Boolean value.
+    ENUM,    ///< TOML string selected from an enumerated set.
+};
+
+/** Public metadata for one scenario configuration option. */
+struct ConfigOptionInfo
+{
+    std::string_view tomlPath;    ///< Dotted TOML key.
+    std::string_view cliFlag;     ///< Derived section-prefixed CLI flag.
+    ConfigValueType valueType;    ///< Required scalar category.
+    std::string_view description; ///< Concise help and diagnostic text.
+};
+
+/** Error raised while parsing or applying scenario configuration. */
+class ScenarioConfigError : public std::runtime_error
+{
+  public:
+    /**
+     * Construct a scenario configuration error.
+     *
+     * @param message Error description.
+     */
+    explicit ScenarioConfigError(const std::string& message);
+};
+
+/**
+ * Get metadata projected from the private scenario option registry.
+ *
+ * @return Complete scenario option metadata.
+ */
+const std::vector<ConfigOptionInfo>& GetScenarioConfigOptionInfo();
+
+/**
+ * Load a scenario configuration from a strict TOML document.
+ *
+ * Omitted optional values retain their compiled typed defaults.
+ *
+ * @param path TOML document path.
+ * @return Parsed typed scenario configuration.
+ * @throws ScenarioConfigError if parsing or schema application fails.
+ */
+ScenarioConfig LoadTomlConfig(const std::filesystem::path& path);
 
 /** Result of parsing sample-scenario arguments. */
 struct ScenarioArgumentResult
