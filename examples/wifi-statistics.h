@@ -3,6 +3,7 @@
 
 #include "experiment-output.h"
 #include "experiment-statistics-types.h"
+#include "experiment-window-output.h"
 
 #include "ns3/address.h"
 #include "ns3/ipv4-address.h"
@@ -16,6 +17,9 @@
 class ExperimentJsonTestCase;
 class ExperimentAppTestCase;
 class ExperimentTcpTestCase;
+class ExperimentSummaryTestCase;
+class ExperimentOverallTestCase;
+class ExperimentValidationTestCase;
 
 namespace ns3
 {
@@ -191,6 +195,13 @@ class WifiStatistics
     TransmissionSummary BuildTransmissionSummary();
 
     /**
+     * Finalize raw state and build sparse windows, dense overall values, and validation.
+     *
+     * @return Complete typed unified experiment summary.
+     */
+    UnifiedExperimentSummary BuildUnifiedExperimentSummary();
+
+    /**
      * Serialize the complete experiment output to JSON.
      *
      * @param outputPath Destination JSON path.
@@ -208,6 +219,9 @@ class WifiStatistics
     friend class ::ExperimentJsonTestCase;
     friend class ::ExperimentAppTestCase;
     friend class ::ExperimentTcpTestCase;
+    friend class ::ExperimentSummaryTestCase;
+    friend class ::ExperimentOverallTestCase;
+    friend class ::ExperimentValidationTestCase;
 
     /**
      * Record one congestion-window transition for a peer connection.

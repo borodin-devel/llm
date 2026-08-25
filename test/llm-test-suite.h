@@ -17,6 +17,8 @@ std::vector<ns3::TestCase*> CreateExperimentAppTestCases();
 std::vector<ns3::TestCase*> CreateExperimentTcpTestCases();
 std::vector<ns3::TestCase*> CreateExperimentDeviceMacTestCases();
 std::vector<ns3::TestCase*> CreateExperimentPhyTestCases();
+std::vector<ns3::TestCase*> CreateExperimentSummaryTestCases();
+std::vector<ns3::TestCase*> CreateExperimentValidationTestCases();
 std::vector<ns3::TestCase*> CreateWifiStatisticsTestCases();
 std::vector<ns3::TestCase*> CreateScenarioConfigTestCases();
 std::vector<ns3::TestCase*> CreateScenarioConfigJsonTestCases();

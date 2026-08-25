@@ -70,6 +70,14 @@ struct SampleAccumulator
      * @param other Accumulator to merge.
      */
     void Merge(const SampleAccumulator& other);
+
+    /**
+     * Compare exact raw sample state.
+     *
+     * @param other Accumulator to compare.
+     * @return True when every raw field is equal.
+     */
+    bool operator==(const SampleAccumulator& other) const = default;
 };
 
 /** Pair of values separated by traffic direction. */
@@ -100,6 +108,14 @@ struct DirectionPair
     {
         return direction == ExperimentDirection::UPLINK ? uplink : downlink;
     }
+
+    /**
+     * Compare both directional values.
+     *
+     * @param other Direction pair to compare.
+     * @return True when both directions are equal.
+     */
+    bool operator==(const DirectionPair& other) const = default;
 };
 
 /** Application send and drop totals for one agent. */
@@ -109,6 +125,12 @@ struct AppAgentAccumulator
     uint64_t acceptedPayloadBytes{0}; ///< Payload bytes accepted by the socket.
     uint64_t dropEventCount{0};       ///< Application drop-event count.
     uint64_t droppedPayloadBytes{0};  ///< Payload bytes rejected by the socket.
+
+    /**
+     * @param other Accumulator to compare.
+     * @return True when every raw field is equal.
+     */
+    bool operator==(const AppAgentAccumulator& other) const = default;
 };
 
 /** Application send, receive, and drop totals for one peer node. */
@@ -120,6 +142,12 @@ struct AppPeerAccumulator
     uint64_t receivedPayloadBytes{0}; ///< Payload bytes received by the sink.
     uint64_t dropEventCount{0};       ///< Application drop-event count.
     uint64_t droppedPayloadBytes{0};  ///< Payload bytes rejected by the socket.
+
+    /**
+     * @param other Accumulator to compare.
+     * @return True when every raw field is equal.
+     */
+    bool operator==(const AppPeerAccumulator& other) const = default;
 };
 
 /** Application totals for one local entity and traffic direction. */
@@ -134,6 +162,12 @@ struct AppDirectionAccumulator
     SampleAccumulator receiveInterArrivalUs; ///< Receive inter-arrival samples in microseconds.
     std::map<std::string, AppAgentAccumulator> agents;    ///< Agent totals ordered by key.
     std::map<uint32_t, AppPeerAccumulator> peersByNodeId; ///< Peer totals ordered by node ID.
+
+    /**
+     * @param other Accumulator to compare.
+     * @return True when every raw field is equal.
+     */
+    bool operator==(const AppDirectionAccumulator& other) const = default;
 };
 
 /** Device transmission observations for one entity and direction. */
@@ -143,6 +177,12 @@ struct DeviceTransmissionAccumulator
     uint64_t estimatedMatchedTcpPayloadBytes{0}; ///< Estimated positively matched payload bytes.
     uint64_t matchedPacketCount{0};              ///< Positive-duration matched packet count.
     SampleAccumulator transmissionDurationUs;    ///< Positive transmission durations in us.
+
+    /**
+     * @param other Accumulator to compare.
+     * @return True when every raw field is equal.
+     */
+    bool operator==(const DeviceTransmissionAccumulator& other) const = default;
 };
 
 /** MAC payload observations for one peer. */
@@ -157,6 +197,12 @@ struct MacPeerAccumulator
     std::map<int, uint64_t> mpduDropsByReason;       ///< MPDU drops ordered by numeric reason.
     uint64_t dataFailureCount{0};                    ///< MAC data transmission failure count.
     uint64_t finalDataFailureCount{0};               ///< MAC final data transmission failure count.
+
+    /**
+     * @param other Accumulator to compare.
+     * @return True when every raw field is equal.
+     */
+    bool operator==(const MacPeerAccumulator& other) const = default;
 };
 
 /** MAC observations for one entity and direction. */
@@ -174,6 +220,12 @@ struct MacDirectionAccumulator
     uint64_t finalDataFailureCount{0};               ///< MAC final data transmission failure count.
     std::map<int, uint64_t> mpduDropsByReason;       ///< MPDU drops ordered by numeric reason.
     std::map<uint32_t, MacPeerAccumulator> peersByNodeId; ///< Payload totals by peer node.
+
+    /**
+     * @param other Accumulator to compare.
+     * @return True when every raw field is equal.
+     */
+    bool operator==(const MacDirectionAccumulator& other) const = default;
 };
 
 /** PHY observations for one peer in one experiment window. */
@@ -185,6 +237,12 @@ struct PhyPeerAccumulator
     uint64_t retransmissionCount{0};        ///< Repeated tagged MPDU identities.
     long double dataRateBpsUs{0.0};         ///< PHY data rate multiplied by allocated airtime.
     long double transmissionAirtimeUs{0.0}; ///< Allocated transmission airtime in microseconds.
+
+    /**
+     * @param other Accumulator to compare.
+     * @return True when every raw field is equal.
+     */
+    bool operator==(const PhyPeerAccumulator& other) const = default;
 };
 
 /** PHY observations for one entity and traffic direction. */
@@ -193,6 +251,12 @@ struct PhyDirectionAccumulator : PhyPeerAccumulator
     uint64_t taggedMpduCount{0};                          ///< Complete tagged MPDU attempt count.
     uint64_t completeTaggedMpduBytes{0};                  ///< Complete tagged MPDU attempt bytes.
     std::map<uint32_t, PhyPeerAccumulator> peersByNodeId; ///< PHY totals by peer node.
+
+    /**
+     * @param other Accumulator to compare.
+     * @return True when every raw field is equal.
+     */
+    bool operator==(const PhyDirectionAccumulator& other) const = default;
 };
 
 /** PHY observations for one entity in one experiment window. */
@@ -201,6 +265,12 @@ struct PhyCategoryAccumulator
     int64_t busyTimeUs{0};            ///< Local PHY busy time in microseconds.
     PhyDirectionAccumulator uplink;   ///< Uplink PHY observations.
     PhyDirectionAccumulator downlink; ///< Downlink PHY observations.
+
+    /**
+     * @param other Accumulator to compare.
+     * @return True when every raw field is equal.
+     */
+    bool operator==(const PhyCategoryAccumulator& other) const = default;
 };
 
 /** Stable identity of one owner-local TCP connection. */
@@ -226,6 +296,12 @@ struct TcpWindowAccumulator
     uint64_t congestionWindowObservationDurationUs{0}; ///< Observed CWND duration.
     std::optional<uint32_t> lastCongestionWindowBytes; ///< Terminal observed CWND.
     SampleAccumulator roundTripTimeUs;                 ///< RTT samples in microseconds.
+
+    /**
+     * @param other Accumulator to compare.
+     * @return True when every raw field is equal.
+     */
+    bool operator==(const TcpWindowAccumulator& other) const = default;
 };
 
 /** Current step-function state for one TCP connection. */
@@ -247,11 +323,19 @@ struct LocalEntityWindowAccumulator
     PhyCategoryAccumulator phy;                 ///< PHY observations and local busy time.
     std::map<std::pair<ExperimentDirection, uint32_t>, TcpWindowAccumulator>
         tcpConnections; ///< TCP observations by direction and peer node.
+
+    /**
+     * @param other Accumulator to compare.
+     * @return True when every raw field is equal.
+     */
+    bool operator==(const LocalEntityWindowAccumulator& other) const = default;
 };
 
 /** Sparse per-window state keyed by entity node identifier. */
-using UnifiedExperimentWindowStore =
-    std::map<uint64_t, std::map<uint32_t, LocalEntityWindowAccumulator>>;
+using UnifiedEntityAccumulatorMap = std::map<uint32_t, LocalEntityWindowAccumulator>;
+
+/** Sparse experiment windows keyed by window index and entity node identifier. */
+using UnifiedExperimentWindowStore = std::map<uint64_t, UnifiedEntityAccumulatorMap>;
 
 /** Register and resolve stable experiment entity identities. */
 class ExperimentEntityRegistry

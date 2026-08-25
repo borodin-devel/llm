@@ -34,6 +34,8 @@ LlmTestSuite::LlmTestSuite()
     AddCases(CreateExperimentTcpTestCases());
     AddCases(CreateExperimentDeviceMacTestCases());
     AddCases(CreateExperimentPhyTestCases());
+    AddCases(CreateExperimentSummaryTestCases());
+    AddCases(CreateExperimentValidationTestCases());
     AddCases(CreateWifiStatisticsTestCases());
     AddCases(CreateScenarioConfigTestCases());
     AddCases(CreateScenarioConfigJsonTestCases());

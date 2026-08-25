@@ -220,6 +220,76 @@ struct WifiStatisticsState
     bool deviceTracesConnected{false};     ///< Whether global device traces were connected.
 };
 
+/** Raw materialized local, AP-parent, station, and overall summary state. */
+struct UnifiedSummaryRawState
+{
+    UnifiedExperimentWindowStore localWindows;       ///< Original local windows.
+    UnifiedExperimentWindowStore accessPointWindows; ///< Materialized AP BSS-parent windows.
+    UnifiedExperimentWindowStore stationWindows;     ///< Materialized station windows.
+    UnifiedEntityAccumulatorMap accessPointOverall;  ///< Dense raw AP overall values.
+    UnifiedEntityAccumulatorMap stationOverall;      ///< Dense raw station overall values.
+};
+
+/**
+ * Merge every raw field from one entity accumulator.
+ *
+ * @param target Destination accumulator.
+ * @param source Source accumulator.
+ */
+void MergeLocalEntityWindowAccumulator(LocalEntityWindowAccumulator& target,
+                                       const LocalEntityWindowAccumulator& source);
+
+/**
+ * Merge one station's applicable sender/receiver values into its AP BSS parent.
+ *
+ * @param target Parent AP accumulator.
+ * @param station Child station accumulator.
+ * @param accessPointNodeId Parent AP node identifier.
+ * @param stationNodeId Child station node identifier.
+ */
+void MergeStationIntoAccessPoint(LocalEntityWindowAccumulator& target,
+                                 const LocalEntityWindowAccumulator& station,
+                                 uint32_t accessPointNodeId,
+                                 uint32_t stationNodeId);
+
+/**
+ * Test whether an entity has any raw activity.
+ *
+ * @param accumulator Raw entity accumulator.
+ * @return True when at least one measurement is present.
+ */
+bool HasEntityActivity(const LocalEntityWindowAccumulator& accumulator);
+
+/**
+ * Materialize AP parents, station children, and dense raw overall values.
+ *
+ * @param statistics Scenario statistics state.
+ * @return Independently copyable raw summary state.
+ */
+UnifiedSummaryRawState BuildUnifiedSummaryRawState(const WifiStatisticsState& statistics);
+
+/**
+ * Finalize one raw entity into the fixed output hierarchy.
+ *
+ * @param accumulator Raw entity accumulator.
+ * @param durationUs Rate and utilization denominator in microseconds.
+ * @param statistics Scenario statistics state used for peer identities.
+ * @return Fixed entity output hierarchy.
+ */
+EntityStatisticsOutput FinalizeEntityStatistics(const LocalEntityWindowAccumulator& accumulator,
+                                                int64_t durationUs,
+                                                const WifiStatisticsState& statistics);
+
+/**
+ * Validate exact raw summary invariants.
+ *
+ * @param registry Complete entity registry.
+ * @param raw Independently materialized raw summary state.
+ * @return Eight raw-total validation flags.
+ */
+ExperimentValidationOutput ValidateUnifiedSummaryRawState(const ExperimentEntityRegistry& registry,
+                                                          const UnifiedSummaryRawState& raw);
+
 /**
  * Resolve an event to one configured statistics window.
  *

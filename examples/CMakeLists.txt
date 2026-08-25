@@ -20,6 +20,8 @@ build_lib_example(
     experiment-statistics-device.cc
     experiment-statistics-mac.cc
     experiment-statistics-phy.cc
+    experiment-statistics-summary.cc
+    experiment-statistics-validation.cc
     wifi-statistics.cc
     wifi-statistics-json.cc
     wifi-statistics-owner.cc

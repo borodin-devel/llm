@@ -7,6 +7,166 @@
 namespace ns3
 {
 
+namespace
+{
+
+template <typename T>
+void
+AddValue(T& target, const T& source)
+{
+    target += source;
+}
+
+void
+MergeAppAgent(AppAgentAccumulator& target, const AppAgentAccumulator& source)
+{
+    target.acceptedSendCount += source.acceptedSendCount;
+    target.acceptedPayloadBytes += source.acceptedPayloadBytes;
+    target.dropEventCount += source.dropEventCount;
+    target.droppedPayloadBytes += source.droppedPayloadBytes;
+}
+
+void
+MergeAppPeer(AppPeerAccumulator& target, const AppPeerAccumulator& source)
+{
+    target.acceptedSendCount += source.acceptedSendCount;
+    target.acceptedPayloadBytes += source.acceptedPayloadBytes;
+    target.receiveEventCount += source.receiveEventCount;
+    target.receivedPayloadBytes += source.receivedPayloadBytes;
+    target.dropEventCount += source.dropEventCount;
+    target.droppedPayloadBytes += source.droppedPayloadBytes;
+}
+
+void
+MergeApp(AppDirectionAccumulator& target, const AppDirectionAccumulator& source)
+{
+    target.acceptedSendCount += source.acceptedSendCount;
+    target.acceptedPayloadBytes += source.acceptedPayloadBytes;
+    target.receiveEventCount += source.receiveEventCount;
+    target.receivedPayloadBytes += source.receivedPayloadBytes;
+    target.dropEventCount += source.dropEventCount;
+    target.droppedPayloadBytes += source.droppedPayloadBytes;
+    target.receiveInterArrivalUs.Merge(source.receiveInterArrivalUs);
+    for (const auto& [key, agent] : source.agents)
+    {
+        MergeAppAgent(target.agents[key], agent);
+    }
+    for (const auto& [nodeId, peer] : source.peersByNodeId)
+    {
+        MergeAppPeer(target.peersByNodeId[nodeId], peer);
+    }
+}
+
+void
+MergeDevice(DeviceTransmissionAccumulator& target, const DeviceTransmissionAccumulator& source)
+{
+    target.estimatedTransmittedTcpPayloadBytes += source.estimatedTransmittedTcpPayloadBytes;
+    target.estimatedMatchedTcpPayloadBytes += source.estimatedMatchedTcpPayloadBytes;
+    target.matchedPacketCount += source.matchedPacketCount;
+    target.transmissionDurationUs.Merge(source.transmissionDurationUs);
+}
+
+void
+MergeMacPeer(MacPeerAccumulator& target, const MacPeerAccumulator& source)
+{
+    target.estimatedTransmitEventCount += source.estimatedTransmitEventCount;
+    target.estimatedTransmittedTcpPayloadBytes += source.estimatedTransmittedTcpPayloadBytes;
+    target.estimatedReceiveEventCount += source.estimatedReceiveEventCount;
+    target.estimatedReceivedTcpPayloadBytes += source.estimatedReceivedTcpPayloadBytes;
+    target.mpduDropCount += source.mpduDropCount;
+    target.mpduDropBytes += source.mpduDropBytes;
+    target.dataFailureCount += source.dataFailureCount;
+    target.finalDataFailureCount += source.finalDataFailureCount;
+    for (const auto& [reason, count] : source.mpduDropsByReason)
+    {
+        target.mpduDropsByReason[reason] += count;
+    }
+}
+
+void
+MergeMac(MacDirectionAccumulator& target, const MacDirectionAccumulator& source)
+{
+    target.estimatedTransmitEventCount += source.estimatedTransmitEventCount;
+    target.estimatedTransmittedTcpPayloadBytes += source.estimatedTransmittedTcpPayloadBytes;
+    target.estimatedReceiveEventCount += source.estimatedReceiveEventCount;
+    target.estimatedReceivedTcpPayloadBytes += source.estimatedReceivedTcpPayloadBytes;
+    target.transmitDropCount += source.transmitDropCount;
+    target.transmitDropPacketBytes += source.transmitDropPacketBytes;
+    target.mpduDropCount += source.mpduDropCount;
+    target.mpduDropBytes += source.mpduDropBytes;
+    target.dataFailureCount += source.dataFailureCount;
+    target.finalDataFailureCount += source.finalDataFailureCount;
+    for (const auto& [reason, count] : source.mpduDropsByReason)
+    {
+        target.mpduDropsByReason[reason] += count;
+    }
+    for (const auto& [nodeId, peer] : source.peersByNodeId)
+    {
+        MergeMacPeer(target.peersByNodeId[nodeId], peer);
+    }
+}
+
+void
+MergePhyPeer(PhyPeerAccumulator& target, const PhyPeerAccumulator& source)
+{
+    target.taggedPayloadBytes += source.taggedPayloadBytes;
+    target.uniqueTaggedPayloadBytes += source.uniqueTaggedPayloadBytes;
+    target.transmissionAttemptCount += source.transmissionAttemptCount;
+    target.retransmissionCount += source.retransmissionCount;
+    target.dataRateBpsUs += source.dataRateBpsUs;
+    target.transmissionAirtimeUs += source.transmissionAirtimeUs;
+}
+
+void
+MergePhy(PhyDirectionAccumulator& target, const PhyDirectionAccumulator& source)
+{
+    MergePhyPeer(target, source);
+    target.taggedMpduCount += source.taggedMpduCount;
+    target.completeTaggedMpduBytes += source.completeTaggedMpduBytes;
+    for (const auto& [nodeId, peer] : source.peersByNodeId)
+    {
+        MergePhyPeer(target.peersByNodeId[nodeId], peer);
+    }
+}
+
+void
+MergeTcp(TcpWindowAccumulator& target, const TcpWindowAccumulator& source)
+{
+    target.congestionWindowBytesUs += source.congestionWindowBytesUs;
+    target.congestionWindowObservationDurationUs += source.congestionWindowObservationDurationUs;
+    if (source.lastCongestionWindowBytes)
+    {
+        target.lastCongestionWindowBytes = source.lastCongestionWindowBytes;
+    }
+    target.roundTripTimeUs.Merge(source.roundTripTimeUs);
+}
+
+bool
+HasAppPeer(const AppPeerAccumulator& value)
+{
+    return value.acceptedSendCount || value.acceptedPayloadBytes || value.receiveEventCount ||
+           value.receivedPayloadBytes || value.dropEventCount || value.droppedPayloadBytes;
+}
+
+bool
+HasMacPeer(const MacPeerAccumulator& value)
+{
+    return value.estimatedTransmitEventCount || value.estimatedTransmittedTcpPayloadBytes ||
+           value.estimatedReceiveEventCount || value.estimatedReceivedTcpPayloadBytes ||
+           value.mpduDropCount || value.mpduDropBytes || value.dataFailureCount ||
+           value.finalDataFailureCount || !value.mpduDropsByReason.empty();
+}
+
+bool
+HasPhyPeer(const PhyPeerAccumulator& value)
+{
+    return value.taggedPayloadBytes || value.uniqueTaggedPayloadBytes ||
+           value.transmissionAttemptCount || value.retransmissionCount ||
+           value.dataRateBpsUs != 0.0L || value.transmissionAirtimeUs != 0.0L;
+}
+
+} // namespace
+
 void
 SampleAccumulator::Add(double value)
 {
@@ -42,6 +202,81 @@ SampleAccumulator::Merge(const SampleAccumulator& other)
     sumSquares += other.sumSquares;
     minimum = std::min(minimum, other.minimum);
     maximum = std::max(maximum, other.maximum);
+}
+
+void
+MergeLocalEntityWindowAccumulator(LocalEntityWindowAccumulator& target,
+                                  const LocalEntityWindowAccumulator& source)
+{
+    MergeApp(target.app.uplink, source.app.uplink);
+    MergeApp(target.app.downlink, source.app.downlink);
+    MergeDevice(target.deviceTransmission.uplink, source.deviceTransmission.uplink);
+    MergeDevice(target.deviceTransmission.downlink, source.deviceTransmission.downlink);
+    target.applicationToPhyDelayUs.uplink.Merge(source.applicationToPhyDelayUs.uplink);
+    target.applicationToPhyDelayUs.downlink.Merge(source.applicationToPhyDelayUs.downlink);
+    MergeMac(target.mac.uplink, source.mac.uplink);
+    MergeMac(target.mac.downlink, source.mac.downlink);
+    AddValue(target.phy.busyTimeUs, source.phy.busyTimeUs);
+    MergePhy(target.phy.uplink, source.phy.uplink);
+    MergePhy(target.phy.downlink, source.phy.downlink);
+    for (const auto& [key, connection] : source.tcpConnections)
+    {
+        MergeTcp(target.tcpConnections[key], connection);
+    }
+}
+
+bool
+HasEntityActivity(const LocalEntityWindowAccumulator& value)
+{
+    const auto HasApp = [](const AppDirectionAccumulator& app) {
+        if (app.acceptedSendCount || app.acceptedPayloadBytes || app.receiveEventCount ||
+            app.receivedPayloadBytes || app.dropEventCount || app.droppedPayloadBytes ||
+            app.receiveInterArrivalUs.count)
+        {
+            return true;
+        }
+        return std::ranges::any_of(app.agents,
+                                   [](const auto& item) {
+                                       const auto& agent = item.second;
+                                       return agent.acceptedSendCount ||
+                                              agent.acceptedPayloadBytes || agent.dropEventCount ||
+                                              agent.droppedPayloadBytes;
+                                   }) ||
+               std::ranges::any_of(app.peersByNodeId,
+                                   [](const auto& item) { return HasAppPeer(item.second); });
+    };
+    const auto HasDevice = [](const DeviceTransmissionAccumulator& device) {
+        return device.estimatedTransmittedTcpPayloadBytes ||
+               device.estimatedMatchedTcpPayloadBytes || device.matchedPacketCount ||
+               device.transmissionDurationUs.count;
+    };
+    const auto HasMac = [](const MacDirectionAccumulator& mac) {
+        return mac.estimatedTransmitEventCount || mac.estimatedTransmittedTcpPayloadBytes ||
+               mac.estimatedReceiveEventCount || mac.estimatedReceivedTcpPayloadBytes ||
+               mac.transmitDropCount || mac.transmitDropPacketBytes || mac.mpduDropCount ||
+               mac.mpduDropBytes || mac.dataFailureCount || mac.finalDataFailureCount ||
+               !mac.mpduDropsByReason.empty() ||
+               std::ranges::any_of(mac.peersByNodeId,
+                                   [](const auto& item) { return HasMacPeer(item.second); });
+    };
+    const auto HasPhy = [](const PhyDirectionAccumulator& phy) {
+        return HasPhyPeer(phy) || phy.taggedMpduCount || phy.completeTaggedMpduBytes ||
+               std::ranges::any_of(phy.peersByNodeId,
+                                   [](const auto& item) { return HasPhyPeer(item.second); });
+    };
+    const bool tcp = std::ranges::any_of(value.tcpConnections, [](const auto& item) {
+        const auto& connection = item.second;
+        return connection.congestionWindowBytesUs != 0.0L ||
+               connection.congestionWindowObservationDurationUs ||
+               connection.lastCongestionWindowBytes || connection.roundTripTimeUs.count;
+    });
+    return HasApp(value.app.uplink) || HasApp(value.app.downlink) ||
+           HasDevice(value.deviceTransmission.uplink) ||
+           HasDevice(value.deviceTransmission.downlink) ||
+           value.applicationToPhyDelayUs.uplink.count ||
+           value.applicationToPhyDelayUs.downlink.count || HasMac(value.mac.uplink) ||
+           HasMac(value.mac.downlink) || value.phy.busyTimeUs || HasPhy(value.phy.uplink) ||
+           HasPhy(value.phy.downlink) || tcp;
 }
 
 void
