@@ -113,7 +113,7 @@ ResolvePhyFlow(const WifiStatisticsState& statistics,
 }
 
 static bool
-GetPhyWindowIndex(const WifiStatisticsState& statistics, int64_t nowUs, uint32_t& bucketIndex)
+GetPhyWindowIndex(const WifiStatisticsState& statistics, int64_t nowUs, uint64_t& bucketIndex)
 {
     if (statistics.coordinator.GetExperimentStartUs() < 0 ||
         nowUs < statistics.coordinator.GetExperimentStartUs())
@@ -129,7 +129,7 @@ GetPhyWindowIndex(const WifiStatisticsState& statistics, int64_t nowUs, uint32_t
         return false;
     }
 
-    bucketIndex = static_cast<uint32_t>(relativeUs / statistics.windowUs);
+    bucketIndex = static_cast<uint64_t>(relativeUs / statistics.windowUs);
     return true;
 }
 
@@ -145,7 +145,7 @@ RecordPhyStats(WifiStatisticsState& statistics,
         return;
     }
 
-    uint32_t bucketIndex = 0;
+    uint64_t bucketIndex = 0;
     if (!GetPhyWindowIndex(statistics, nowUs, bucketIndex))
     {
         return;
@@ -376,7 +376,7 @@ PhyTxPsduBeginTrace(WifiStatisticsState* statistics,
     (void)txPowerW;
 
     const int64_t nowUs = Simulator::Now().GetMicroSeconds();
-    uint32_t bucketIndex = 0;
+    uint64_t bucketIndex = 0;
     if (!GetPhyWindowIndex(*statistics, nowUs, bucketIndex))
     {
         return;

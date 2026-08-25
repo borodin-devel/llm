@@ -115,15 +115,34 @@ class StatisticsWindowTestCase : public TestCase
     void DoRun() override;
 };
 
+/**
+ * @ingroup tests
+ *
+ * Verify statistics window indices and JSON timestamps beyond 32-bit milliseconds.
+ */
+class LongDurationStatisticsWindowTestCase : public TestCase
+{
+  public:
+    LongDurationStatisticsWindowTestCase();
+
+  private:
+    void DoRun() override;
+};
+
 StatisticsWindowTestCase::StatisticsWindowTestCase()
     : TestCase("calculate statistics window boundaries")
+{
+}
+
+LongDurationStatisticsWindowTestCase::LongDurationStatisticsWindowTestCase()
+    : TestCase("preserve 64-bit statistics windows beyond 2^32 milliseconds")
 {
 }
 
 void
 StatisticsWindowTestCase::DoRun()
 {
-    uint32_t index = 999;
+    uint64_t index = 999;
     NS_TEST_ASSERT_MSG_EQ(GetStatisticsWindowIndex(1000000, 1000000, 50.0, 25, index),
                           true,
                           "Epoch must be included");
@@ -139,6 +158,41 @@ StatisticsWindowTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(GetStatisticsWindowIndex(1050000, 1000000, 50.0, 25, index),
                           false,
                           "End boundary must be excluded");
+}
+
+void
+LongDurationStatisticsWindowTestCase::DoRun()
+{
+    constexpr uint64_t firstIndexBeyond32Bits = uint64_t{1} << 32;
+    constexpr uint64_t durationMs = firstIndexBeyond32Bits + 1;
+    constexpr int64_t bucketStartUs = static_cast<int64_t>(firstIndexBeyond32Bits * 1000);
+
+    uint64_t windowIndex = 0;
+    NS_TEST_ASSERT_MSG_EQ(
+        GetStatisticsWindowIndex(bucketStartUs, 0, static_cast<double>(durationMs), 1, windowIndex),
+        true,
+        "Long-duration window was rejected");
+    NS_TEST_ASSERT_MSG_EQ(windowIndex,
+                          firstIndexBeyond32Bits,
+                          "Statistics window index wrapped at 32 bits");
+
+    TrafficCoordinator coordinator(static_cast<double>(durationMs),
+                                   static_cast<double>(durationMs));
+    WifiStatisticsState statistics(coordinator, 1);
+    statistics.stationIpsByBss = {{"10.1.0.2"}};
+    statistics.phyWindows[windowIndex][0].upBytes["10.1.0.2"] = 1;
+
+    const std::string outputPath = CreateTempDirFilename("llm-long-duration-statistics.json");
+    WriteWifiStatisticsJson(statistics, outputPath);
+
+    std::ifstream input(outputPath);
+    const nlohmann::json document = nlohmann::json::parse(input);
+    NS_TEST_ASSERT_MSG_EQ(document.at("windows").size(),
+                          1,
+                          "64-bit sparse statistics bucket was not emitted");
+    NS_TEST_ASSERT_MSG_EQ(document.at("windows").at(0).at("timestamp").get<uint64_t>(),
+                          durationMs,
+                          "64-bit statistics timestamp wrapped");
 }
 
 /**
@@ -483,6 +537,7 @@ std::vector<TestCase*>
 CreateWifiStatisticsTestCases()
 {
     return {new StatisticsWindowTestCase,
+            new LongDurationStatisticsWindowTestCase,
             new ScenarioLoggingTestCase,
             new PhyRateAccumulatorTestCase,
             new WifiStatisticsAttributionTestCase,

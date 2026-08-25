@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -130,8 +131,17 @@ main(int argc, char* argv[])
     distributionConfig.lowContentionPriority = config.distribution.lowContentionPriority;
     distributionConfig.slotMs = config.distribution.slotMs;
 
-    DistributionResult distribution =
-        DistributeAgentsContentionAware(parsedTrace, distributionConfig);
+    DistributionResult distribution;
+    try
+    {
+        distribution = DistributeAgentsContentionAware(parsedTrace, distributionConfig);
+    }
+    catch (const std::invalid_argument& error)
+    {
+        std::cerr << "error: agent distribution failed: " << error.what() << "\n\n";
+        PrintScenarioUsage(std::cerr, argv[0]);
+        return 1;
+    }
 
     Ptr<YansWifiChannel> sharedChannel;
     if (!config.topology.isolateBssChannels)

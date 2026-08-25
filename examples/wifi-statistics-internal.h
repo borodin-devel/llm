@@ -133,8 +133,8 @@ struct WifiStatisticsState
     std::vector<std::vector<std::string>> stationIpsByBss;        ///< Station IPs by BSS.
     std::map<std::string, int> bssByApIp;                         ///< BSS index by AP IP.
     std::map<std::string, int> bssByStationIp;                    ///< BSS index by station IP.
-    std::map<uint32_t, std::map<int, MacWindowStats>> macWindows; ///< MAC windows by node.
-    std::map<uint32_t, std::map<int, MacWindowStats>> phyWindows; ///< PHY windows by node.
+    std::map<uint64_t, std::map<int, MacWindowStats>> macWindows; ///< MAC windows by node.
+    std::map<uint64_t, std::map<int, MacWindowStats>> phyWindows; ///< PHY windows by node.
     std::map<uint32_t, std::map<uint32_t, NodeSecondStats>> nodeSeconds; ///< Node seconds.
     std::map<uint32_t, std::string> nodeLabels;                          ///< Report label by node.
     std::set<PhyMpduKey> seenTaggedMpdus; ///< Tagged MPDUs already counted as unique.
@@ -151,7 +151,7 @@ struct WifiStatisticsState
  * @return True when the flow belongs to one registered BSS.
  */
 bool RecordMacPayloadInWindow(WifiStatisticsState& statistics,
-                              uint32_t windowIndex,
+                              uint64_t windowIndex,
                               const std::string& sourceIp,
                               const std::string& destinationIp,
                               uint32_t payloadBytes);

@@ -48,7 +48,7 @@ GetStatisticsWindowIndex(int64_t absoluteUs,
                          int64_t experimentStartUs,
                          double maxExperimentDurationMs,
                          uint32_t windowMs,
-                         uint32_t& windowIndex)
+                         uint64_t& windowIndex)
 {
     if (experimentStartUs < 0 || absoluteUs < experimentStartUs || windowMs == 0)
     {
@@ -64,7 +64,7 @@ GetStatisticsWindowIndex(int64_t absoluteUs,
     }
 
     const int64_t windowUs = static_cast<int64_t>(windowMs) * 1000;
-    windowIndex = static_cast<uint32_t>(relativeUs / windowUs);
+    windowIndex = static_cast<uint64_t>(relativeUs / windowUs);
     return true;
 }
 
@@ -77,7 +77,7 @@ WifiStatistics::~WifiStatistics() = default;
 
 bool
 RecordMacPayloadInWindow(WifiStatisticsState& statistics,
-                         uint32_t windowIndex,
+                         uint64_t windowIndex,
                          const std::string& sourceIp,
                          const std::string& destinationIp,
                          uint32_t payloadBytes)
@@ -158,7 +158,7 @@ WifiStatistics::RecordMacPayload(int64_t nowUs,
     {
         return;
     }
-    const uint32_t windowIndex = static_cast<uint32_t>(relativeUs / state.windowUs);
+    const uint64_t windowIndex = static_cast<uint64_t>(relativeUs / state.windowUs);
 
     RecordMacPayloadInWindow(state, windowIndex, sourceIp, destinationIp, payloadBytes);
 }

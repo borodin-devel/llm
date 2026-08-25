@@ -146,6 +146,14 @@ ScenarioConfigValidationTestCase::DoRun()
          "simulation.auto_tail_seconds",
          "--simulation-auto-tail-seconds",
          [infinity](auto& c) { c.simulation.autoTailSeconds = infinity; }},
+        {"zero RNG seed",
+         "simulation.rng_seed",
+         "--simulation-rng-seed",
+         [](auto& c) { c.simulation.rngSeed = 0; }},
+        {"RNG seed above RngStream maximum",
+         "simulation.rng_seed",
+         "--simulation-rng-seed",
+         [](auto& c) { c.simulation.rngSeed = 4294944443U; }},
         {"zero BSS count",
          "topology.bss_count",
          "--topology-bss-count",
@@ -154,6 +162,10 @@ ScenarioConfigValidationTestCase::DoRun()
          "topology.bss_count",
          "--topology-bss-count",
          [](auto& c) { c.topology.bssCount = -1; }},
+        {"BSS count exceeds IPv4 subnet range",
+         "topology.bss_count",
+         "--topology-bss-count",
+         [](auto& c) { c.topology.bssCount = 257; }},
         {"zero station count",
          "topology.stations_per_bss",
          "--topology-stations-per-bss",
@@ -162,6 +174,10 @@ ScenarioConfigValidationTestCase::DoRun()
          "topology.stations_per_bss",
          "--topology-stations-per-bss",
          [](auto& c) { c.topology.stationsPerBss = -1; }},
+        {"station count exceeds IPv4 host range",
+         "topology.stations_per_bss",
+         "--topology-stations-per-bss",
+         [](auto& c) { c.topology.stationsPerBss = 254; }},
         {"negative BSS spacing",
          "topology.bss_spacing_m",
          "--topology-bss-spacing-m",
@@ -190,6 +206,20 @@ ScenarioConfigValidationTestCase::DoRun()
          "topology.ssid_prefix",
          "--topology-ssid-prefix",
          [](auto& c) { c.topology.ssidPrefix.clear(); }},
+        {"SSID exceeds 32 bytes for one BSS",
+         "topology.ssid_prefix",
+         "--topology-ssid-prefix",
+         [](auto& c) {
+             c.topology.bssCount = 1;
+             c.topology.ssidPrefix = std::string(32, 's');
+         }},
+        {"SSID exceeds 32 bytes at BSS 255",
+         "topology.ssid_prefix",
+         "--topology-ssid-prefix",
+         [](auto& c) {
+             c.topology.bssCount = 256;
+             c.topology.ssidPrefix = std::string(30, 's');
+         }},
         {"zero AP port",
          "topology.ap_sink_port",
          "--topology-ap-sink-port",
@@ -413,6 +443,18 @@ ScenarioConfigConversionsTestCase::DoRun()
     fixed.simulation.durationMode = DurationMode::FIXED;
     fixed.simulation.fixedDurationSeconds = 0.001;
     ValidateScenarioConfig(fixed);
+
+    auto maximumBounds = MakeValidConfig();
+    maximumBounds.simulation.rngSeed = 4294944442U;
+    maximumBounds.topology.bssCount = 256;
+    maximumBounds.topology.stationsPerBss = 253;
+    maximumBounds.topology.ssidPrefix = std::string(29, 's');
+    ValidateScenarioConfig(maximumBounds);
+
+    auto oneBssSsidBoundary = MakeValidConfig();
+    oneBssSsidBoundary.topology.bssCount = 1;
+    oneBssSsidBoundary.topology.ssidPrefix = std::string(31, 's');
+    ValidateScenarioConfig(oneBssSsidBoundary);
 
     NS_TEST_ASSERT_MSG_EQ(ResolveWifiManagerType("ns3::MinstrelHtWifiManager").GetName(),
                           "ns3::MinstrelHtWifiManager",

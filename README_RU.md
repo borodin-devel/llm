@@ -620,19 +620,19 @@ compiled defaults < TOML values < CLI overrides
 | `duration_mode` | `--simulation-duration-mode` | `auto`; также допустимо `fixed` |
 | `fixed_duration_seconds` | `--simulation-fixed-duration-seconds` | `0.0`; в режиме fixed должно быть положительным |
 | `auto_tail_seconds` | `--simulation-auto-tail-seconds` | `2.0`; неотрицательный запас после конца трассы |
-| `rng_seed` | `--simulation-rng-seed` | `12345`; детерминированный seed ns-3 |
+| `rng_seed` | `--simulation-rng-seed` | `12345`; допустимый диапазон seed ns-3 от 1 до 4294944442 |
 | `rng_run` | `--simulation-rng-run` | `1`; детерминированный номер run/substream |
 
 #### `[topology]`
 
 | Поле TOML | Переопределение CLI | Значение по умолчанию / смысл |
 |---|---|---|
-| `bss_count` | `--topology-bss-count` | `3` группы AP/BSS |
-| `stations_per_bss` | `--topology-stations-per-bss` | `30` физических STA в BSS |
+| `bss_count` | `--topology-bss-count` | `3`; диапазон от 1 до 256 для `10.1.<BSS>.0/24` |
+| `stations_per_bss` | `--topology-stations-per-bss` | `30`; диапазон от 1 до 253 для хостов от `.2` до `.254` |
 | `bss_spacing_m` | `--topology-bss-spacing-m` | Шаг `100.0` м по X, Y и Z |
 | `station_radius_m` | `--topology-station-radius-m` | Радиус равномерного диска STA `5.0` м |
 | `isolate_bss_channels` | `--topology-isolate-bss-channels` | `true`; объект канала на каждый BSS или один общий при false |
-| `ssid_prefix` | `--topology-ssid-prefix` | `llm-ap-`; затем добавляется индекс BSS |
+| `ssid_prefix` | `--topology-ssid-prefix` | `llm-ap-`; префикс с наибольшим индексом BSS не длиннее 32 байт |
 | `ap_sink_port` | `--topology-ap-sink-port` | `10000`; UL TCP-приемник на каждой AP |
 | `station_sink_base_port` | `--topology-station-sink-base-port` | `9000`; индекс STA добавляется для DL-приемников |
 | `generator_start_seconds` | `--topology-generator-start-seconds` | `1.0`; начало настройки TCP, а не нагрузки |

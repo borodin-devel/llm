@@ -58,7 +58,7 @@ bool GetStatisticsWindowIndex(int64_t absoluteUs,
                               int64_t experimentStartUs,
                               double maxExperimentDurationMs,
                               uint32_t windowMs,
-                              uint32_t& windowIndex);
+                              uint64_t& windowIndex);
 
 /** Own all Wi-Fi trace, aggregation, and serialization state for one scenario. */
 class WifiStatistics

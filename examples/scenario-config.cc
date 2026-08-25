@@ -339,7 +339,7 @@ GetScenarioConfigOptions()
         MakeIntegerOption<uint32_t>(
             "simulation.rng_seed",
             [](auto& c) -> auto& { return c.simulation.rngSeed; },
-            "ns-3 random-number seed"),
+            "ns-3 random-number seed from 1 through 4294944442"),
         MakeIntegerOption<uint64_t>(
             "simulation.rng_run",
             [](auto& c) -> auto& { return c.simulation.rngRun; },
@@ -347,11 +347,11 @@ GetScenarioConfigOptions()
         MakeIntegerOption<int>(
             "topology.bss_count",
             [](auto& c) -> auto& { return c.topology.bssCount; },
-            "Number of AP/BSS groups"),
+            "Number of AP/BSS groups from 1 through 256"),
         MakeIntegerOption<int>(
             "topology.stations_per_bss",
             [](auto& c) -> auto& { return c.topology.stationsPerBss; },
-            "Physical stations per BSS"),
+            "Physical stations per BSS from 1 through 253"),
         MakeFloatOption(
             "topology.bss_spacing_m",
             [](auto& c) -> auto& { return c.topology.bssSpacingM; },
@@ -367,7 +367,7 @@ GetScenarioConfigOptions()
         MakeStringOption(
             "topology.ssid_prefix",
             [](auto& c) -> auto& { return c.topology.ssidPrefix; },
-            "Prefix used to build BSS SSIDs"),
+            "Prefix producing indexed SSIDs no longer than 32 bytes"),
         MakeIntegerOption<uint16_t>(
             "topology.ap_sink_port",
             [](auto& c) -> auto& { return c.topology.apSinkPort; },

@@ -18,17 +18,17 @@ fixed_duration_seconds = 0.0
 # Extra seconds after trace end in automatic mode.
 auto_tail_seconds = 2.0
 
-# Deterministic ns-3 random-number seed.
+# Deterministic ns-3 random-number seed; valid range is 1 through 4294944442.
 rng_seed = 12345
 
 # Deterministic ns-3 run/substream number.
 rng_run = 1
 
 [topology]
-# Number of independent AP/BSS groups.
+# Number of independent AP/BSS groups; 1 through 256 fit 10.1.<BSS>.0/24.
 bss_count = 3
 
-# Number of physical stations created in each BSS.
+# Physical stations per BSS; 1 through 253 use host addresses .2 through .254.
 stations_per_bss = 30
 
 # Coordinate increment on X, Y, and Z between neighboring APs, in meters.
@@ -40,7 +40,7 @@ station_radius_m = 5.0
 # True creates one YansWifiChannel per BSS; false shares one channel.
 isolate_bss_channels = true
 
-# Prefix used to build one SSID per BSS.
+# Prefix for indexed SSIDs; prefix plus the largest BSS index must fit 32 bytes.
 ssid_prefix = "llm-ap-"
 
 # TCP sink port on every AP.

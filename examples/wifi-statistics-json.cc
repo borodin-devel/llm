@@ -261,10 +261,13 @@ WriteWifiStatisticsJson(const WifiStatisticsState& statistics, const std::string
     const int64_t statsDurationUs = static_cast<int64_t>(
         std::ceil(statistics.coordinator.GetMaxExperimentDurationMs() * 1000.0));
 
-    const uint32_t windowCount =
-        statsDurationUs > 0 ? static_cast<uint32_t>((statsDurationUs + statistics.windowUs - 1) /
-                                                    statistics.windowUs)
-                            : 0;
+    uint64_t windowCount = 0;
+    if (statsDurationUs > 0)
+    {
+        const auto durationUs = static_cast<uint64_t>(statsDurationUs);
+        const auto windowUs = static_cast<uint64_t>(statistics.windowUs);
+        windowCount = durationUs / windowUs + (durationUs % windowUs != 0);
+    }
 
     std::vector<MacSummaryStats> summaryFromWindows(statistics.stationIpsByBss.size());
     bool windowTotalsConsistent = true;
@@ -280,7 +283,7 @@ WriteWifiStatisticsJson(const WifiStatisticsState& statistics, const std::string
         << "  \"windows\": [\n";
 
     bool firstWindow = true;
-    uint32_t emittedWindowCount = 0;
+    uint64_t emittedWindowCount = 0;
 
     // The window map is sparse; absent windows and flows represent zero traffic.
     for (const auto& [bucketIndex, apStats] : statistics.phyWindows)
@@ -293,7 +296,7 @@ WriteWifiStatisticsJson(const WifiStatisticsState& statistics, const std::string
             continue;
         }
 
-        const uint32_t timestampMs = (bucketIndex + 1) * statistics.windowMs;
+        const uint64_t timestampMs = (bucketIndex + 1) * static_cast<uint64_t>(statistics.windowMs);
 
         if (!firstWindow)
         {

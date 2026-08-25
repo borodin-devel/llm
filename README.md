@@ -612,19 +612,19 @@ automatic run-directory creation.
 | `duration_mode` | `--simulation-duration-mode` | `auto`; also accepts `fixed` |
 | `fixed_duration_seconds` | `--simulation-fixed-duration-seconds` | `0.0`; must be positive in fixed mode |
 | `auto_tail_seconds` | `--simulation-auto-tail-seconds` | `2.0`; non-negative tail after trace end |
-| `rng_seed` | `--simulation-rng-seed` | `12345`; deterministic ns-3 seed |
+| `rng_seed` | `--simulation-rng-seed` | `12345`; valid ns-3 seed range is 1 through 4294944442 |
 | `rng_run` | `--simulation-rng-run` | `1`; deterministic run/substream number |
 
 #### `[topology]`
 
 | TOML field | CLI override | Default / meaning |
 |---|---|---|
-| `bss_count` | `--topology-bss-count` | `3` AP/BSS groups |
-| `stations_per_bss` | `--topology-stations-per-bss` | `30` physical STAs per BSS |
+| `bss_count` | `--topology-bss-count` | `3`; range 1 through 256 for `10.1.<BSS>.0/24` |
+| `stations_per_bss` | `--topology-stations-per-bss` | `30`; range 1 through 253 for hosts `.2` through `.254` |
 | `bss_spacing_m` | `--topology-bss-spacing-m` | `100.0` m increment on X, Y, and Z |
 | `station_radius_m` | `--topology-station-radius-m` | `5.0` m uniform STA-disc radius |
 | `isolate_bss_channels` | `--topology-isolate-bss-channels` | `true`; one channel object per BSS, or one shared object when false |
-| `ssid_prefix` | `--topology-ssid-prefix` | `llm-ap-`; BSS index is appended |
+| `ssid_prefix` | `--topology-ssid-prefix` | `llm-ap-`; prefix plus largest BSS index must be at most 32 bytes |
 | `ap_sink_port` | `--topology-ap-sink-port` | `10000`; uplink TCP sink on every AP |
 | `station_sink_base_port` | `--topology-station-sink-base-port` | `9000`; STA index is added for downlink sinks |
 | `generator_start_seconds` | `--topology-generator-start-seconds` | `1.0`; TCP setup start, not payload start |

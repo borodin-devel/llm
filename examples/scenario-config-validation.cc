@@ -19,6 +19,11 @@ namespace ns3
 namespace
 {
 
+constexpr uint32_t kMaximumRngSeed = 4294944442U;
+constexpr int kMaximumBssCount = 256;
+constexpr int kMaximumStationsPerBss = 253;
+constexpr std::size_t kMaximumSsidBytes = 32;
+
 template <typename T>
 std::string
 ToString(const T& value)
@@ -221,16 +226,22 @@ ValidateScenarioConfig(const ScenarioConfig& config)
     RequireFiniteNonNegative(config.simulation.autoTailSeconds,
                              "simulation.auto_tail_seconds",
                              "--simulation-auto-tail-seconds");
+    Require(config.simulation.rngSeed >= 1 && config.simulation.rngSeed <= kMaximumRngSeed,
+            "simulation.rng_seed",
+            "--simulation-rng-seed",
+            "integer from 1 through 4294944442",
+            config.simulation.rngSeed);
 
-    Require(config.topology.bssCount > 0,
+    Require(config.topology.bssCount > 0 && config.topology.bssCount <= kMaximumBssCount,
             "topology.bss_count",
             "--topology-bss-count",
-            "value greater than 0",
+            "integer from 1 through 256 for 10.1.<BSS>.0/24 addressing",
             config.topology.bssCount);
-    Require(config.topology.stationsPerBss > 0,
+    Require(config.topology.stationsPerBss > 0 &&
+                config.topology.stationsPerBss <= kMaximumStationsPerBss,
             "topology.stations_per_bss",
             "--topology-stations-per-bss",
-            "value greater than 0",
+            "integer from 1 through 253 for .2 through .254 station addresses",
             config.topology.stationsPerBss);
     RequireFiniteNonNegative(config.topology.bssSpacingM,
                              "topology.bss_spacing_m",
@@ -243,6 +254,13 @@ ValidateScenarioConfig(const ScenarioConfig& config)
             "--topology-ssid-prefix",
             "non-empty string",
             "empty string");
+    const auto maximumSsidBytes =
+        config.topology.ssidPrefix.size() + std::to_string(config.topology.bssCount - 1).size();
+    Require(maximumSsidBytes <= kMaximumSsidBytes,
+            "topology.ssid_prefix",
+            "--topology-ssid-prefix",
+            "prefix plus largest BSS index no longer than 32 bytes",
+            maximumSsidBytes);
     Require(config.topology.apSinkPort != 0,
             "topology.ap_sink_port",
             "--topology-ap-sink-port",
