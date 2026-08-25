@@ -135,7 +135,7 @@ struct WifiStatisticsState
     std::map<std::string, int> bssByStationIp;                    ///< BSS index by station IP.
     std::map<uint64_t, std::map<int, MacWindowStats>> macWindows; ///< MAC windows by node.
     std::map<uint64_t, std::map<int, MacWindowStats>> phyWindows; ///< PHY windows by node.
-    std::map<uint32_t, std::map<uint32_t, NodeSecondStats>> nodeSeconds; ///< Node seconds.
+    std::map<uint32_t, std::map<uint64_t, NodeSecondStats>> nodeSeconds; ///< Node seconds.
     std::map<uint32_t, std::string> nodeLabels;                          ///< Report label by node.
     std::set<PhyMpduKey> seenTaggedMpdus; ///< Tagged MPDUs already counted as unique.
 };
@@ -155,6 +155,16 @@ bool RecordMacPayloadInWindow(WifiStatisticsState& statistics,
                               const std::string& sourceIp,
                               const std::string& destinationIp,
                               uint32_t payloadBytes);
+
+/**
+ * Resolve a relative timestamp to an absolute-second statistics index.
+ *
+ * @param relativeUs Timestamp relative to the experiment start in microseconds.
+ * @param experimentDurationUs Experiment duration in microseconds.
+ * @param secondIndex Resolved zero-based second index.
+ * @return True when the timestamp lies inside the experiment interval.
+ */
+bool GetNodeSecondIndex(int64_t relativeUs, int64_t experimentDurationUs, uint64_t& secondIndex);
 
 /**
  * Serialize a statistics state to JSON.

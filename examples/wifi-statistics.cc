@@ -39,8 +39,20 @@ Ipv4ToString(Ipv4Address address)
     return stream.str();
 }
 
+bool
+GetNodeSecondIndex(int64_t relativeUs, int64_t experimentDurationUs, uint64_t& secondIndex)
+{
+    if (relativeUs < 0 || relativeUs >= experimentDurationUs)
+    {
+        return false;
+    }
+
+    secondIndex = static_cast<uint64_t>(relativeUs / 1000000);
+    return true;
+}
+
 static bool
-GetExperimentSecond(const WifiStatisticsState& statistics, int64_t absoluteUs, uint32_t& second)
+GetExperimentSecond(const WifiStatisticsState& statistics, int64_t absoluteUs, uint64_t& second)
 {
     if (statistics.coordinator.GetExperimentStartUs() < 0 ||
         absoluteUs < statistics.coordinator.GetExperimentStartUs())
@@ -51,19 +63,13 @@ GetExperimentSecond(const WifiStatisticsState& statistics, int64_t absoluteUs, u
     const int64_t relativeUs = absoluteUs - statistics.coordinator.GetExperimentStartUs();
     const int64_t experimentEndUs = static_cast<int64_t>(
         std::ceil(statistics.coordinator.GetMaxExperimentDurationMs() * 1000.0));
-    if (relativeUs >= experimentEndUs)
-    {
-        return false;
-    }
-
-    second = static_cast<uint32_t>(relativeUs / 1000000);
-    return true;
+    return GetNodeSecondIndex(relativeUs, experimentEndUs, second);
 }
 
 static NodeSecondStats*
 GetNodeSecondStats(WifiStatisticsState& statistics, uint32_t nodeId, int64_t absoluteUs)
 {
-    uint32_t second = 0;
+    uint64_t second = 0;
     if (!GetExperimentSecond(statistics, absoluteUs, second))
     {
         return nullptr;
@@ -515,7 +521,7 @@ PhyStateTrace(WifiStatisticsState* statistics,
     while (intervalStartUs < intervalEndUs)
     {
         const int64_t relativeUs = intervalStartUs - statistics->coordinator.GetExperimentStartUs();
-        const uint32_t second = static_cast<uint32_t>(relativeUs / 1000000);
+        const uint64_t second = static_cast<uint64_t>(relativeUs / 1000000);
         const int64_t nextBoundaryUs = statistics->coordinator.GetExperimentStartUs() +
                                        (static_cast<int64_t>(second) + 1) * 1000000;
         const int64_t pieceEndUs = std::min(intervalEndUs, nextBoundaryUs);
