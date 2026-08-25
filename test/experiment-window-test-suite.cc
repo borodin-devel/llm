@@ -226,6 +226,77 @@ ExperimentStatisticsPrimitiveTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(directions.Get(ExperimentDirection::DOWNLINK), 5, "Wrong downlink value");
 }
 
+/**
+ * @ingroup tests
+ *
+ * Verify negative sample extrema survive additions and empty merges.
+ */
+class SampleAccumulatorNegativeValuesTestCase : public TestCase
+{
+  public:
+    SampleAccumulatorNegativeValuesTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+SampleAccumulatorNegativeValuesTestCase::SampleAccumulatorNegativeValuesTestCase()
+    : TestCase("preserve negative sample extrema across merges")
+{
+}
+
+void
+SampleAccumulatorNegativeValuesTestCase::DoRun()
+{
+    SampleAccumulator negativeSamples;
+    negativeSamples.Add(-3.0);
+    NS_TEST_ASSERT_MSG_EQ(negativeSamples.count, 1, "Wrong single negative sample count");
+    NS_TEST_ASSERT_MSG_EQ(negativeSamples.sum, -3.0, "Wrong single negative sample sum");
+    NS_TEST_ASSERT_MSG_EQ(negativeSamples.sumSquares, 9.0, "Wrong single negative sample square");
+    NS_TEST_ASSERT_MSG_EQ(negativeSamples.minimum, -3.0, "Wrong single negative sample minimum");
+    NS_TEST_ASSERT_MSG_EQ(negativeSamples.maximum, -3.0, "Wrong single negative sample maximum");
+
+    negativeSamples.Add(-8.0);
+    NS_TEST_ASSERT_MSG_EQ(negativeSamples.count, 2, "Wrong negative sample count");
+    NS_TEST_ASSERT_MSG_EQ(negativeSamples.sum, -11.0, "Wrong negative sample sum");
+    NS_TEST_ASSERT_MSG_EQ(negativeSamples.sumSquares, 73.0, "Wrong negative squared sample sum");
+    NS_TEST_ASSERT_MSG_EQ(negativeSamples.minimum, -8.0, "Wrong negative sample minimum");
+    NS_TEST_ASSERT_MSG_EQ(negativeSamples.maximum, -3.0, "Wrong negative sample maximum");
+
+    SampleAccumulator emptyDestination;
+    emptyDestination.Merge(negativeSamples);
+    NS_TEST_ASSERT_MSG_EQ(emptyDestination.count, 2, "Empty destination lost merged count");
+    NS_TEST_ASSERT_MSG_EQ(emptyDestination.sum, -11.0, "Empty destination lost merged sum");
+    NS_TEST_ASSERT_MSG_EQ(emptyDestination.sumSquares,
+                          73.0,
+                          "Empty destination lost merged squares");
+    NS_TEST_ASSERT_MSG_EQ(emptyDestination.minimum, -8.0, "Empty destination lost merged minimum");
+    NS_TEST_ASSERT_MSG_EQ(emptyDestination.maximum, -3.0, "Empty destination lost merged maximum");
+
+    SampleAccumulator nonemptyDestination;
+    nonemptyDestination.Add(-5.0);
+    nonemptyDestination.Merge(negativeSamples);
+    NS_TEST_ASSERT_MSG_EQ(nonemptyDestination.count, 3, "Nonempty destination lost merged count");
+    NS_TEST_ASSERT_MSG_EQ(nonemptyDestination.sum, -16.0, "Nonempty destination lost merged sum");
+    NS_TEST_ASSERT_MSG_EQ(nonemptyDestination.sumSquares,
+                          98.0,
+                          "Nonempty destination lost merged squares");
+    NS_TEST_ASSERT_MSG_EQ(nonemptyDestination.minimum,
+                          -8.0,
+                          "Nonempty destination lost merged minimum");
+    NS_TEST_ASSERT_MSG_EQ(nonemptyDestination.maximum,
+                          -3.0,
+                          "Nonempty destination lost merged maximum");
+
+    SampleAccumulator emptySource;
+    negativeSamples.Merge(emptySource);
+    NS_TEST_ASSERT_MSG_EQ(negativeSamples.count, 2, "Empty merge changed count");
+    NS_TEST_ASSERT_MSG_EQ(negativeSamples.sum, -11.0, "Empty merge changed sum");
+    NS_TEST_ASSERT_MSG_EQ(negativeSamples.sumSquares, 73.0, "Empty merge changed squares");
+    NS_TEST_ASSERT_MSG_EQ(negativeSamples.minimum, -8.0, "Empty merge changed minimum");
+    NS_TEST_ASSERT_MSG_EQ(negativeSamples.maximum, -3.0, "Empty merge changed maximum");
+}
+
 } // namespace
 
 std::vector<TestCase*>
@@ -233,5 +304,6 @@ CreateExperimentWindowTestCases()
 {
     return {new ExperimentEntityRegistryTestCase,
             new ExperimentWindowTestCase,
-            new ExperimentStatisticsPrimitiveTestCase};
+            new ExperimentStatisticsPrimitiveTestCase,
+            new SampleAccumulatorNegativeValuesTestCase};
 }

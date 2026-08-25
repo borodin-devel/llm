@@ -10,16 +10,33 @@ namespace ns3
 void
 SampleAccumulator::Add(double value)
 {
+    if (count == 0)
+    {
+        minimum = value;
+        maximum = value;
+    }
+    else
+    {
+        minimum = std::min(minimum, value);
+        maximum = std::max(maximum, value);
+    }
     ++count;
     sum += value;
     sumSquares += static_cast<long double>(value) * value;
-    minimum = std::min(minimum, value);
-    maximum = std::max(maximum, value);
 }
 
 void
 SampleAccumulator::Merge(const SampleAccumulator& other)
 {
+    if (other.count == 0)
+    {
+        return;
+    }
+    if (count == 0)
+    {
+        *this = other;
+        return;
+    }
     count += other.count;
     sum += other.sum;
     sumSquares += other.sumSquares;
