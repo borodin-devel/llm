@@ -6,6 +6,9 @@
 
 #include "ns3/abort.h"
 #include "ns3/mac48-address.h"
+#include "ns3/wifi-phy-band.h"
+#include "ns3/wifi-psdu.h"
+#include "ns3/wifi-tx-vector.h"
 
 #include <algorithm>
 #include <cmath>
@@ -247,9 +250,23 @@ void RecordPhyMpduAttempt(WifiStatisticsState& statistics,
                           const std::optional<PhyMpduKey>& identity);
 
 /**
+ * Parse and record one packet delivered to the PhyTxBegin trace.
+ *
+ * @param statistics Scenario statistics state.
+ * @param transmitterNodeId Local PHY transmitter node identifier.
+ * @param absoluteTimeUs Absolute attempt time in microseconds.
+ * @param packet Complete transmitted Wi-Fi packet.
+ */
+void RecordPhyTxBeginPacket(WifiStatisticsState& statistics,
+                            uint32_t transmitterNodeId,
+                            int64_t absoluteTimeUs,
+                            Ptr<const Packet> packet);
+
+/**
  * Record one grouped tagged-flow contribution to a PPDU attempt.
  *
  * @param statistics Scenario statistics state.
+ * @param transmitterNodeId Local PHY transmitter node identifier.
  * @param absoluteTimeUs Absolute attempt time in microseconds.
  * @param sourceIpv4 Tagged source IPv4 address.
  * @param destinationIpv4 Tagged destination IPv4 address.
@@ -257,11 +274,29 @@ void RecordPhyMpduAttempt(WifiStatisticsState& statistics,
  * @param allocatedAirtimeUs PPDU airtime allocated to the tagged flow in microseconds.
  */
 void RecordPhyRateAttempt(WifiStatisticsState& statistics,
+                          uint32_t transmitterNodeId,
                           int64_t absoluteTimeUs,
                           const std::string& sourceIpv4,
                           const std::string& destinationIpv4,
                           double dataRateBps,
                           long double allocatedAirtimeUs);
+
+/**
+ * Parse and record one PSDU map delivered to the PhyTxPsduBegin trace.
+ *
+ * @param statistics Scenario statistics state.
+ * @param transmitterNodeId Local PHY transmitter node identifier.
+ * @param absoluteTimeUs Absolute attempt time in microseconds.
+ * @param band PHY band used by the transmitter.
+ * @param psduMap Transmitted PSDUs indexed by STA ID.
+ * @param txVector Transmission parameters, including per-user modes.
+ */
+void RecordPhyTxPsduBegin(WifiStatisticsState& statistics,
+                          uint32_t transmitterNodeId,
+                          int64_t absoluteTimeUs,
+                          WifiPhyBand band,
+                          const WifiConstPsduMap& psduMap,
+                          const WifiTxVector& txVector);
 
 /**
  * Calculate the airtime-weighted data rate for one PHY accumulator.

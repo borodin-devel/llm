@@ -3,7 +3,9 @@
 #include "llm-test-suite.h"
 
 #include "ns3/ap-generator.h"
+#include "ns3/app-tx-tag.h"
 #include "ns3/network-module.h"
+#include "ns3/wifi-module.h"
 
 #include <optional>
 #include <vector>
@@ -36,6 +38,32 @@ OpenExperiment(TrafficCoordinator& coordinator)
 }
 
 /**
+ * Register one test BSS in exact lookup state.
+ *
+ * @param statistics Test statistics state.
+ */
+void
+RegisterExactEntities(WifiStatisticsState& statistics)
+{
+    statistics.entityRegistry.RegisterAccessPoint(0, 10, "AP0", "10.1.0.1");
+    statistics.entityRegistry.RegisterStation(0, 0, 20, "AP0/STA0", "10.1.0.2");
+    statistics.entityRegistry.RegisterStation(0, 1, 21, "AP0/STA1", "10.1.0.3");
+}
+
+/**
+ * Register one test BSS in transitional lookup state.
+ *
+ * @param statistics Test statistics state.
+ */
+void
+RegisterLegacyAddressing(WifiStatisticsState& statistics)
+{
+    statistics.stationIpsByBss = {{"10.1.0.2", "10.1.0.3"}};
+    statistics.bssByApIp = {{"10.1.0.1", 0}};
+    statistics.bssByStationIp = {{"10.1.0.2", 0}, {"10.1.0.3", 0}};
+}
+
+/**
  * Register one test BSS in exact and transitional lookup state.
  *
  * @param statistics Test statistics state.
@@ -43,18 +71,84 @@ OpenExperiment(TrafficCoordinator& coordinator)
 void
 RegisterEntities(WifiStatisticsState& statistics)
 {
-    statistics.entityRegistry.RegisterAccessPoint(0, 10, "AP0", "10.1.0.1");
-    statistics.entityRegistry.RegisterStation(0, 0, 20, "AP0/STA0", "10.1.0.2");
-    statistics.stationIpsByBss = {{"10.1.0.2"}};
-    statistics.bssByApIp = {{"10.1.0.1", 0}};
-    statistics.bssByStationIp = {{"10.1.0.2", 0}};
+    RegisterExactEntities(statistics);
+    RegisterLegacyAddressing(statistics);
 }
 
 /**
- * @ingroup tests
+ * Build one application-tagged payload.
  *
- * Verify tagged MPDU identity, direction, peer, and delay attribution.
+ * @param sourceIpv4 Tagged source IPv4 address.
+ * @param destinationIpv4 Tagged destination IPv4 address.
+ * @param applicationPacketUid Tagged application packet identifier.
+ * @param applicationTransmitTimeUs Tagged application transmit time in microseconds.
+ * @param bytes Payload size in bytes.
+ * @return Tagged payload packet.
  */
+Ptr<Packet>
+BuildTaggedPayload(const char* sourceIpv4,
+                   const char* destinationIpv4,
+                   uint64_t applicationPacketUid,
+                   int64_t applicationTransmitTimeUs,
+                   uint32_t bytes)
+{
+    Ptr<Packet> packet = Create<Packet>(bytes);
+    packet->AddByteTag(AppTxTag(applicationPacketUid,
+                                applicationTransmitTimeUs,
+                                Ipv4Address(sourceIpv4),
+                                Ipv4Address(destinationIpv4),
+                                9000,
+                                10000,
+                                bytes,
+                                "test-agent"));
+    return packet;
+}
+
+/**
+ * Build one data header with literal MPDU identity fields.
+ *
+ * @param receiver Receiver MAC address.
+ * @param transmitter Transmitter MAC address.
+ * @param sequenceNumber MPDU sequence number.
+ * @return Wi-Fi data header.
+ */
+WifiMacHeader
+BuildDataHeader(const char* receiver, const char* transmitter, uint16_t sequenceNumber)
+{
+    WifiMacHeader header;
+    header.SetType(WIFI_MAC_DATA);
+    header.SetAddr1(Mac48Address(receiver));
+    header.SetAddr2(Mac48Address(transmitter));
+    header.SetAddr3(Mac48Address(transmitter));
+    header.SetSequenceNumber(sequenceNumber);
+    header.SetFragmentNumber(0);
+    return header;
+}
+
+/**
+ * Build a two-user HE MU transmission vector with distinct user rates.
+ *
+ * @return Configured HE MU transmission vector.
+ */
+WifiTxVector
+BuildTwoUserTxVector()
+{
+    WifiTxVector txVector(HePhy::GetHeMcs0(),
+                          WIFI_MIN_TX_PWR_LEVEL,
+                          WIFI_PREAMBLE_HE_MU,
+                          NanoSeconds(800),
+                          1,
+                          1,
+                          0,
+                          MHz_u{20},
+                          false);
+    txVector.SetHeMuUserInfo(1, {HeRu::RuSpec{RuType::RU_106_TONE, 1, true}, 0, 1});
+    txVector.SetHeMuUserInfo(2, {HeRu::RuSpec{RuType::RU_106_TONE, 2, true}, 7, 1});
+    txVector.SetSigBMode(VhtPhy::GetVhtMcs0());
+    return txVector;
+}
+
+/** @ingroup tests Verify tagged MPDU identity, direction, peer, and delay attribution. */
 class ExperimentPhyMpduAttributionTestCase : public TestCase
 {
   public:
@@ -78,8 +172,8 @@ ExperimentPhyMpduAttributionTestCase::DoRun()
     RegisterEntities(statistics);
 
     const std::vector<PhyTaggedPayloadSpan> uplinkSpans{
-        {"10.1.0.2", "10.1.0.1", epochUs + 1000, 100},
-        {"10.1.0.2", "10.1.0.1", epochUs + 1500, 50},
+        {"10.1.0.2", "10.1.0.1", epochUs + 9000, 100},
+        {"10.1.0.2", "10.1.0.1", epochUs + 9500, 50},
     };
     const PhyMpduKey uplinkIdentity{
         20,
@@ -89,10 +183,10 @@ ExperimentPhyMpduAttributionTestCase::DoRun()
         0,
         99,
     };
-    RecordPhyMpduAttempt(statistics, 20, epochUs + 3000, 500, uplinkSpans, uplinkIdentity);
-    RecordPhyMpduAttempt(statistics, 20, epochUs + 4000, 500, uplinkSpans, uplinkIdentity);
+    RecordPhyMpduAttempt(statistics, 20, epochUs + 11000, 500, uplinkSpans, uplinkIdentity);
+    RecordPhyMpduAttempt(statistics, 20, epochUs + 12000, 500, uplinkSpans, uplinkIdentity);
 
-    const auto& station = statistics.unifiedWindows.at(0).at(20);
+    const auto& station = statistics.unifiedWindows.at(1).at(20);
     const auto& stationUplink = station.phy.uplink;
     NS_TEST_ASSERT_MSG_EQ(stationUplink.taggedPayloadBytes,
                           300,
@@ -124,7 +218,7 @@ ExperimentPhyMpduAttributionTestCase::DoRun()
                           0,
                           "Uplink delay was recorded as downlink");
 
-    const auto& accessPoint = statistics.unifiedWindows.at(0).at(10);
+    const auto& accessPoint = statistics.unifiedWindows.at(1).at(10);
     const auto& accessPointUplink = accessPoint.phy.uplink;
     NS_TEST_ASSERT_MSG_EQ(accessPointUplink.taggedPayloadBytes,
                           300,
@@ -138,6 +232,9 @@ ExperimentPhyMpduAttributionTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(accessPoint.applicationToPhyDelayUs.uplink.count,
                           0,
                           "Sender delay was copied to the traffic peer");
+    NS_TEST_ASSERT_MSG_EQ(statistics.unifiedWindows.contains(0),
+                          false,
+                          "Delay was assigned to the application timestamp window");
 
     const std::vector<PhyTaggedPayloadSpan> downlinkSpans{
         {"10.1.0.1", "10.1.0.2", epochUs + 11000, 80},
@@ -179,24 +276,11 @@ ExperimentPhyMpduAttributionTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(statistics.nodeSeconds.at(20).at(0).phyRetransmissions,
                           1,
                           "Transitional PHY retry write changed");
-    NS_TEST_ASSERT_MSG_EQ(statistics.nodeSeconds.at(20).at(0).phyUniquePayloadBytes,
-                          150,
-                          "Transitional unique PHY payload write changed");
-    NS_TEST_ASSERT_MSG_EQ(statistics.nodeSeconds.at(20).at(0).phyMpduBytes,
-                          1000,
-                          "Transitional complete MPDU write changed");
-    NS_TEST_ASSERT_MSG_EQ(statistics.nodeSeconds.at(20).at(0).appToPhy.count,
-                          2,
-                          "Transitional application-to-PHY delay write changed");
 
     Simulator::Destroy();
 }
 
-/**
- * @ingroup tests
- *
- * Verify PPDU attempt rates use allocated airtime and retain peer attribution.
- */
+/** @ingroup tests Verify PPDU rate weighting and peer attribution. */
 class ExperimentPhyRateTestCase : public TestCase
 {
   public:
@@ -219,8 +303,8 @@ ExperimentPhyRateTestCase::DoRun()
     WifiStatisticsState statistics(coordinator, 10);
     RegisterEntities(statistics);
 
-    RecordPhyRateAttempt(statistics, epochUs + 2000, "10.1.0.2", "10.1.0.1", 10e6, 100.0L);
-    RecordPhyRateAttempt(statistics, epochUs + 3000, "10.1.0.2", "10.1.0.1", 20e6, 300.0L);
+    RecordPhyRateAttempt(statistics, 20, epochUs + 2000, "10.1.0.2", "10.1.0.1", 10e6, 100.0L);
+    RecordPhyRateAttempt(statistics, 20, epochUs + 3000, "10.1.0.2", "10.1.0.1", 20e6, 300.0L);
 
     const auto& station = statistics.unifiedWindows.at(0).at(20).phy.uplink;
     const auto& accessPoint = statistics.unifiedWindows.at(0).at(10).phy.uplink;
@@ -261,11 +345,180 @@ ExperimentPhyRateTestCase::DoRun()
     Simulator::Destroy();
 }
 
-/**
- * @ingroup tests
- *
- * Verify local PHY busy time is clipped and split at configured boundaries.
- */
+/** @ingroup tests Verify callback-shared tag and MPDU identity parsing. */
+class ExperimentPhyPacketParsingTestCase : public TestCase
+{
+  public:
+    ExperimentPhyPacketParsingTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+ExperimentPhyPacketParsingTestCase::ExperimentPhyPacketParsingTestCase()
+    : TestCase("parse a real tagged Wi-Fi MPDU through the PHY callback path")
+{
+}
+
+void
+ExperimentPhyPacketParsingTestCase::DoRun()
+{
+    TrafficCoordinator coordinator(30.0, 30.0);
+    const int64_t epochUs = OpenExperiment(coordinator);
+    WifiStatisticsState statistics(coordinator, 10);
+    RegisterEntities(statistics);
+
+    Ptr<Packet> packet = BuildTaggedPayload("10.1.0.2", "10.1.0.1", 77, epochUs + 9000, 120);
+    packet->AddHeader(BuildDataHeader("00:00:00:00:00:01", "00:00:00:00:00:02", 42));
+    RecordPhyTxBeginPacket(statistics, 20, epochUs + 11000, packet);
+    RecordPhyTxBeginPacket(statistics, 20, epochUs + 12000, packet);
+
+    const auto& uplink = statistics.unifiedWindows.at(1).at(20).phy.uplink;
+    NS_TEST_ASSERT_MSG_EQ(uplink.taggedPayloadBytes, 240, "Tagged packet bytes were not parsed");
+    NS_TEST_ASSERT_MSG_EQ(uplink.uniqueTaggedPayloadBytes,
+                          120,
+                          "Parsed MPDU identity did not suppress retry uniqueness");
+    NS_TEST_ASSERT_MSG_EQ(uplink.retransmissionCount,
+                          1,
+                          "Parsed repeated MPDU identity was not a retry");
+    NS_TEST_ASSERT_MSG_EQ(uplink.completeTaggedMpduBytes,
+                          2 * packet->GetSize(),
+                          "Parsed complete MPDU size is wrong");
+    NS_TEST_ASSERT_MSG_EQ(
+        statistics.unifiedWindows.at(1).at(20).applicationToPhyDelayUs.uplink.count,
+        1,
+        "Parsed first MPDU did not produce exactly one delay sample");
+    NS_TEST_ASSERT_MSG_EQ(statistics.unifiedWindows.contains(0),
+                          false,
+                          "Parsed delay used the application timestamp window");
+
+    Simulator::Destroy();
+}
+
+/** @ingroup tests Verify per-user rate parsing and proportional airtime. */
+class ExperimentPhyPsduParsingTestCase : public TestCase
+{
+  public:
+    ExperimentPhyPsduParsingTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+ExperimentPhyPsduParsingTestCase::ExperimentPhyPsduParsingTestCase()
+    : TestCase("parse per-user rates and allocate tagged PPDU airtime")
+{
+}
+
+void
+ExperimentPhyPsduParsingTestCase::DoRun()
+{
+    TrafficCoordinator coordinator(30.0, 30.0);
+    const int64_t epochUs = OpenExperiment(coordinator);
+    const WifiTxVector txVector = BuildTwoUserTxVector();
+    Ptr<Packet> firstUserPayload =
+        BuildTaggedPayload("10.1.0.1", "10.1.0.2", 80, epochUs + 1000, 40);
+    firstUserPayload->AddAtEnd(BuildTaggedPayload("10.1.0.1", "10.1.0.2", 82, epochUs + 1000, 60));
+    const WifiConstPsduMap psduMap{
+        {1,
+         Create<WifiPsdu>(firstUserPayload,
+                          BuildDataHeader("00:00:00:00:00:02", "00:00:00:00:00:01", 50))},
+        {2,
+         Create<WifiPsdu>(BuildTaggedPayload("10.1.0.1", "10.1.0.3", 81, epochUs + 1000, 300),
+                          BuildDataHeader("00:00:00:00:00:03", "00:00:00:00:00:01", 51))},
+    };
+
+    WifiStatisticsState wrongTransmitter(coordinator, 10);
+    RegisterExactEntities(wrongTransmitter);
+    RecordPhyTxPsduBegin(wrongTransmitter,
+                         20,
+                         epochUs + 2000,
+                         WIFI_PHY_BAND_5GHZ,
+                         psduMap,
+                         txVector);
+    NS_TEST_ASSERT_MSG_EQ(wrongTransmitter.unifiedWindows.empty(),
+                          true,
+                          "PSDU flow was attributed to a node other than the callback transmitter");
+
+    WifiStatisticsState statistics(coordinator, 10);
+    RegisterEntities(statistics);
+    RecordPhyTxPsduBegin(statistics, 10, epochUs + 2000, WIFI_PHY_BAND_5GHZ, psduMap, txVector);
+
+    const long double ppduAirtimeUs =
+        static_cast<long double>(
+            WifiPhy::CalculateTxDuration(psduMap, txVector, WIFI_PHY_BAND_5GHZ).GetNanoSeconds()) /
+        1000.0L;
+    const auto& downlink = statistics.unifiedWindows.at(0).at(10).phy.downlink;
+    const auto& firstPeer = downlink.peersByNodeId.at(20);
+    const auto& secondPeer = downlink.peersByNodeId.at(21);
+    NS_TEST_ASSERT_MSG_EQ(downlink.transmissionAttemptCount, 2, "Wrong grouped flow attempts");
+    NS_TEST_ASSERT_MSG_EQ_TOL(static_cast<double>(firstPeer.transmissionAirtimeUs),
+                              static_cast<double>(ppduAirtimeUs * 0.25L),
+                              1e-9,
+                              "First user's proportional airtime is wrong");
+    NS_TEST_ASSERT_MSG_EQ_TOL(static_cast<double>(secondPeer.transmissionAirtimeUs),
+                              static_cast<double>(ppduAirtimeUs * 0.75L),
+                              1e-9,
+                              "Second user's proportional airtime is wrong");
+    NS_TEST_ASSERT_MSG_EQ_TOL(*CalculateAveragePhyDataRateMbps(firstPeer),
+                              static_cast<double>(txVector.GetMode(1).GetDataRate(txVector, 1)) /
+                                  1e6,
+                              1e-12,
+                              "First user's PHY rate was not extracted by STA ID");
+    NS_TEST_ASSERT_MSG_EQ_TOL(*CalculateAveragePhyDataRateMbps(secondPeer),
+                              static_cast<double>(txVector.GetMode(2).GetDataRate(txVector, 2)) /
+                                  1e6,
+                              1e-12,
+                              "Second user's PHY rate was not extracted by STA ID");
+
+    Simulator::Destroy();
+}
+
+/** @ingroup tests Verify legacy PHY writes remain independent of unified identities. */
+class ExperimentPhyLegacyIndependenceTestCase : public TestCase
+{
+  public:
+    ExperimentPhyLegacyIndependenceTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+ExperimentPhyLegacyIndependenceTestCase::ExperimentPhyLegacyIndependenceTestCase()
+    : TestCase("preserve legacy PHY attribution without unified identities")
+{
+}
+
+void
+ExperimentPhyLegacyIndependenceTestCase::DoRun()
+{
+    TrafficCoordinator coordinator(30.0, 30.0);
+    const int64_t epochUs = OpenExperiment(coordinator);
+    WifiStatisticsState statistics(coordinator, 10);
+    RegisterLegacyAddressing(statistics);
+    const std::vector<PhyTaggedPayloadSpan> spans{
+        {"10.1.0.2", "10.1.0.1", epochUs + 1000, 125},
+    };
+
+    RecordPhyMpduAttempt(statistics, 20, epochUs + 2000, 300, spans, std::nullopt);
+    RecordPhyRateAttempt(statistics, 20, epochUs + 2000, "10.1.0.2", "10.1.0.1", 12e6, 50.0L);
+
+    NS_TEST_ASSERT_MSG_EQ(statistics.unifiedWindows.empty(),
+                          true,
+                          "Legacy-only addressing created unified PHY state");
+    NS_TEST_ASSERT_MSG_EQ(statistics.phyWindows.at(0).at(0).upBytes.at("10.1.0.2"),
+                          125,
+                          "Legacy payload attribution now depends on unified identity");
+    const auto& rate = statistics.phyWindows.at(0).at(0).upPhyRates.at("10.1.0.2");
+    NS_TEST_ASSERT_MSG_EQ(rate.txAttempts,
+                          1,
+                          "Legacy rate attribution now depends on unified identity");
+    NS_TEST_ASSERT_MSG_EQ_TOL(rate.AverageMbps(), 12.0, 1e-12, "Wrong legacy-only PHY rate");
+
+    Simulator::Destroy();
+}
+
+/** @ingroup tests Verify local busy time splitting at configured boundaries. */
 class ExperimentPhyBusyTimeTestCase : public TestCase
 {
   public:
@@ -320,5 +573,8 @@ CreateExperimentPhyTestCases()
 {
     return {new ExperimentPhyMpduAttributionTestCase,
             new ExperimentPhyRateTestCase,
+            new ExperimentPhyPacketParsingTestCase,
+            new ExperimentPhyPsduParsingTestCase,
+            new ExperimentPhyLegacyIndependenceTestCase,
             new ExperimentPhyBusyTimeTestCase};
 }
