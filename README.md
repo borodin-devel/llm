@@ -77,7 +77,7 @@ JSON trace
   -> replay uplink/downlink payloads against that epoch
   -> carry application metadata through TCP with AppTxTag
   -> observe MAC/PHY attempts, airtime, rate, delay, retries, and drops
-  -> write sparse configurable-window JSON statistics and detailed log reports
+  -> write one experiment JSON with Wi-Fi, transmission, cross-layer, and config data
 ```
 
 The implementation uses five main methods to achieve its goal:
@@ -368,110 +368,238 @@ in the `WifiTxVector` for an actual PPDU attempt.
 
 ## Output metrics
 
-`general.output_name` selects the primary JSON filename inside the resolved
-run folder. Its source is `PhyTxBegin + PhyTxPsduBegin + AppTxTag`.
+The experiment writes one JSON document. Its integer `schema_version` is `1`.
+This is an intentional breaking schema: consumers of output from an older
+version must be updated to the names and structure below.
 
-### Top-level JSON fields
+`general.output_name` selects the filename inside the run folder and defaults
+to `output.json`. The writer creates that file exclusively, so an existing
+file is never truncated or overwritten. End-of-experiment transmission and
+cross-layer summaries are present only in this JSON; they are not printed to
+stdout or ns-3 logs. Ordinary startup, progress, error, and completion
+messages remain.
+
+### Root schema
+
+The root members are:
 
 | Field | Meaning |
 |---|---|
-| `source` | Trace sources used for collection |
-| `byte_semantics` | Tagged application bytes observed at PHY; retries included |
-| `phy_rate_semantics` | Airtime-weighted nominal TXVECTOR rate; retries included |
-| `window_ms` | Configured statistics window size in milliseconds |
-| `windows` | Sparse non-empty time windows |
-| `summary` | Totals over all emitted windows |
-| `validation` | Internal byte-total consistency checks |
+| `schema_version` | Integer schema version, currently `1` |
+| `measurement_semantics` | Descriptions of the tagged MAC/PHY measurements |
+| `statistics_window_ms` | Configured sparse Wi-Fi window width in milliseconds |
+| `wifi_windows` | Sparse non-empty Wi-Fi windows |
+| `wifi_summary` | Per-AP totals over the emitted Wi-Fi windows |
+| `transmission_summary` | Matched device TX/RX measurements by sender |
+| `cross_layer_summary` | Per-node interval and whole-experiment measurements |
+| `validation` | Wi-Fi payload consistency flags |
+| `experiment_metadata` | Effective experiment configuration |
 
-Missing windows, BSS entries, and flows mean zero recorded tagged traffic.
+The document has this shape; object member order is not semantically
+significant:
 
-### Per-window fields
-
-Each window contains a timestamp and per-AP statistics:
-
-| Field | Unit | Meaning |
-|---|---:|---|
-| `timestamp` | ms | End of the configured window relative to trace epoch |
-| `ap_id` | index | Zero-based BSS/AP identifier |
-| `up_flows` | array | STA-to-AP flows with nonzero tagged bytes |
-| `down_flows` | array | AP-to-STA flows with nonzero tagged bytes |
-| `up_total_bytes` | bytes | Sum of uplink flow bytes in the window |
-| `down_total_bytes` | bytes | Sum of downlink flow bytes in the window |
-
-Each flow contains:
-
-| Field | Unit | Meaning |
-|---|---:|---|
-| `host_id` | IPv4 string | STA source for uplink or destination for downlink |
-| `bytes` | bytes | Tagged application payload observed at PHY, retries included |
-| `bw` | Mbit/s | Window goodput-like rate using the formula below |
-| `avg_phy_data_rate_mbps` | Mbit/s | Airtime-weighted nominal PHY data rate, or `null` |
-| `phy_tx_attempts` | attempts | PPDUs representing that host/direction |
-| `phy_tx_airtime_us` | us | Allocated share of PPDU airtime |
-
-Window units and the `bw` calculation are:
-
-```text
-window_us = window_ms * 1000
-bw_mbps = bytes * 8 / window_us
+```json
+{
+  "schema_version": 1,
+  "measurement_semantics": {},
+  "statistics_window_ms": 10,
+  "wifi_windows": [],
+  "wifi_summary": [],
+  "transmission_summary": {"senders": []},
+  "cross_layer_summary": {"nodes": []},
+  "validation": {},
+  "experiment_metadata": {"configuration": {}}
+}
 ```
 
-For the default 10 ms window:
+`experiment_metadata` is streamed last. Missing sparse Wi-Fi windows, access
+points, or flows mean that no tagged payload was recorded for them.
 
-```text
-125,000 bytes observed in 10 ms
-bw = 125000 * 8 / 10000 = 100 Mbit/s
-```
+### Measurement semantics
 
-This value includes retransmitted tagged bytes. It is not unique application
-goodput.
+`measurement_semantics` contains:
 
-### Summary fields
-
-For each AP, `summary` contains:
-
-- `up_total_bytes` and `down_total_bytes`;
-- per-host `total_bytes`;
-- aggregate `avg_phy_data_rate_mbps`;
-- aggregate `phy_tx_attempts`;
-- aggregate `phy_tx_airtime_us`.
-
-`validation.window_totals_consistent` verifies that emitted per-flow bytes
-match each sparse window total. `validation.summary_totals_consistent`
-verifies that summary byte totals match the sparse PHY state.
-
-### Log-only cross-layer metrics
-
-The following metrics are printed through the `SampleScenario` log component,
-not written to the primary JSON:
-
-| Metric | Meaning |
+| Field | Meaning |
 |---|---|
-| `app_to_phy_count` | First-transmission tagged delay samples |
-| `app_to_phy_mean_us` | Mean application-send to first PHY attempt delay |
-| `app_to_phy_stddev_us` | Population standard deviation of that delay |
-| `app_to_phy_min_us`, `max_us` | Delay range |
-| `app_tx_mbps` | Socket-accepted application bytes per interval |
-| `phy_payload_mbps` | Tagged PHY bytes, retries included |
-| `phy_unique_payload_mbps` | Deduplicated tagged PHY bytes |
-| `channel_utilization` | `(TX + RX + CCA_BUSY time) / interval time`, capped at 100% |
-| `phy_retrans` | Repeated tagged MPDU identities |
-| `mac_tx_drops`, `mac_tx_drop_bytes` | MAC transmit drops |
-| `mac_mpdu_drops`, `mac_mpdu_drop_bytes` | MPDU drops and reason counts |
-| `mac_data_failed` | MAC data failures |
-| `mac_final_data_failed` | Final MAC data failures |
-| `app_drop_events`, `app_drop_bytes` | Bytes rejected by TCP send |
-| `cwnd` | Last observed TCP congestion window in the second |
-| agent/station share | Accepted bytes as a fraction of AP/STA bytes |
+| `mac_payload_source` | `PhyTxBegin+PhyTxPsduBegin/AppTxTag` |
+| `mac_payload_byte_semantics` | Tagged application payload observed at PHY; retransmissions included |
+| `phy_data_rate_semantics` | Airtime-weighted nominal `WifiTxVector` rate of actual tagged PPDU attempts; retransmissions included; PPDU airtime is allocated by tagged payload bytes |
 
-`TrafficFlowMonitor` also logs a sender-level aggregate. It pairs TX and RX
-events by source/destination IP, TCP ports, and estimated payload size, then
-sums positive RX-minus-TX time. This is diagnostic matching, not an ns-3
-`FlowMonitor` delay metric.
+### Wi-Fi windows and summary
 
-The device-level diagnostic estimates payload as `packet size - 60` after
-checking LLC/SNAP, IPv4, and TCP headers. Treat it as a heuristic. The primary
-JSON uses `AppTxTag` byte spans and is the preferred payload accounting path.
+Each item in `wifi_windows` has `window_end_ms` and an `access_points` array.
+Each access-point entry has `access_point_id`, `uplink`, and `downlink`.
+Each direction contains `total_payload_bytes` and a `flows` array. A window
+flow contains:
+
+| Field | Unit | Meaning |
+|---|---:|---|
+| `station_ipv4` | IPv4 address | STA source for uplink or destination for downlink |
+| `payload_bytes` | bytes | Tagged application payload observed at PHY, including repeated attempts |
+| `throughput_mbps` | Mbps | Payload rate over the configured window |
+| `average_phy_data_rate_mbps` | Mbps or `null` | Airtime-weighted nominal PHY data rate; `null` when no PHY attempt exists |
+| `phy_transmission_attempt_count` | count | PPDU attempts representing this flow and direction |
+| `phy_transmission_airtime_us` | us | Allocated share of PPDU airtime |
+
+The window rate uses SI Mbps directly:
+
+```text
+throughput_mbps = payload_bytes * 8 / statistics_window_us
+```
+
+For example, `125000 * 8 / 10000 = 100` Mbps in a 10 ms window. The result
+includes retransmitted tagged bytes and is not unique application goodput.
+
+`wifi_summary` has one object per registered AP, with the same
+`access_point_id`, `uplink`, and `downlink` shape. Each direction again has
+`total_payload_bytes` and `flows`. A summary flow contains
+`station_ipv4`, `total_payload_bytes`, `average_phy_data_rate_mbps`,
+`phy_transmission_attempt_count`, and `phy_transmission_airtime_us`. It has no
+whole-experiment throughput field because that measurement is not defined by
+the Wi-Fi summary.
+
+### Transmission summary
+
+`transmission_summary.senders` contains every sender with a recorded MAC
+transmit payload sample, ordered by IPv4 string. Each entry contains:
+
+| Field | Unit | Meaning |
+|---|---:|---|
+| `sender_ipv4` | IPv4 address | Packet source |
+| `matched_packet_count` | count | TX/RX pairs with a strictly positive duration |
+| `total_transmission_duration_us` | us | Sum of positive matched RX-minus-TX durations |
+| `transmitted_payload_bytes` | bytes | MAC transmit sample total, including repeated attempts |
+| `effective_throughput_mbps` | Mbps or `null` | Effective rate over positive matched duration |
+
+Matching uses source and destination IPv4 addresses, TCP ports, estimated
+payload size, and observation order. The device-level payload estimate is
+`packet size - 60` after checking LLC/SNAP, IPv4, and TCP headers, so this is a
+diagnostic match rather than an ns-3 `FlowMonitor` delay metric. The rate uses
+SI Mbps:
+
+```text
+effective_throughput_mbps = transmitted_payload_bytes * 8 /
+                            total_transmission_duration_us
+```
+
+Bytes times eight divided by microseconds is Mbps. When no positive matched
+duration exists, the count and duration are zero and
+`effective_throughput_mbps` is `null`.
+
+### Cross-layer summary
+
+`cross_layer_summary.nodes` contains every registered node, including nodes
+with no measurements. A node has `node_id`, `node_label`,
+`one_second_intervals`, and `overall`. All-zero interval and overall objects
+are retained. The final interval can have `interval_duration_s` below one;
+rates and utilization use that actual duration.
+
+Each `one_second_intervals` entry contains:
+
+| Field | Unit | Meaning |
+|---|---:|---|
+| `interval_index` | index | Zero-based one-second bucket |
+| `interval_start_s` | s | Start relative to the experiment epoch |
+| `interval_duration_s` | s | Actual interval duration |
+| `application_to_phy_delay` | object | First-transmission tagged delay distribution |
+| `application_transmit_throughput_mbps` | Mbps | TCP socket-accepted application payload rate |
+| `phy_payload_throughput_mbps` | Mbps | Tagged PHY payload rate, including retransmissions |
+| `unique_phy_payload_throughput_mbps` | Mbps | Deduplicated tagged PHY payload rate |
+| `channel_utilization_percent` | percent | TX, RX, and CCA_BUSY time, capped at 100 percent |
+| `phy_retransmission_count` | count | Repeated tagged MPDU identities |
+| `mac_transmit_drop_count` | count | MAC transmit-drop events |
+| `mac_transmit_drop_bytes` | bytes | Payload bytes in MAC transmit drops |
+| `mac_mpdu_drop_count` | count | Dropped MPDUs |
+| `mac_mpdu_drop_bytes` | bytes | Bytes in dropped MPDUs |
+| `mac_data_failure_count` | count | MAC data-failure events |
+| `mac_final_data_failure_count` | count | Final MAC data-failure events |
+| `application_drop_event_count` | count | Application send-drop events |
+| `application_drop_bytes` | bytes | Application payload rejected by TCP send |
+| `mac_mpdu_drops_by_reason` | array | MPDU drop counts grouped by reason code |
+| `application_drops_by_agent` | array | Application drop events and bytes grouped by agent |
+
+The interval rate and utilization formulas are:
+
+```text
+throughput_mbps = payload_bytes * 8 / 1e6 / interval_duration_s
+channel_utilization_percent = min(100, busy_time_us /
+                                  (interval_duration_s * 1e6) * 100)
+```
+
+`application_to_phy_delay` contains `sample_count`, `mean_us`,
+`standard_deviation_us`, `minimum_us`, and `maximum_us`. The standard deviation
+is the population standard deviation. All four delay values are `0.0` when
+`sample_count` is zero.
+
+The drop breakdown objects are:
+
+```json
+{"reason_code": 7, "drop_count": 3}
+```
+
+```json
+{"agent_key": "agent-1", "drop_event_count": 2, "dropped_payload_bytes": 4096}
+```
+
+The `overall` object contains:
+
+| Field | Unit | Meaning |
+|---|---:|---|
+| `experiment_duration_s` | s | Whole experiment duration |
+| `application_to_phy_delay` | object | Delay distribution merged across intervals |
+| `application_transmitted_payload_bytes` | bytes | TCP socket-accepted application payload |
+| `phy_payload_bytes` | bytes | Tagged PHY payload, including retransmissions |
+| `unique_phy_payload_bytes` | bytes | Deduplicated tagged PHY payload |
+| `phy_mpdu_bytes` | bytes | Complete tagged PHY MPDU bytes |
+| `average_application_transmit_throughput_mbps` | Mbps | Application payload average over experiment duration |
+| `average_phy_payload_throughput_mbps` | Mbps | PHY payload average over experiment duration |
+| `average_channel_utilization_percent` | percent | Busy-time average over experiment duration, capped at 100 percent |
+| `phy_retransmission_count` | count | Repeated tagged MPDU identities |
+| `mac_transmit_drop_count` | count | MAC transmit-drop events |
+| `mac_transmit_drop_bytes` | bytes | Payload bytes in MAC transmit drops |
+| `mac_mpdu_drop_count` | count | Dropped MPDUs |
+| `mac_mpdu_drop_bytes` | bytes | Bytes in dropped MPDUs |
+| `mac_data_failure_count` | count | MAC data-failure events |
+| `mac_final_data_failure_count` | count | Final MAC data-failure events |
+| `application_drop_event_count` | count | Application send-drop events |
+| `application_drop_bytes` | bytes | Application payload rejected by TCP send |
+| `mac_mpdu_drops_by_reason` | array | Whole-experiment MPDU drop counts by reason code |
+
+The two average throughput fields and average utilization use the same
+formulas above with `experiment_duration_s` as the denominator. The per-agent
+breakdown is an interval field; the overall object contains the aggregate
+application drop count and bytes.
+
+### Validation and experiment metadata
+
+`validation.window_payload_totals_consistent` checks each emitted window's
+flow-byte sum against its sparse total.
+`validation.summary_payload_totals_consistent` checks the Wi-Fi summary totals
+against the sparse PHY state.
+
+`experiment_metadata.configuration` records all 36 effective values after:
+
+```text
+compiled defaults < TOML values < CLI overrides
+```
+
+The eight configuration objects and their fields are:
+
+| Object | Effective fields |
+|---|---|
+| `general` | `trace_file`, `run_folder`, `output_name` |
+| `simulation` | `duration_mode`, `fixed_duration_seconds`, `auto_tail_seconds`, `rng_seed`, `rng_run` |
+| `topology` | `bss_count`, `stations_per_bss`, `bss_spacing_m`, `station_radius_m`, `isolate_bss_channels`, `ssid_prefix`, `ap_sink_port`, `station_sink_base_port`, `generator_start_seconds` |
+| `distribution` | `max_agents_per_station`, `low_contention_priority`, `slot_ms` |
+| `wifi` | `band`, `channel_number`, `bandwidth_mhz`, `primary_20_index`, `rate_manager`, `active_probing` |
+| `tcp` | `congestion_control`, `segment_size_bytes`, `send_buffer_bytes`, `receive_buffer_bytes` |
+| `statistics` | `window_ms` |
+| `logging` | `sample_scenario_level`, `ap_generator_level`, `sta_generator_level`, `traffic_sink_level`, `contention_distribution_level` |
+
+Values keep their TOML names and JSON scalar types. An omitted
+`general.run_folder` is `null`, and enums use their canonical TOML spelling.
+Path values are recorded exactly as configured: metadata does not contain
+resolved config, trace, run-folder, or output paths, nor per-value provenance.
 
 ## IEEE 802.11 review
 
@@ -603,7 +731,7 @@ automatic run-directory creation.
 |---|---|---|
 | `trace_file` | `--general-trace-file` | Required input JSON trace |
 | `run_folder` | `--general-run-folder` | Omitted; exact output directory when set |
-| `output_name` | `--general-output-name` | `mac-node-stats.json`; plain `.json` filename |
+| `output_name` | `--general-output-name` | `output.json`; plain `.json` filename |
 
 #### `[simulation]`
 
@@ -704,8 +832,9 @@ file.
 Validation, path resolution, and directory preparation finish before ns-3
 topology objects are created. Startup prints the resolved config, trace, run,
 and output paths plus the major duration, topology, distribution, Wi-Fi, TCP,
-RNG, and statistics choices. Statistics are written only to the printed
-output file.
+RNG, and statistics choices. Measurements are written only to the printed
+output file. Its metadata preserves configured path strings and does not copy
+these resolved paths into the JSON.
 
 Fixed-duration example:
 
@@ -835,8 +964,8 @@ contrib/llm/
 |   |-- scenario-run-path.cc          CWD-based collision-safe run paths
 |   |-- scenario-topology.*           BSS/STA/IP/application construction
 |   |-- traffic-coordinator.*         Global TCP readiness barrier
-|   |-- traffic-flow-monitor.*        Device-level TX/RX diagnostics
-|   `-- wifi-statistics*              PHY/MAC collection, JSON, reports
+|   |-- traffic-flow-monitor.*        Device TX/RX matching and transmission summary
+|   `-- wifi-statistics*              PHY/MAC collection and experiment JSON summaries
 |-- model/
 |   |-- agent-data.h                  Shared trace/distribution data
 |   |-- trace-parser.*                JSON-to-agent parser
@@ -882,7 +1011,6 @@ contrib/llm/
 | A-MPDU | Aggregated collection of MPDUs in one PHY transmission |
 | TXVECTOR | PHY transmission parameters, including mode/rate |
 | CCA_BUSY | PHY reports that the primary channel is busy |
-| CWND | TCP congestion window |
 | RTT | TCP round-trip-time sample |
 | AppTxTag | Byte tag connecting application writes to PHY observations |
 | Tagged bytes | Application payload range carrying `AppTxTag` |
@@ -902,8 +1030,9 @@ contrib/llm/
 - The scenario does not model a detailed building/campus radio environment.
 - It does not explicitly configure OFDMA, MU-MIMO, beamforming, TWT,
   BSS coloring, OBSS-PD, authentication, or encryption.
-- Primary JSON bytes include retransmissions; use log-only unique-byte metrics
-  when deduplicated payload is required.
+- PHY payload measurements include retransmissions; use
+  `cross_layer_summary` unique-payload fields when deduplicated payload is
+  required.
 - The device-level `packet size - 60` flow diagnostic is approximate.
 - TX/RX timestamp matching uses a tuple and observation order; it is a
   diagnostic, not a formal end-to-end flow monitor.
