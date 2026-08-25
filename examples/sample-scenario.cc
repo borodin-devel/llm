@@ -1,10 +1,7 @@
 // examples/sample-scenario.cc
 // Sample ns-3 scenario: 3 APs x 30 stations, 802.11ax, TCP, isolated YansWifiChannels
 //
-// Usage: ./sample-scenario <traces.json> [bandwidth_mhz] [stats_output.json] [experiment_time]
-//   bandwidth_mhz: 20, 40, 80 or 160 (default: 20)
-//   stats_output.json: MAC per-node statistics (default: mac-node-stats.json)
-//   experiment_time: "auto" (JSON duration + 2s, default) or fixed seconds (> 0)
+// Usage: ./sample-scenario --config <config.toml> [--section-field <value> ...]
 //
 
 #include "scenario-config.h"
@@ -20,6 +17,7 @@
 #include "ns3/tcp-linux-reno.h"
 
 #include <chrono>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <string>
@@ -33,20 +31,19 @@ main(int argc, char* argv[])
     LogComponent& g_log = llm_example::GetScenarioLog();
 
     const std::vector<std::string> arguments(argv + 1, argv + argc);
-    const ScenarioArgumentResult argumentResult = ParseScenarioArguments(arguments);
-    if (!argumentResult.valid)
+    const ScenarioCommandLineResult commandLine =
+        ParseScenarioArguments(arguments, std::filesystem::current_path());
+    if (commandLine.printUsage)
     {
-        if (argumentResult.printUsage)
-        {
-            PrintScenarioUsage(std::cerr, argv[0]);
-        }
-        else
-        {
-            std::cerr << argumentResult.error << std::endl;
-        }
+        PrintScenarioUsage(commandLine.valid ? std::cout : std::cerr, argv[0]);
+        return commandLine.valid ? 0 : 1;
+    }
+    if (!commandLine.valid)
+    {
+        std::cerr << commandLine.error << std::endl;
         return 1;
     }
-    const ScenarioConfig& config = argumentResult.config;
+    const ScenarioConfig& config = commandLine.launch.scenario;
 
     RngSeedManager::SetSeed(config.simulation.rngSeed);
     RngSeedManager::SetRun(config.simulation.rngRun);

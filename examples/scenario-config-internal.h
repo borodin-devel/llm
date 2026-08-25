@@ -31,6 +31,14 @@ struct ConfigOption
  */
 const std::vector<ConfigOption>& GetScenarioConfigOptions();
 
+/**
+ * Get the diagnostic name of a configuration scalar category.
+ *
+ * @param valueType Scalar category.
+ * @return Human-readable expected type.
+ */
+std::string_view GetScenarioConfigValueTypeName(ConfigValueType valueType);
+
 } // namespace ns3
 
 #endif // SCENARIO_CONFIG_INTERNAL_H

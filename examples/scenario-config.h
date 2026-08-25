@@ -16,8 +16,8 @@ namespace ns3
 /** Configuration values for general scenario input and output. */
 struct GeneralConfig
 {
-    std::string traceFile; ///< Input JSON trace path.
-    std::optional<std::string> runFolder; ///< Optional output directory path.
+    std::string traceFile;                         ///< Input JSON trace path.
+    std::optional<std::string> runFolder;          ///< Optional output directory path.
     std::string outputName{"mac-node-stats.json"}; ///< Statistics JSON filename.
 };
 
@@ -41,32 +41,32 @@ std::ostream& operator<<(std::ostream& output, DurationMode durationMode);
 struct SimulationConfig
 {
     DurationMode durationMode{DurationMode::AUTO}; ///< Experiment duration policy.
-    double fixedDurationSeconds{0.0}; ///< Fixed duration in seconds.
-    double autoTailSeconds{2.0}; ///< Extra automatic-duration tail in seconds.
-    uint32_t rngSeed{12345}; ///< ns-3 random-number seed.
-    uint64_t rngRun{1}; ///< ns-3 random-number run number.
+    double fixedDurationSeconds{0.0};              ///< Fixed duration in seconds.
+    double autoTailSeconds{2.0};                   ///< Extra automatic-duration tail in seconds.
+    uint32_t rngSeed{12345};                       ///< ns-3 random-number seed.
+    uint64_t rngRun{1};                            ///< ns-3 random-number run number.
 };
 
 /** Configuration values that control the BSS topology. */
 struct TopologyConfig
 {
-    int bssCount{3}; ///< Number of AP/BSS groups.
-    int stationsPerBss{30}; ///< Number of stations per BSS.
-    double bssSpacingM{100.0}; ///< AP spacing in meters.
-    double stationRadiusM{5.0}; ///< Station-disc radius in meters.
-    bool isolateBssChannels{true}; ///< Whether BSS groups use separate channels.
-    std::string ssidPrefix{"llm-ap-"}; ///< Prefix used to build BSS SSIDs.
-    uint16_t apSinkPort{10000}; ///< TCP sink port on each AP.
+    int bssCount{3};                    ///< Number of AP/BSS groups.
+    int stationsPerBss{30};             ///< Number of stations per BSS.
+    double bssSpacingM{100.0};          ///< AP spacing in meters.
+    double stationRadiusM{5.0};         ///< Station-disc radius in meters.
+    bool isolateBssChannels{true};      ///< Whether BSS groups use separate channels.
+    std::string ssidPrefix{"llm-ap-"};  ///< Prefix used to build BSS SSIDs.
+    uint16_t apSinkPort{10000};         ///< TCP sink port on each AP.
     uint16_t stationSinkBasePort{9000}; ///< First TCP sink port for a station.
-    double generatorStartSeconds{1.0}; ///< Generator start time in seconds.
+    double generatorStartSeconds{1.0};  ///< Generator start time in seconds.
 };
 
 /** Configuration values that control agent distribution. */
 struct DistributionConfig
 {
-    int maxAgentsPerStation{832}; ///< Agent cap per physical station; zero is unlimited.
+    int maxAgentsPerStation{832};     ///< Agent cap per physical station; zero is unlimited.
     bool lowContentionPriority{true}; ///< Whether to minimize contention first.
-    int slotMs{10}; ///< Uplink-overlap slot width in milliseconds.
+    int slotMs{10};                   ///< Uplink-overlap slot width in milliseconds.
 };
 
 /** Operating bands supported by the fixed 802.11ax scenario. */
@@ -91,7 +91,7 @@ struct WifiConfig
 {
     WifiBandConfig band{WifiBandConfig::BAND_5_GHZ}; ///< Operating band.
     uint16_t channelNumber{0}; ///< IEEE channel number; zero selects the first valid channel.
-    int bandwidthMhz{20}; ///< Channel width in MHz.
+    int bandwidthMhz{20};      ///< Channel width in MHz.
     uint8_t primary20Index{0}; ///< Primary 20 MHz subchannel index.
     std::string rateManager{"ns3::MinstrelHtWifiManager"}; ///< Wi-Fi rate-manager TypeId name.
     bool activeProbing{true}; ///< Whether stations actively probe for the configured SSID.
@@ -101,9 +101,9 @@ struct WifiConfig
 struct TcpConfig
 {
     std::string congestionControl{"ns3::TcpHighSpeed"}; ///< TCP congestion-control TypeId name.
-    uint32_t segmentSizeBytes{1460}; ///< TCP maximum segment payload in bytes.
-    uint32_t sendBufferBytes{32 * 1024 * 1024}; ///< TCP send buffer size in bytes.
-    uint32_t receiveBufferBytes{32 * 1024 * 1024}; ///< TCP receive buffer size in bytes.
+    uint32_t segmentSizeBytes{1460};                    ///< TCP maximum segment payload in bytes.
+    uint32_t sendBufferBytes{32 * 1024 * 1024};         ///< TCP send buffer size in bytes.
+    uint32_t receiveBufferBytes{32 * 1024 * 1024};      ///< TCP receive buffer size in bytes.
 };
 
 /** Configuration values that control statistics collection. */
@@ -115,24 +115,24 @@ struct StatisticsConfig
 /** Configuration values that control component logging. */
 struct LoggingConfig
 {
-    std::string sampleScenarioLevel{"info"}; ///< SampleScenario log level.
-    std::string apGeneratorLevel{"warn"}; ///< APGenerator log level.
-    std::string staGeneratorLevel{"warn"}; ///< StaLlmGenerator log level.
-    std::string trafficSinkLevel{"warn"}; ///< TrafficSink log level.
+    std::string sampleScenarioLevel{"info"};         ///< SampleScenario log level.
+    std::string apGeneratorLevel{"warn"};            ///< APGenerator log level.
+    std::string staGeneratorLevel{"warn"};           ///< StaLlmGenerator log level.
+    std::string trafficSinkLevel{"warn"};            ///< TrafficSink log level.
     std::string contentionDistributionLevel{"info"}; ///< Contention distribution log level.
 };
 
 /** Typed configuration values for the sample scenario. */
 struct ScenarioConfig
 {
-    GeneralConfig general; ///< General input and output configuration.
-    SimulationConfig simulation; ///< Simulation execution configuration.
-    TopologyConfig topology; ///< BSS topology configuration.
+    GeneralConfig general;           ///< General input and output configuration.
+    SimulationConfig simulation;     ///< Simulation execution configuration.
+    TopologyConfig topology;         ///< BSS topology configuration.
     DistributionConfig distribution; ///< Agent distribution configuration.
-    WifiConfig wifi; ///< Fixed 802.11ax Wi-Fi configuration.
-    TcpConfig tcp; ///< Fixed TCP transport configuration.
-    StatisticsConfig statistics; ///< Statistics collection configuration.
-    LoggingConfig logging; ///< Component logging configuration.
+    WifiConfig wifi;                 ///< Fixed 802.11ax Wi-Fi configuration.
+    TcpConfig tcp;                   ///< Fixed TCP transport configuration.
+    StatisticsConfig statistics;     ///< Statistics collection configuration.
+    LoggingConfig logging;           ///< Component logging configuration.
 };
 
 /** Scalar categories supported by scenario configuration options. */
@@ -184,22 +184,32 @@ const std::vector<ConfigOptionInfo>& GetScenarioConfigOptionInfo();
  */
 ScenarioConfig LoadTomlConfig(const std::filesystem::path& path);
 
-/** Result of parsing sample-scenario arguments. */
-struct ScenarioArgumentResult
+/** Inputs retained from a successfully parsed scenario launch. */
+struct ScenarioLaunchConfig
 {
-    bool valid{false}; ///< Whether config is ready for use.
-    bool printUsage{false}; ///< Whether the caller should print usage.
-    ScenarioConfig config; ///< Parsed settings and defaults.
-    std::string error; ///< Validation error, or empty on success.
+    ScenarioConfig scenario;                ///< Scenario settings after TOML and CLI application.
+    std::filesystem::path configFile;       ///< Resolved TOML configuration path.
+    std::filesystem::path workingDirectory; ///< Working directory captured at launch.
+};
+
+/** Result of parsing sample-scenario command-line arguments. */
+struct ScenarioCommandLineResult
+{
+    bool valid{false};           ///< Whether the request is valid.
+    bool printUsage{false};      ///< Whether the caller should print usage.
+    ScenarioLaunchConfig launch; ///< Launch inputs when a real launch is valid.
+    std::string error;           ///< Parsing error, or empty on success.
 };
 
 /**
- * Parse legacy positional command-line arguments excluding the executable name.
+ * Parse scenario command-line arguments excluding the executable name.
  *
  * @param arguments Ordered command-line arguments.
- * @return Parsed settings or a validation error.
+ * @param workingDirectory Working directory used to resolve the configuration path.
+ * @return Parsed launch inputs, a help request, or an error.
  */
-ScenarioArgumentResult ParseScenarioArguments(const std::vector<std::string>& arguments);
+ScenarioCommandLineResult ParseScenarioArguments(const std::vector<std::string>& arguments,
+                                                 const std::filesystem::path& workingDirectory);
 
 /**
  * Print sample-scenario command-line usage.

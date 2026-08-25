@@ -2,9 +2,11 @@
 #include "llm-test-suite.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <set>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -13,6 +15,25 @@ using namespace ns3;
 
 namespace
 {
+
+std::string_view
+ExpectedHelpType(ConfigValueType valueType)
+{
+    switch (valueType)
+    {
+    case ConfigValueType::STRING:
+        return "string";
+    case ConfigValueType::INTEGER:
+        return "integer";
+    case ConfigValueType::FLOAT:
+        return "floating-point number";
+    case ConfigValueType::BOOLEAN:
+        return "Boolean";
+    case ConfigValueType::ENUM:
+        return "enumerated string";
+    }
+    return "scalar";
+}
 
 /**
  * @ingroup tests
@@ -38,9 +59,13 @@ ScenarioConfigDefaultsTestCase::DoRun()
 {
     ScenarioConfig config;
     NS_TEST_ASSERT_MSG_EQ(config.general.traceFile.empty(), true, "Trace must have no default");
-    NS_TEST_ASSERT_MSG_EQ(config.general.runFolder.has_value(), false, "Run folder must be optional");
+    NS_TEST_ASSERT_MSG_EQ(config.general.runFolder.has_value(),
+                          false,
+                          "Run folder must be optional");
     NS_TEST_ASSERT_MSG_EQ(config.general.outputName, "mac-node-stats.json", "Wrong output name");
-    NS_TEST_ASSERT_MSG_EQ(config.simulation.durationMode, DurationMode::AUTO, "Wrong duration mode");
+    NS_TEST_ASSERT_MSG_EQ(config.simulation.durationMode,
+                          DurationMode::AUTO,
+                          "Wrong duration mode");
     NS_TEST_ASSERT_MSG_EQ(config.simulation.fixedDurationSeconds, 0.0, "Wrong fixed duration");
     NS_TEST_ASSERT_MSG_EQ(config.simulation.autoTailSeconds, 2.0, "Wrong tail");
     NS_TEST_ASSERT_MSG_EQ(config.simulation.rngSeed, 12345, "Wrong seed");
@@ -286,111 +311,203 @@ ScenarioConfigTomlTestCase::DoRun()
 /**
  * @ingroup tests
  *
- * Verify legacy positional parser argument forms map to the typed schema.
+ * Verify position-independent arguments and override precedence.
  */
-class ValidLegacyScenarioArgumentsTestCase : public TestCase
+class ScenarioCommandLineTestCase : public TestCase
 {
   public:
-    ValidLegacyScenarioArgumentsTestCase();
+    ScenarioCommandLineTestCase();
 
   private:
     void DoRun() override;
+    std::filesystem::path WriteFixture(std::string_view contents);
+    void CheckInvalid(const std::vector<std::string>& arguments,
+                      const std::filesystem::path& workingDirectory,
+                      std::string_view expectedMessage);
 };
 
-ValidLegacyScenarioArgumentsTestCase::ValidLegacyScenarioArgumentsTestCase()
-    : TestCase("parse valid legacy scenario arguments")
+ScenarioCommandLineTestCase::ScenarioCommandLineTestCase()
+    : TestCase("parse position-independent scenario arguments")
 {
+}
+
+std::filesystem::path
+ScenarioCommandLineTestCase::WriteFixture(std::string_view contents)
+{
+    const std::filesystem::path path = CreateTempDirFilename("scenario-cli.toml");
+    std::ofstream output(path);
+    output << contents;
+    output.close();
+    return path;
 }
 
 void
-ValidLegacyScenarioArgumentsTestCase::DoRun()
+ScenarioCommandLineTestCase::CheckInvalid(const std::vector<std::string>& arguments,
+                                          const std::filesystem::path& workingDirectory,
+                                          std::string_view expectedMessage)
 {
-    const auto minimal = ParseScenarioArguments({"trace.json"});
-    NS_TEST_ASSERT_MSG_EQ(minimal.valid, true, "Minimal arguments rejected");
-    NS_TEST_ASSERT_MSG_EQ(minimal.config.general.traceFile, "trace.json", "Wrong trace path");
-    NS_TEST_ASSERT_MSG_EQ(minimal.config.wifi.bandwidthMhz, 20, "Wrong default bandwidth");
-    NS_TEST_ASSERT_MSG_EQ(minimal.config.general.outputName,
-                          "mac-node-stats.json",
-                          "Wrong default output name");
-    NS_TEST_ASSERT_MSG_EQ(minimal.config.simulation.durationMode,
-                          DurationMode::AUTO,
-                          "Wrong default duration mode");
-
-    const auto fixed = ParseScenarioArguments({"trace.json", "80", "stats.json", "2.5"});
-    NS_TEST_ASSERT_MSG_EQ(fixed.valid, true, "Fixed arguments rejected");
-    NS_TEST_ASSERT_MSG_EQ(fixed.config.wifi.bandwidthMhz, 80, "Wrong configured bandwidth");
-    NS_TEST_ASSERT_MSG_EQ(fixed.config.general.outputName, "stats.json", "Wrong output name");
-    NS_TEST_ASSERT_MSG_EQ(fixed.config.simulation.durationMode,
-                          DurationMode::FIXED,
-                          "Wrong fixed duration mode");
-    NS_TEST_ASSERT_MSG_EQ_TOL(fixed.config.simulation.fixedDurationSeconds,
-                              2.5,
-                              1e-9,
-                              "Wrong fixed duration");
-
-    const auto automatic = ParseScenarioArguments({"trace.json", "40", "stats.json", "auto"});
-    NS_TEST_ASSERT_MSG_EQ(automatic.valid, true, "Automatic arguments rejected");
-    NS_TEST_ASSERT_MSG_EQ(automatic.config.wifi.bandwidthMhz, 40, "Wrong automatic bandwidth");
-    NS_TEST_ASSERT_MSG_EQ(automatic.config.simulation.durationMode,
-                          DurationMode::AUTO,
-                          "Wrong automatic duration mode");
-}
-
-/**
- * @ingroup tests
- *
- * Verify legacy positional parser validation and diagnostics.
- */
-class InvalidLegacyScenarioArgumentsTestCase : public TestCase
-{
-  public:
-    InvalidLegacyScenarioArgumentsTestCase();
-
-  private:
-    void DoRun() override;
-    void CheckInvalidDuration(const std::string& value);
-};
-
-InvalidLegacyScenarioArgumentsTestCase::InvalidLegacyScenarioArgumentsTestCase()
-    : TestCase("reject invalid legacy scenario arguments")
-{
+    const auto result = ParseScenarioArguments(arguments, workingDirectory);
+    NS_TEST_ASSERT_MSG_EQ(result.valid, false, "Invalid arguments accepted");
+    NS_TEST_ASSERT_MSG_NE(result.error.find(expectedMessage),
+                          std::string::npos,
+                          "Wrong error: " << result.error);
 }
 
 void
-InvalidLegacyScenarioArgumentsTestCase::CheckInvalidDuration(const std::string& value)
+ScenarioCommandLineTestCase::DoRun()
 {
-    const auto result = ParseScenarioArguments({"trace.json", "20", "stats.json", value});
-    NS_TEST_ASSERT_MSG_EQ(result.valid, false, "Invalid duration accepted: " << value);
-    NS_TEST_ASSERT_MSG_EQ(result.error,
-                          "Invalid experiment_time: " + value +
-                              ". Expected 'auto' or a positive number of seconds.",
-                          "Wrong duration error");
-}
+    const auto configFile = WriteFixture("[general]\n"
+                                         "trace_file = \"trace.json\"\n"
+                                         "[wifi]\n"
+                                         "bandwidth_mhz = 40\n");
+    const auto workingDirectory = configFile.parent_path();
+    const std::string relativeConfig = configFile.filename().string();
+    const std::vector<std::vector<std::string>> orderedArguments{
+        {"--config", relativeConfig, "--wifi-bandwidth-mhz", "80"},
+        {"--wifi-bandwidth-mhz", "80", "--config", relativeConfig},
+        {"--wifi-bandwidth-mhz", "80", "--simulation-rng-run", "9", "--config", relativeConfig}};
+    for (const auto& arguments : orderedArguments)
+    {
+        const auto result = ParseScenarioArguments(arguments, workingDirectory);
+        NS_TEST_ASSERT_MSG_EQ(result.valid, true, "Valid arguments rejected: " << result.error);
+        NS_TEST_ASSERT_MSG_EQ(result.printUsage, false, "Valid launch requested usage");
+        NS_TEST_ASSERT_MSG_EQ(result.launch.scenario.wifi.bandwidthMhz,
+                              80,
+                              "CLI did not override TOML");
+        NS_TEST_ASSERT_MSG_EQ(result.launch.configFile, configFile, "Config path not resolved");
+        NS_TEST_ASSERT_MSG_EQ(result.launch.workingDirectory,
+                              workingDirectory,
+                              "Working directory not retained");
+    }
 
-void
-InvalidLegacyScenarioArgumentsTestCase::DoRun()
-{
-    const auto missing = ParseScenarioArguments({});
-    NS_TEST_ASSERT_MSG_EQ(missing.valid, false, "Missing trace accepted");
-    NS_TEST_ASSERT_MSG_EQ(missing.printUsage, true, "Usage not requested");
+    const auto multiple = ParseScenarioArguments(orderedArguments.back(), workingDirectory);
+    NS_TEST_ASSERT_MSG_EQ(multiple.launch.scenario.simulation.rngRun,
+                          9,
+                          "Second override not applied");
 
-    const auto invalidBandwidth = ParseScenarioArguments({"trace.json", "30"});
-    NS_TEST_ASSERT_MSG_EQ(invalidBandwidth.valid, false, "Invalid bandwidth accepted");
-    NS_TEST_ASSERT_MSG_EQ(invalidBandwidth.error,
-                          "Unsupported bandwidth: 30 MHz. Expected 20, 40, 80 or 160.",
-                          "Wrong bandwidth error");
+    const auto typed = ParseScenarioArguments({"--wifi-active-probing",
+                                               "false",
+                                               "--wifi-band",
+                                               "6GHz",
+                                               "--simulation-fixed-duration-seconds",
+                                               "1.25",
+                                               "--statistics-window-ms",
+                                               "25",
+                                               "--config",
+                                               relativeConfig},
+                                              workingDirectory);
+    NS_TEST_ASSERT_MSG_EQ(typed.valid, true, "Typed overrides rejected: " << typed.error);
+    NS_TEST_ASSERT_MSG_EQ(typed.launch.scenario.wifi.activeProbing,
+                          false,
+                          "Lowercase Boolean not applied");
+    NS_TEST_ASSERT_MSG_EQ(typed.launch.scenario.wifi.band,
+                          WifiBandConfig::BAND_6_GHZ,
+                          "Strict enum not applied");
+    NS_TEST_ASSERT_MSG_EQ_TOL(typed.launch.scenario.simulation.fixedDurationSeconds,
+                              1.25,
+                              1e-12,
+                              "Floating-point override not applied");
+    NS_TEST_ASSERT_MSG_EQ(typed.launch.scenario.statistics.windowMs,
+                          25,
+                          "Integer override not applied");
 
-    const auto tooMany =
-        ParseScenarioArguments({"trace.json", "20", "stats.json", "auto", "extra"});
-    NS_TEST_ASSERT_MSG_EQ(tooMany.valid, false, "Extra argument accepted");
-    NS_TEST_ASSERT_MSG_EQ(tooMany.error,
-                          "Too many command-line arguments.",
-                          "Wrong extra argument error");
+    const auto absoluteConfigFile = std::filesystem::absolute(configFile);
+    const auto absolute = ParseScenarioArguments({"--config", absoluteConfigFile.string()},
+                                                 workingDirectory / "unused");
+    NS_TEST_ASSERT_MSG_EQ(absolute.valid, true, "Absolute config path rejected");
+    NS_TEST_ASSERT_MSG_EQ(absolute.launch.configFile,
+                          absoluteConfigFile,
+                          "Absolute config path was changed");
 
-    CheckInvalidDuration("0");
-    CheckInvalidDuration("-1");
-    CheckInvalidDuration("invalid");
-    CheckInvalidDuration("2.5seconds");
+    const auto negative =
+        ParseScenarioArguments({"--config", relativeConfig, "--topology-bss-count", "-1"},
+                               workingDirectory);
+    NS_TEST_ASSERT_MSG_EQ(negative.valid, true, "Negative value parsed as a flag");
+    NS_TEST_ASSERT_MSG_EQ(negative.launch.scenario.topology.bssCount,
+                          -1,
+                          "Negative signed integer not consumed");
+
+    const auto help = ParseScenarioArguments({"--help"}, workingDirectory);
+    NS_TEST_ASSERT_MSG_EQ(help.valid, true, "Help rejected without config");
+    NS_TEST_ASSERT_MSG_EQ(help.printUsage, true, "Help did not request usage");
+
+    std::ostringstream usage;
+    PrintScenarioUsage(usage, "PROGRAM");
+    const std::string usageText = usage.str();
+    NS_TEST_ASSERT_MSG_NE(
+        usageText.find("Usage: PROGRAM --config <config.toml> [--section-field <value> ...]"),
+        std::string::npos,
+        "Usage synopsis missing");
+    NS_TEST_ASSERT_MSG_NE(usageText.find("--help"), std::string::npos, "Help option missing");
+    const auto configSynopsis = usageText.find("--config");
+    const auto configOption = usageText.find("--config", configSynopsis + 1);
+    NS_TEST_ASSERT_MSG_NE(configOption, std::string::npos, "Config option missing");
+    NS_TEST_ASSERT_MSG_EQ(usageText.find("--config", configOption + 1),
+                          std::string::npos,
+                          "Config option duplicated");
+    const auto helpOption = usageText.find("--help");
+    NS_TEST_ASSERT_MSG_EQ(usageText.find("--help", helpOption + 1),
+                          std::string::npos,
+                          "Help option duplicated");
+    for (const auto& option : GetScenarioConfigOptionInfo())
+    {
+        const std::string optionLinePrefix = "  " + std::string(option.cliFlag) + " <" +
+                                             std::string(ExpectedHelpType(option.valueType)) + ">";
+        const auto flagPosition = usageText.find(optionLinePrefix);
+        NS_TEST_ASSERT_MSG_NE(flagPosition, std::string::npos, "Usage missing " << option.cliFlag);
+        NS_TEST_ASSERT_MSG_EQ(
+            usageText.find(optionLinePrefix, flagPosition + optionLinePrefix.size()),
+            std::string::npos,
+            "Usage duplicates " << option.cliFlag);
+        NS_TEST_ASSERT_MSG_EQ(usageText.substr(flagPosition + optionLinePrefix.size(), 2),
+                              "  ",
+                              "Usage lacks spacing after " << option.cliFlag);
+        NS_TEST_ASSERT_MSG_NE(usageText.find(option.tomlPath, flagPosition),
+                              std::string::npos,
+                              "Usage lacks TOML key for " << option.cliFlag);
+        NS_TEST_ASSERT_MSG_NE(usageText.find(option.description, flagPosition),
+                              std::string::npos,
+                              "Usage lacks description for " << option.cliFlag);
+    }
+
+    CheckInvalid({}, workingDirectory, "--config");
+    CheckInvalid({"trace.json"}, workingDirectory, "positional");
+    CheckInvalid({"--config"}, workingDirectory, "requires a value");
+    CheckInvalid({"--config", relativeConfig, "--config", relativeConfig},
+                 workingDirectory,
+                 "duplicate --config");
+    CheckInvalid({"--config", relativeConfig, "--wifi-bandwidth-mhz"},
+                 workingDirectory,
+                 "requires a value");
+    CheckInvalid(
+        {"--config", relativeConfig, "--wifi-bandwidth-mhz", "80", "--wifi-bandwidth-mhz", "40"},
+        workingDirectory,
+        "duplicate --wifi-bandwidth-mhz");
+    CheckInvalid({"--config", relativeConfig, "--unknown", "value"},
+                 workingDirectory,
+                 "unknown flag");
+    CheckInvalid({"--wifi-bandwidth-mhz", "80"}, workingDirectory, "--config");
+    CheckInvalid({"--config", "missing.toml"}, workingDirectory, "regular file");
+    CheckInvalid({"--config", "."}, workingDirectory, "regular file");
+    CheckInvalid({"--config", relativeConfig, "--topology-isolate-bss-channels", "TRUE"},
+                 workingDirectory,
+                 "topology.isolate_bss_channels");
+    CheckInvalid({"--config", relativeConfig, "--simulation-rng-run", "-1"},
+                 workingDirectory,
+                 "simulation.rng_run");
+    CheckInvalid({"--config", relativeConfig, "--simulation-rng-run", "9tail"},
+                 workingDirectory,
+                 "simulation.rng_run");
+    CheckInvalid({"--config", relativeConfig, "--statistics-window-ms", "4294967296"},
+                 workingDirectory,
+                 "statistics.window_ms");
+    CheckInvalid({"--config", relativeConfig, "--simulation-fixed-duration-seconds", "1.5seconds"},
+                 workingDirectory,
+                 "simulation.fixed_duration_seconds");
+    CheckInvalid({"--config", relativeConfig, "--wifi-band", "5ghz"},
+                 workingDirectory,
+                 "wifi.band");
+    CheckInvalid({"--help", "--help"}, workingDirectory, "duplicate --help");
 }
 
 } // namespace
@@ -401,6 +518,5 @@ CreateScenarioConfigTestCases()
     return {new ScenarioConfigDefaultsTestCase,
             new ScenarioConfigRegistryTestCase,
             new ScenarioConfigTomlTestCase,
-            new ValidLegacyScenarioArgumentsTestCase,
-            new InvalidLegacyScenarioArgumentsTestCase};
+            new ScenarioCommandLineTestCase};
 }
