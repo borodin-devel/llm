@@ -12,5 +12,6 @@ std::vector<ns3::TestCase*> CreateTrafficScheduleTestCases();
 std::vector<ns3::TestCase*> CreateTrafficCoordinatorTestCases();
 std::vector<ns3::TestCase*> CreateWifiStatisticsTestCases();
 std::vector<ns3::TestCase*> CreateScenarioConfigTestCases();
+std::vector<ns3::TestCase*> CreateScenarioConfigValidationTestCases();
 
 #endif // LLM_TEST_SUITE_H

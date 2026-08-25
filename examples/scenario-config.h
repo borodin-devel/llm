@@ -1,6 +1,10 @@
 #ifndef SCENARIO_CONFIG_H
 #define SCENARIO_CONFIG_H
 
+#include "ns3/log.h"
+#include "ns3/type-id.h"
+#include "ns3/wifi-phy-band.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <iosfwd>
@@ -134,6 +138,50 @@ struct ScenarioConfig
     StatisticsConfig statistics;     ///< Statistics collection configuration.
     LoggingConfig logging;           ///< Component logging configuration.
 };
+
+/**
+ * Validate a fully merged typed scenario configuration.
+ *
+ * @param config Configuration after defaults, TOML, and CLI overrides.
+ * @throws ScenarioConfigError if a field or cross-field relation is invalid.
+ */
+void ValidateScenarioConfig(const ScenarioConfig& config);
+
+/**
+ * Convert a configured Wi-Fi band to the ns-3 runtime band.
+ *
+ * @param band Configured Wi-Fi band.
+ * @return Corresponding ns-3 Wi-Fi PHY band.
+ * @throws ScenarioConfigError if the configured enum value is invalid.
+ */
+WifiPhyBand ToWifiPhyBand(WifiBandConfig band);
+
+/**
+ * Parse a configured scenario log level.
+ *
+ * @param level Configured log-level name.
+ * @return ns-3 log level, or no value when logging is off.
+ * @throws ScenarioConfigError if the level name is invalid.
+ */
+std::optional<LogLevel> ParseScenarioLogLevel(std::string_view level);
+
+/**
+ * Resolve and validate a Wi-Fi rate-manager TypeId.
+ *
+ * @param name Fully qualified TypeId name.
+ * @return TypeId derived from WifiRemoteStationManager.
+ * @throws ScenarioConfigError if the TypeId is missing or has the wrong parent.
+ */
+TypeId ResolveWifiManagerType(std::string_view name);
+
+/**
+ * Resolve and validate a TCP congestion-control TypeId.
+ *
+ * @param name Fully qualified TypeId name.
+ * @return TypeId derived from TcpCongestionOps.
+ * @throws ScenarioConfigError if the TypeId is missing or has the wrong parent.
+ */
+TypeId ResolveTcpCongestionType(std::string_view name);
 
 /** Scalar categories supported by scenario configuration options. */
 enum class ConfigValueType

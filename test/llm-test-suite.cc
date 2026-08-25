@@ -29,6 +29,7 @@ LlmTestSuite::LlmTestSuite()
     AddCases(CreateTrafficCoordinatorTestCases());
     AddCases(CreateWifiStatisticsTestCases());
     AddCases(CreateScenarioConfigTestCases());
+    AddCases(CreateScenarioConfigValidationTestCases());
 }
 
 void
