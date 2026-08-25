@@ -62,7 +62,7 @@ ScenarioConfigDefaultsTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(config.general.runFolder.has_value(),
                           false,
                           "Run folder must be optional");
-    NS_TEST_ASSERT_MSG_EQ(config.general.outputName, "mac-node-stats.json", "Wrong output name");
+    NS_TEST_ASSERT_MSG_EQ(config.general.outputName, "output.json", "Wrong output name");
     NS_TEST_ASSERT_MSG_EQ(config.simulation.durationMode,
                           DurationMode::AUTO,
                           "Wrong duration mode");

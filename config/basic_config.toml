@@ -5,8 +5,8 @@ trace_file = "contrib/llm/test/data/minimal-trace.json"
 # Optional exact output directory. Omit to create ./run/YY-MM-DD_hh-mm-ss.
 # run_folder = "./run/custom"
 
-# JSON filename written inside the resolved run folder.
-output_name = "mac-node-stats.json"
+# Plain JSON filename created inside the resolved run folder.
+output_name = "output.json"
 
 [simulation]
 # Experiment duration policy: "auto" or "fixed".

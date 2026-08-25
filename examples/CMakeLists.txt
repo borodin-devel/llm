@@ -3,6 +3,7 @@ build_lib_example(
   SOURCE_FILES
     sample-scenario.cc
     scenario-config.cc
+    scenario-config-json.cc
     scenario-config-validation.cc
     scenario-config-cli.cc
     scenario-config-toml.cc

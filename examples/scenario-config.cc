@@ -54,14 +54,9 @@ ThrowExpected(std::string_view tomlPath, ConfigValueType valueType)
                               std::string(ValueTypeName(valueType)));
 }
 
-template <typename T>
-using ConfigAccessor = std::function<T&(ScenarioConfig&)>;
-
-template <typename T>
+template <typename T, typename Accessor>
 ConfigOption
-MakeIntegerOption(std::string_view tomlPath,
-                  ConfigAccessor<T> accessor,
-                  std::string_view description)
+MakeIntegerOption(std::string_view tomlPath, Accessor accessor, std::string_view description)
 {
     static_assert(std::is_integral_v<T> && !std::is_same_v<T, bool>);
     ConfigOption option;
@@ -102,14 +97,16 @@ MakeIntegerOption(std::string_view tomlPath,
             accessor(config) = static_cast<T>(value);
         }
     };
+    option.readJson = [accessor](const ScenarioConfig& config) {
+        return nlohmann::json(accessor(config));
+    };
     option.description = description;
     return option;
 }
 
+template <typename Accessor>
 ConfigOption
-MakeFloatOption(std::string_view tomlPath,
-                ConfigAccessor<double> accessor,
-                std::string_view description)
+MakeFloatOption(std::string_view tomlPath, Accessor accessor, std::string_view description)
 {
     ConfigOption option;
     option.tomlPath = tomlPath;
@@ -137,14 +134,16 @@ MakeFloatOption(std::string_view tomlPath,
         }
         accessor(config) = value;
     };
+    option.readJson = [accessor](const ScenarioConfig& config) {
+        return nlohmann::json(accessor(config));
+    };
     option.description = description;
     return option;
 }
 
+template <typename Accessor>
 ConfigOption
-MakeBooleanOption(std::string_view tomlPath,
-                  ConfigAccessor<bool> accessor,
-                  std::string_view description)
+MakeBooleanOption(std::string_view tomlPath, Accessor accessor, std::string_view description)
 {
     ConfigOption option;
     option.tomlPath = tomlPath;
@@ -174,14 +173,16 @@ MakeBooleanOption(std::string_view tomlPath,
             ThrowExpected(path, ConfigValueType::BOOLEAN);
         }
     };
+    option.readJson = [accessor](const ScenarioConfig& config) {
+        return nlohmann::json(accessor(config));
+    };
     option.description = description;
     return option;
 }
 
+template <typename Accessor>
 ConfigOption
-MakeStringOption(std::string_view tomlPath,
-                 ConfigAccessor<std::string> accessor,
-                 std::string_view description)
+MakeStringOption(std::string_view tomlPath, Accessor accessor, std::string_view description)
 {
     ConfigOption option;
     option.tomlPath = tomlPath;
@@ -199,14 +200,16 @@ MakeStringOption(std::string_view tomlPath,
     option.applyOverride = [accessor](ScenarioConfig& config, std::string_view text) {
         accessor(config) = text;
     };
+    option.readJson = [accessor](const ScenarioConfig& config) {
+        return nlohmann::json(accessor(config));
+    };
     option.description = description;
     return option;
 }
 
+template <typename Accessor>
 ConfigOption
-MakeOptionalStringOption(std::string_view tomlPath,
-                         ConfigAccessor<std::optional<std::string>> accessor,
-                         std::string_view description)
+MakeOptionalStringOption(std::string_view tomlPath, Accessor accessor, std::string_view description)
 {
     ConfigOption option;
     option.tomlPath = tomlPath;
@@ -224,14 +227,18 @@ MakeOptionalStringOption(std::string_view tomlPath,
     option.applyOverride = [accessor](ScenarioConfig& config, std::string_view text) {
         accessor(config) = std::string(text);
     };
+    option.readJson = [accessor](const ScenarioConfig& config) {
+        const auto& value = accessor(config);
+        return value ? nlohmann::json(*value) : nlohmann::json(nullptr);
+    };
     option.description = description;
     return option;
 }
 
-template <typename T>
+template <typename T, typename Accessor>
 ConfigOption
 MakeEnumOption(std::string_view tomlPath,
-               ConfigAccessor<T> accessor,
+               Accessor accessor,
                std::vector<std::pair<std::string_view, T>> values,
                std::string_view description)
 {
@@ -239,6 +246,7 @@ MakeEnumOption(std::string_view tomlPath,
     option.tomlPath = tomlPath;
     option.cliFlag = DeriveCliFlag(tomlPath);
     option.valueType = ConfigValueType::ENUM;
+    auto readerValues = values;
     const auto apply = [path = option.tomlPath,
                         accessor,
                         values = std::move(values)](ScenarioConfig& config, std::string_view text) {
@@ -262,6 +270,17 @@ MakeEnumOption(std::string_view tomlPath,
         apply(config, value->get());
     };
     option.applyOverride = apply;
+    option.readJson = [path = option.tomlPath, accessor, values = std::move(readerValues)](
+                          const ScenarioConfig& config) {
+        for (const auto& [name, value] : values)
+        {
+            if (accessor(config) == value)
+            {
+                return nlohmann::json(name);
+            }
+        }
+        throw ScenarioConfigError("invalid " + path + ": no canonical enum spelling");
+    };
     option.description = description;
     return option;
 }

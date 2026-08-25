@@ -3,6 +3,7 @@
 
 #include "scenario-config.h"
 
+#include "ns3/json.hpp"
 #include "ns3/toml.hpp"
 
 #include <functional>
@@ -21,7 +22,8 @@ struct ConfigOption
     ConfigValueType valueType; ///< Required scalar category.
     std::function<void(ScenarioConfig&, const toml::node&)> applyToml;    ///< TOML setter.
     std::function<void(ScenarioConfig&, std::string_view)> applyOverride; ///< CLI setter.
-    std::string description; ///< Help and diagnostic text.
+    std::function<nlohmann::json(const ScenarioConfig&)> readJson; ///< Effective-value reader.
+    std::string description;                                       ///< Help and diagnostic text.
 };
 
 /**
@@ -30,6 +32,15 @@ struct ConfigOption
  * @return Complete callback-bearing option registry.
  */
 const std::vector<ConfigOption>& GetScenarioConfigOptions();
+
+/**
+ * Write the effective scenario configuration as a JSON object.
+ *
+ * @param output Destination stream.
+ * @param configuration Effective scenario configuration.
+ * @throws ScenarioConfigError if an option path is malformed.
+ */
+void WriteEffectiveConfigurationJson(std::ostream& output, const ScenarioConfig& configuration);
 
 /**
  * Get the diagnostic name of a configuration scalar category.

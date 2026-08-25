@@ -23,7 +23,7 @@ struct GeneralConfig
 {
     std::string traceFile;                         ///< Input JSON trace path.
     std::optional<std::string> runFolder;          ///< Optional output directory path.
-    std::string outputName{"mac-node-stats.json"}; ///< Statistics JSON filename.
+    std::string outputName{"output.json"}; ///< Statistics JSON filename.
 };
 
 /** Experiment duration selection policy. */

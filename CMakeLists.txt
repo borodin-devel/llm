@@ -38,11 +38,13 @@ set(test_sources
     test/traffic-schedule-test-suite.cc
     test/traffic-coordinator-test-suite.cc
     test/scenario-config-test-suite.cc
+    test/scenario-config-json-test-suite.cc
     test/scenario-config-validation-test-suite.cc
     test/scenario-run-path-test-suite.cc
     test/scenario-topology-test-suite.cc
     examples/scenario-log.cc
     examples/scenario-config.cc
+    examples/scenario-config-json.cc
     examples/scenario-config-validation.cc
     examples/scenario-config-cli.cc
     examples/scenario-config-toml.cc

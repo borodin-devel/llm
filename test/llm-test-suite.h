@@ -12,6 +12,7 @@ std::vector<ns3::TestCase*> CreateTrafficScheduleTestCases();
 std::vector<ns3::TestCase*> CreateTrafficCoordinatorTestCases();
 std::vector<ns3::TestCase*> CreateWifiStatisticsTestCases();
 std::vector<ns3::TestCase*> CreateScenarioConfigTestCases();
+std::vector<ns3::TestCase*> CreateScenarioConfigJsonTestCases();
 std::vector<ns3::TestCase*> CreateScenarioConfigValidationTestCases();
 std::vector<ns3::TestCase*> CreateScenarioRunPathTestCases();
 std::vector<ns3::TestCase*> CreateScenarioTopologyTestCases();
