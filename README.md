@@ -831,7 +831,11 @@ configuration, configured trace path, removed-root absence, and legacy-report
 absence. On failure it prints the trace, command, return code, and last 200
 console lines. Each validated task-created temporary directory is removed in a
 `finally` path after success, command failure, timeout, or parse/shape failure;
-unrelated run directories are never removed.
+unrelated run directories are never removed. Cleanup requires a POSIX host. It
+retains parent/child `O_DIRECTORY` and `O_NOFOLLOW` descriptors, atomically
+moves the owned inode to a private quarantine name, revalidates descriptor and
+entry identity, and deletes contents only with descriptor-relative no-follow
+operations.
 
 ## IEEE 802.11 review
 
