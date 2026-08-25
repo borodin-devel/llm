@@ -3,6 +3,7 @@
 
 #include "ns3/json.hpp"
 
+#include <array>
 #include <sstream>
 
 using namespace ns3;
@@ -107,10 +108,58 @@ ScenarioConfigJsonReaderTestCase::DoRun()
     }
 }
 
+/**
+ * @ingroup tests
+ *
+ * Verify configuration paths contain exactly one non-edge dot.
+ */
+class ScenarioConfigJsonPathTestCase : public TestCase
+{
+  public:
+    ScenarioConfigJsonPathTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+ScenarioConfigJsonPathTestCase::ScenarioConfigJsonPathTestCase()
+    : TestCase("scenario configuration JSON paths")
+{
+}
+
+void
+ScenarioConfigJsonPathTestCase::DoRun()
+{
+    const auto [section, field] = SplitScenarioConfigPath("section.field");
+    NS_TEST_ASSERT_MSG_EQ(section, "section", "Wrong valid path section");
+    NS_TEST_ASSERT_MSG_EQ(field, "field", "Wrong valid path field");
+
+    constexpr std::array<std::string_view, 5> invalidPaths{"field",
+                                                           ".field",
+                                                           "section.",
+                                                           "section..field",
+                                                           "section.field.extra"};
+    for (const auto path : invalidPaths)
+    {
+        bool rejected = false;
+        try
+        {
+            (void)SplitScenarioConfigPath(path);
+        }
+        catch (const ScenarioConfigError&)
+        {
+            rejected = true;
+        }
+        NS_TEST_ASSERT_MSG_EQ(rejected, true, "Accepted invalid path " << path);
+    }
+}
+
 } // namespace
 
 std::vector<TestCase*>
 CreateScenarioConfigJsonTestCases()
 {
-    return {new ScenarioConfigJsonTestCase, new ScenarioConfigJsonReaderTestCase};
+    return {new ScenarioConfigJsonTestCase,
+            new ScenarioConfigJsonReaderTestCase,
+            new ScenarioConfigJsonPathTestCase};
 }

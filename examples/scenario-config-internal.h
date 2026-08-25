@@ -9,6 +9,7 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace ns3
@@ -32,6 +33,15 @@ struct ConfigOption
  * @return Complete callback-bearing option registry.
  */
 const std::vector<ConfigOption>& GetScenarioConfigOptions();
+
+/**
+ * Split a dotted configuration path into its section and field names.
+ *
+ * @param path Configuration path with exactly one dot.
+ * @return Section and field names.
+ * @throws ScenarioConfigError if the path does not have exactly one non-edge dot.
+ */
+std::pair<std::string_view, std::string_view> SplitScenarioConfigPath(std::string_view path);
 
 /**
  * Write the effective scenario configuration as a JSON object.
