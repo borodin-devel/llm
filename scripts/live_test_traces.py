@@ -6,9 +6,12 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
+import os
 from pathlib import Path
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -36,18 +39,18 @@ ROOT_KEYS = {
     "validation",
     "experiment_metadata",
 }
-MEASUREMENT_KEYS = {
-    "access_point_role",
-    "station_role",
-    "parent_child_duplication",
-    "mac_tcp_payload_bytes",
-    "phy_tagged_payload_bytes",
-    "phy_unique_tagged_payload_bytes",
-    "phy_average_data_rate",
-    "congestion_window",
-    "sample_distributions",
-    "sparse_window_absence",
-    "undefined_derived_values",
+MEASUREMENT_SEMANTICS = {
+    "access_point_role": "BSS parent aggregate",
+    "station_role": "per-station child detail",
+    "parent_child_duplication": "intentional",
+    "mac_tcp_payload_bytes": "header-based estimates",
+    "phy_tagged_payload_bytes": "attempts and retransmissions included",
+    "phy_unique_tagged_payload_bytes": "first tagged MPDU transmissions only",
+    "phy_average_data_rate": "airtime-weighted",
+    "congestion_window": "time-weighted per connection",
+    "sample_distributions": "sample-weighted",
+    "sparse_window_absence": "zero activity",
+    "undefined_derived_values": None,
 }
 WINDOW_KEYS = {
     "window_index",
@@ -234,6 +237,62 @@ class LiveTraceError(RuntimeError):
     """A path-bearing live verification failure."""
 
 
+_OWNER_CREATION_TOKEN = object()
+
+
+class OwnedTemporaryRun:
+    """Capability owning one exact temporary run directory identity."""
+
+    __slots__ = ("path", "_device", "_inode", "_cleaned")
+
+    def __init__(self, path, identity, token):
+        if token is not _OWNER_CREATION_TOKEN:
+            raise TypeError("OwnedTemporaryRun must be created with create()")
+        self.path = path
+        self._device = identity.st_dev
+        self._inode = identity.st_ino
+        self._cleaned = False
+
+    @classmethod
+    def create(cls, trace_name, temporary_parent=Path("/tmp")):
+        """Create and take ownership of one exact directory identity."""
+        safe_name = "".join(
+            character if character.isalnum() or character in "-_" else "_"
+            for character in str(trace_name)
+        )
+        if not safe_name:
+            raise LiveTraceError(f"{temporary_parent}: empty temporary trace name")
+        parent = Path(temporary_parent).resolve(strict=True)
+        if not parent.is_dir():
+            raise LiveTraceError(f"{temporary_parent}: temporary parent is not a directory")
+        path = Path(tempfile.mkdtemp(prefix=f"llm-trace-live.{safe_name}.", dir=parent))
+        identity = os.lstat(path)
+        if not stat.S_ISDIR(identity.st_mode):
+            raise LiveTraceError(f"{path}: created temporary run is not a directory")
+        return cls(path, identity, _OWNER_CREATION_TOKEN)
+
+    def cleanup(self):
+        """Delete only the unchanged directory identity owned by this instance."""
+        if self._cleaned:
+            return
+        try:
+            identity = os.lstat(self.path)
+        except FileNotFoundError as error:
+            raise LiveTraceError(f"{self.path}: owned temporary run disappeared") from error
+        if not stat.S_ISDIR(identity.st_mode):
+            raise LiveTraceError(f"{self.path}: refusing cleanup after symlink/type substitution")
+        if (identity.st_dev, identity.st_ino) != (self._device, self._inode):
+            raise LiveTraceError(f"{self.path}: refusing cleanup after directory replacement")
+        shutil.rmtree(self.path)
+        self._cleaned = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exception_type, exception, traceback):
+        self.cleanup()
+
+
 def validate_policy_coverage(discovered, trace_directory, policy=POLICY):
     """Return exact discovered trace names or reject policy drift."""
     discovered_names = {Path(path).name for path in discovered}
@@ -275,27 +334,11 @@ def build_llm_command(trace_path, run_directory, policy):
     return ["./ns3", "run", shlex.join(arguments)]
 
 
-def validate_cleanup_target(run_directory, temporary_parent):
-    """Return a validated cleanup target beneath the given parent."""
-    parent = Path(temporary_parent).resolve()
-    target = Path(run_directory).resolve()
-    name_parts = target.name.split(".")
-    if (
-        target.parent != parent
-        or len(name_parts) < 3
-        or name_parts[0] != "llm-trace-live"
-        or not name_parts[1]
-        or not name_parts[-1]
-    ):
-        raise LiveTraceError(f"{run_directory}: refusing to clean unowned live trace path")
-    return target
-
-
-def cleanup_run_directory(run_directory, temporary_parent):
-    """Remove one validated task-created run directory."""
-    target = validate_cleanup_target(run_directory, temporary_parent)
-    if target.exists():
-        shutil.rmtree(target)
+def cleanup_run_directory(owner):
+    """Remove a run directory only through its creating owner capability."""
+    if type(owner) is not OwnedTemporaryRun:
+        raise LiveTraceError(f"{owner}: refusing cleanup without temporary-run ownership")
+    owner.cleanup()
 
 
 def validate_output_document(
@@ -309,21 +352,24 @@ def validate_output_document(
     source_path = Path(source_path)
     _reject_removed_keys(document, source_path, "$")
     _expect_object_keys(document, ROOT_KEYS, source_path, "$")
-    if document["schema_version"] != 1:
+    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
         _fail(source_path, "$.schema_version", "expected integer 1")
     _expect_object_keys(
-        document["measurement_semantics"], MEASUREMENT_KEYS, source_path,
+        document["measurement_semantics"], set(MEASUREMENT_SEMANTICS), source_path,
         "$.measurement_semantics"
     )
-    if document["measurement_semantics"]["undefined_derived_values"] is not None:
-        _fail(
-            source_path,
-            "$.measurement_semantics.undefined_derived_values",
-            "expected null",
-        )
+    for key, expected_value in MEASUREMENT_SEMANTICS.items():
+        if document["measurement_semantics"][key] != expected_value or (
+            expected_value is not None
+            and type(document["measurement_semantics"][key]) is not str
+        ):
+            _fail(
+                source_path,
+                f"$.measurement_semantics.{key}",
+                f"expected {expected_value!r}",
+            )
     window_width = document["statistics_window_ms"]
-    if not _is_number(window_width) or window_width <= 0:
-        _fail(source_path, "$.statistics_window_ms", "expected a positive number")
+    _expect_nonnegative_integer(window_width, source_path, "$.statistics_window_ms", positive=True)
 
     metadata = document["experiment_metadata"]
     _expect_object_keys(
@@ -346,6 +392,7 @@ def validate_output_document(
             "$.experiment_metadata.configuration",
             f"expected 8 sections and 36 fields, got {len(configuration)} and {field_count}",
         )
+    _validate_configuration(configuration, source_path)
     if configuration["general"]["trace_file"] != str(expected_trace):
         _fail(
             source_path,
@@ -447,9 +494,13 @@ def validate_output_document(
         prior_index = index
         start = window["window_start_ms"]
         duration = window["window_duration_ms"]
-        if not _is_number(start) or abs(start - index * window_width) > 1e-6:
+        _expect_finite_number(start, source_path, f"{window_path}.window_start_ms")
+        _expect_finite_number(
+            duration, source_path, f"{window_path}.window_duration_ms", positive=True
+        )
+        if abs(start - index * window_width) > 1e-6:
             _fail(source_path, f"{window_path}.window_start_ms", "does not match index * width")
-        if not _is_number(duration) or duration <= 0 or duration > window_width + 1e-6:
+        if duration > window_width + 1e-6:
             _fail(
                 source_path,
                 f"{window_path}.window_duration_ms",
@@ -492,8 +543,8 @@ def validate_output_document(
     validation = document["validation"]
     _expect_object_keys(validation, VALIDATION_KEYS, source_path, "$.validation")
     for key in sorted(VALIDATION_KEYS):
-        if validation[key] is not True:
-            _fail(source_path, f"$.validation.{key}", "expected true")
+        if type(validation[key]) is not bool or not validation[key]:
+            _fail(source_path, f"$.validation.{key}", "expected true Boolean")
 
     return {
         "window_count": len(windows),
@@ -564,14 +615,8 @@ def run_one_trace(
             )
         )
 
-    safe_name = "".join(
-        character if character.isalnum() or character in "-_" else "_"
-        for character in trace_path.stem
-    )
-    run_directory = Path(
-        tempfile.mkdtemp(prefix=f"llm-trace-live.{safe_name}.", dir=temporary_parent)
-    )
-    try:
+    with OwnedTemporaryRun.create(trace_path.stem, temporary_parent) as run_owner:
+        run_directory = run_owner.path
         command = build_llm_command(relative_trace, run_directory, policy)
         started = time.monotonic()
         result = _run_captured(run_process, command, outer_root, timeout_seconds, trace_path)
@@ -614,8 +659,6 @@ def run_one_trace(
             }
         )
         return metrics
-    finally:
-        cleanup_run_directory(run_directory, temporary_parent)
 
 
 def _fail(source_path, json_path, message):
@@ -642,12 +685,191 @@ def _expect_list(value, source_path, json_path):
         _fail(source_path, json_path, "expected array")
 
 
-def _is_number(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+def _expect_nonnegative_integer(value, source_path, json_path, *, positive=False, maximum=None):
+    if type(value) is not int or value < (1 if positive else 0):
+        qualifier = "positive" if positive else "non-negative"
+        _fail(source_path, json_path, f"expected {qualifier} integer")
+    if maximum is not None and value > maximum:
+        _fail(source_path, json_path, f"expected integer no greater than {maximum}")
+
+
+def _expect_finite_number(
+    value,
+    source_path,
+    json_path,
+    *,
+    positive=False,
+    maximum=None,
+):
+    is_finite_number = type(value) is int or (type(value) is float and math.isfinite(value))
+    if not is_finite_number or value < 0:
+        qualifier = "positive " if positive else "non-negative "
+        _fail(source_path, json_path, f"expected finite {qualifier}number")
+    if positive and value <= 0:
+        _fail(source_path, json_path, "expected finite positive number")
+    if maximum is not None and value > maximum:
+        _fail(source_path, json_path, f"expected number no greater than {maximum}")
+
+
+def _expect_optional_finite_number(value, source_path, json_path, *, maximum=None):
+    if value is None:
+        return
+    _expect_finite_number(value, source_path, json_path, maximum=maximum)
+
+
+def _expect_optional_nonnegative_integer(value, source_path, json_path):
+    if value is None:
+        return
+    _expect_nonnegative_integer(value, source_path, json_path)
+
+
+def _expect_string(value, source_path, json_path, *, allow_none=False, allowed=None):
+    if allow_none and value is None:
+        return
+    if type(value) is not str or not value:
+        _fail(source_path, json_path, "expected nonempty string")
+    if allowed is not None and value not in allowed:
+        _fail(source_path, json_path, "expected one of " + ", ".join(sorted(allowed)))
+
+
+def _expect_boolean(value, source_path, json_path):
+    if type(value) is not bool:
+        _fail(source_path, json_path, "expected Boolean")
+
+
+def _validate_integer_fields(value, fields, source_path, json_path):
+    for field in fields:
+        _expect_nonnegative_integer(value[field], source_path, f"{json_path}.{field}")
+
+
+def _validate_optional_number_fields(value, fields, source_path, json_path, *, maximum=None):
+    for field in fields:
+        _expect_optional_finite_number(
+            value[field], source_path, f"{json_path}.{field}", maximum=maximum
+        )
+
+
+def _validate_configuration(configuration, source_path):
+    base = "$.experiment_metadata.configuration"
+    general = configuration["general"]
+    _expect_string(general["trace_file"], source_path, f"{base}.general.trace_file")
+    _expect_string(
+        general["run_folder"], source_path, f"{base}.general.run_folder", allow_none=True
+    )
+    _expect_string(general["output_name"], source_path, f"{base}.general.output_name")
+
+    simulation = configuration["simulation"]
+    _expect_string(
+        simulation["duration_mode"],
+        source_path,
+        f"{base}.simulation.duration_mode",
+        allowed={"auto", "fixed"},
+    )
+    _expect_finite_number(
+        simulation["fixed_duration_seconds"],
+        source_path,
+        f"{base}.simulation.fixed_duration_seconds",
+    )
+    if simulation["duration_mode"] == "fixed" and simulation["fixed_duration_seconds"] <= 0:
+        _fail(
+            source_path,
+            f"{base}.simulation.fixed_duration_seconds",
+            "expected positive value in fixed mode",
+        )
+    _expect_finite_number(
+        simulation["auto_tail_seconds"],
+        source_path,
+        f"{base}.simulation.auto_tail_seconds",
+    )
+    _expect_nonnegative_integer(
+        simulation["rng_seed"],
+        source_path,
+        f"{base}.simulation.rng_seed",
+        positive=True,
+        maximum=4294944442,
+    )
+    _expect_nonnegative_integer(simulation["rng_run"], source_path, f"{base}.simulation.rng_run")
+
+    topology = configuration["topology"]
+    _expect_nonnegative_integer(
+        topology["bss_count"], source_path, f"{base}.topology.bss_count", positive=True, maximum=256
+    )
+    _expect_nonnegative_integer(
+        topology["stations_per_bss"],
+        source_path,
+        f"{base}.topology.stations_per_bss",
+        positive=True,
+        maximum=253,
+    )
+    for field in ("bss_spacing_m", "station_radius_m", "generator_start_seconds"):
+        _expect_finite_number(topology[field], source_path, f"{base}.topology.{field}")
+    _expect_boolean(
+        topology["isolate_bss_channels"], source_path, f"{base}.topology.isolate_bss_channels"
+    )
+    _expect_string(topology["ssid_prefix"], source_path, f"{base}.topology.ssid_prefix")
+    for field in ("ap_sink_port", "station_sink_base_port"):
+        _expect_nonnegative_integer(
+            topology[field], source_path, f"{base}.topology.{field}", positive=True, maximum=65535
+        )
+
+    distribution = configuration["distribution"]
+    _expect_nonnegative_integer(
+        distribution["max_agents_per_station"],
+        source_path,
+        f"{base}.distribution.max_agents_per_station",
+    )
+    _expect_boolean(
+        distribution["low_contention_priority"],
+        source_path,
+        f"{base}.distribution.low_contention_priority",
+    )
+    _expect_nonnegative_integer(
+        distribution["slot_ms"],
+        source_path,
+        f"{base}.distribution.slot_ms",
+        positive=True,
+    )
+
+    wifi = configuration["wifi"]
+    _expect_string(
+        wifi["band"], source_path, f"{base}.wifi.band", allowed={"2.4GHz", "5GHz", "6GHz"}
+    )
+    _expect_nonnegative_integer(
+        wifi["channel_number"], source_path, f"{base}.wifi.channel_number", maximum=65535
+    )
+    _expect_nonnegative_integer(
+        wifi["bandwidth_mhz"], source_path, f"{base}.wifi.bandwidth_mhz", positive=True
+    )
+    if wifi["bandwidth_mhz"] not in {20, 40, 80, 160}:
+        _fail(source_path, f"{base}.wifi.bandwidth_mhz", "expected 20, 40, 80, or 160")
+    _expect_nonnegative_integer(
+        wifi["primary_20_index"], source_path, f"{base}.wifi.primary_20_index", maximum=255
+    )
+    if wifi["primary_20_index"] >= wifi["bandwidth_mhz"] // 20:
+        _fail(source_path, f"{base}.wifi.primary_20_index", "outside configured bandwidth")
+    _expect_string(wifi["rate_manager"], source_path, f"{base}.wifi.rate_manager")
+    _expect_boolean(wifi["active_probing"], source_path, f"{base}.wifi.active_probing")
+
+    tcp = configuration["tcp"]
+    _expect_string(tcp["congestion_control"], source_path, f"{base}.tcp.congestion_control")
+    for field in ("segment_size_bytes", "send_buffer_bytes", "receive_buffer_bytes"):
+        _expect_nonnegative_integer(
+            tcp[field], source_path, f"{base}.tcp.{field}", positive=True
+        )
+
+    _expect_nonnegative_integer(
+        configuration["statistics"]["window_ms"],
+        source_path,
+        f"{base}.statistics.window_ms",
+        positive=True,
+    )
+    log_levels = {"off", "error", "warn", "info", "debug", "function", "logic", "all"}
+    for field, value in configuration["logging"].items():
+        _expect_string(value, source_path, f"{base}.logging.{field}", allowed=log_levels)
 
 
 def _is_nonnegative_integer(value):
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    return type(value) is int and value >= 0
 
 
 def _reject_removed_keys(value, source_path, json_path):
@@ -673,11 +895,9 @@ def _validate_identity(record, kind, source_path, json_path, include_categories=
     expected_keys = identity_keys | CATEGORY_KEYS if include_categories else identity_keys
     _expect_object_keys(record, expected_keys, source_path, json_path)
     for key in identity_keys & {"access_point_id", "station_index", "node_id"}:
-        if not _is_nonnegative_integer(record[key]):
-            _fail(source_path, f"{json_path}.{key}", "expected non-negative integer")
+        _expect_nonnegative_integer(record[key], source_path, f"{json_path}.{key}")
     for key in {"node_label", "ipv4"}:
-        if not isinstance(record[key], str) or not record[key]:
-            _fail(source_path, f"{json_path}.{key}", "expected nonempty string")
+        _expect_string(record[key], source_path, f"{json_path}.{key}")
     return _identity_key(record, kind)
 
 
@@ -699,6 +919,13 @@ def _build_inventory(records, kind, source_path, json_path):
 
 def _validate_sample_distribution(value, source_path, json_path):
     _expect_object_keys(value, SAMPLE_KEYS, source_path, json_path)
+    _expect_nonnegative_integer(value["sample_count"], source_path, f"{json_path}.sample_count")
+    derived_fields = {"average_us", "standard_deviation_us", "minimum_us", "maximum_us"}
+    _validate_optional_number_fields(value, derived_fields, source_path, json_path)
+    if value["sample_count"] == 0 and any(value[field] is not None for field in derived_fields):
+        _fail(source_path, json_path, "zero-sample distribution has derived values")
+    if value["sample_count"] > 0 and any(value[field] is None for field in derived_fields):
+        _fail(source_path, json_path, "sampled distribution has null derived values")
 
 
 def _validate_peer(peer, expected_keys, known_nodes, source_path, json_path):
@@ -706,6 +933,7 @@ def _validate_peer(peer, expected_keys, known_nodes, source_path, json_path):
     peer_node_id = peer["peer_node_id"]
     if not _is_nonnegative_integer(peer_node_id) or peer_node_id not in known_nodes:
         _fail(source_path, f"{json_path}.peer_node_id", "does not reference entity inventory")
+    _expect_string(peer["peer_ipv4"], source_path, f"{json_path}.peer_ipv4")
     if peer["peer_ipv4"] != known_nodes[peer_node_id]["ipv4"]:
         _fail(source_path, f"{json_path}.peer_ipv4", "does not match inventory")
 
@@ -713,7 +941,252 @@ def _validate_peer(peer, expected_keys, known_nodes, source_path, json_path):
 def _validate_reason_array(reasons, source_path, json_path):
     _expect_list(reasons, source_path, json_path)
     for index, reason in enumerate(reasons):
-        _expect_object_keys(reason, MAC_REASON_KEYS, source_path, f"{json_path}[{index}]")
+        reason_path = f"{json_path}[{index}]"
+        _expect_object_keys(reason, MAC_REASON_KEYS, source_path, reason_path)
+        _validate_integer_fields(reason, MAC_REASON_KEYS, source_path, reason_path)
+
+
+def _validate_general_direction(value, source_path, json_path):
+    _validate_integer_fields(
+        value,
+        {
+            "estimated_transmitted_tcp_payload_bytes",
+            "estimated_matched_tcp_payload_bytes",
+            "matched_packet_count",
+            "total_transmission_duration_us",
+        },
+        source_path,
+        json_path,
+    )
+    _validate_optional_number_fields(
+        value,
+        {
+            "average_transmission_duration_us",
+            "transmission_duration_standard_deviation_us",
+            "minimum_transmission_duration_us",
+            "maximum_transmission_duration_us",
+            "effective_throughput_mbps",
+        },
+        source_path,
+        json_path,
+    )
+    _validate_sample_distribution(
+        value["application_to_phy_delay"], source_path, f"{json_path}.application_to_phy_delay"
+    )
+
+
+def _validate_app_agent(agent, source_path, json_path):
+    _expect_object_keys(agent, APP_AGENT_KEYS, source_path, json_path)
+    _expect_string(agent["agent_key"], source_path, f"{json_path}.agent_key")
+    _validate_integer_fields(
+        agent,
+        {
+            "accepted_send_count",
+            "accepted_payload_bytes",
+            "drop_event_count",
+            "dropped_payload_bytes",
+        },
+        source_path,
+        json_path,
+    )
+    _validate_optional_number_fields(
+        agent, {"accepted_throughput_mbps"}, source_path, json_path
+    )
+    _validate_optional_number_fields(
+        agent, {"accepted_bandwidth_share_percent"}, source_path, json_path, maximum=100.0
+    )
+
+
+def _validate_app_peer(peer, known_nodes, source_path, json_path):
+    _validate_peer(peer, APP_PEER_KEYS, known_nodes, source_path, json_path)
+    _validate_integer_fields(
+        peer,
+        {
+            "accepted_send_count",
+            "accepted_payload_bytes",
+            "receive_event_count",
+            "received_payload_bytes",
+            "drop_event_count",
+            "dropped_payload_bytes",
+        },
+        source_path,
+        json_path,
+    )
+    _validate_optional_number_fields(
+        peer,
+        {"accepted_throughput_mbps", "received_throughput_mbps"},
+        source_path,
+        json_path,
+    )
+    _validate_optional_number_fields(
+        peer,
+        {"accepted_bandwidth_share_percent", "received_bandwidth_share_percent"},
+        source_path,
+        json_path,
+        maximum=100.0,
+    )
+
+
+def _validate_app_direction(value, known_nodes, source_path, json_path):
+    _validate_integer_fields(
+        value,
+        {
+            "accepted_send_count",
+            "accepted_payload_bytes",
+            "receive_event_count",
+            "received_payload_bytes",
+            "drop_event_count",
+            "dropped_payload_bytes",
+        },
+        source_path,
+        json_path,
+    )
+    _validate_optional_number_fields(
+        value,
+        {"accepted_throughput_mbps", "received_throughput_mbps"},
+        source_path,
+        json_path,
+    )
+    _validate_sample_distribution(
+        value["receive_interarrival_time"], source_path, f"{json_path}.receive_interarrival_time"
+    )
+    _expect_list(value["agents"], source_path, f"{json_path}.agents")
+    for index, agent in enumerate(value["agents"]):
+        _validate_app_agent(agent, source_path, f"{json_path}.agents[{index}]")
+    _expect_list(value["peers"], source_path, f"{json_path}.peers")
+    for index, peer in enumerate(value["peers"]):
+        _validate_app_peer(peer, known_nodes, source_path, f"{json_path}.peers[{index}]")
+
+
+def _validate_tcp_direction(value, known_nodes, source_path, json_path):
+    _expect_list(value["connections"], source_path, f"{json_path}.connections")
+    for index, connection in enumerate(value["connections"]):
+        connection_path = f"{json_path}.connections[{index}]"
+        _validate_peer(connection, TCP_CONNECTION_KEYS, known_nodes, source_path, connection_path)
+        _expect_nonnegative_integer(
+            connection["congestion_window_observation_duration_us"],
+            source_path,
+            f"{connection_path}.congestion_window_observation_duration_us",
+        )
+        _expect_optional_finite_number(
+            connection["average_congestion_window_bytes"],
+            source_path,
+            f"{connection_path}.average_congestion_window_bytes",
+        )
+        _expect_optional_nonnegative_integer(
+            connection["last_congestion_window_bytes"],
+            source_path,
+            f"{connection_path}.last_congestion_window_bytes",
+        )
+        _validate_sample_distribution(
+            connection["round_trip_time"], source_path, f"{connection_path}.round_trip_time"
+        )
+
+
+def _validate_mac_peer(peer, known_nodes, source_path, json_path):
+    _validate_peer(peer, MAC_PEER_KEYS, known_nodes, source_path, json_path)
+    _validate_integer_fields(
+        peer,
+        {
+            "estimated_transmit_event_count",
+            "estimated_transmitted_tcp_payload_bytes",
+            "estimated_receive_event_count",
+            "estimated_received_tcp_payload_bytes",
+            "mpdu_drop_count",
+            "mpdu_drop_bytes",
+            "data_failure_count",
+            "final_data_failure_count",
+        },
+        source_path,
+        json_path,
+    )
+    _validate_optional_number_fields(
+        peer,
+        {"estimated_transmit_throughput_mbps", "estimated_receive_throughput_mbps"},
+        source_path,
+        json_path,
+    )
+    _validate_reason_array(
+        peer["mpdu_drops_by_reason"], source_path, f"{json_path}.mpdu_drops_by_reason"
+    )
+
+
+def _validate_mac_direction(value, known_nodes, source_path, json_path):
+    _validate_integer_fields(
+        value,
+        {
+            "estimated_transmit_event_count",
+            "estimated_transmitted_tcp_payload_bytes",
+            "estimated_receive_event_count",
+            "estimated_received_tcp_payload_bytes",
+            "transmit_drop_count",
+            "transmit_drop_packet_bytes",
+            "mpdu_drop_count",
+            "mpdu_drop_bytes",
+            "data_failure_count",
+            "final_data_failure_count",
+        },
+        source_path,
+        json_path,
+    )
+    _validate_optional_number_fields(
+        value,
+        {"estimated_transmit_throughput_mbps", "estimated_receive_throughput_mbps"},
+        source_path,
+        json_path,
+    )
+    _validate_reason_array(
+        value["mpdu_drops_by_reason"], source_path, f"{json_path}.mpdu_drops_by_reason"
+    )
+    _expect_list(value["peers"], source_path, f"{json_path}.peers")
+    for index, peer in enumerate(value["peers"]):
+        _validate_mac_peer(peer, known_nodes, source_path, f"{json_path}.peers[{index}]")
+
+
+def _validate_phy_peer(peer, known_nodes, source_path, json_path):
+    _validate_peer(peer, PHY_PEER_KEYS, known_nodes, source_path, json_path)
+    _validate_integer_fields(
+        peer,
+        {
+            "tagged_payload_bytes",
+            "unique_tagged_payload_bytes",
+            "transmission_attempt_count",
+            "retransmission_count",
+        },
+        source_path,
+        json_path,
+    )
+    _expect_finite_number(
+        peer["transmission_airtime_us"], source_path, f"{json_path}.transmission_airtime_us"
+    )
+    _validate_optional_number_fields(
+        peer, {"average_data_rate_mbps", "throughput_mbps"}, source_path, json_path
+    )
+
+
+def _validate_phy_direction(value, known_nodes, source_path, json_path):
+    _validate_integer_fields(
+        value,
+        {
+            "tagged_payload_bytes",
+            "unique_tagged_payload_bytes",
+            "tagged_mpdu_count",
+            "complete_tagged_mpdu_bytes",
+            "transmission_attempt_count",
+            "retransmission_count",
+        },
+        source_path,
+        json_path,
+    )
+    _expect_finite_number(
+        value["transmission_airtime_us"], source_path, f"{json_path}.transmission_airtime_us"
+    )
+    _validate_optional_number_fields(
+        value, {"average_data_rate_mbps", "throughput_mbps"}, source_path, json_path
+    )
+    _expect_list(value["peers"], source_path, f"{json_path}.peers")
+    for index, peer in enumerate(value["peers"]):
+        _validate_phy_peer(peer, known_nodes, source_path, f"{json_path}.peers[{index}]")
 
 
 def _validate_entity(record, kind, inventory, known_nodes, source_path, json_path):
@@ -739,64 +1212,29 @@ def _validate_entity(record, kind, inventory, known_nodes, source_path, json_pat
             value = category[direction]
             _expect_object_keys(value, expected_direction_keys, source_path, direction_path)
             if category_name == "general_stats":
-                _validate_sample_distribution(
-                    value["application_to_phy_delay"], source_path,
-                    f"{direction_path}.application_to_phy_delay"
-                )
+                _validate_general_direction(value, source_path, direction_path)
             elif category_name == "app_stats":
-                _validate_sample_distribution(
-                    value["receive_interarrival_time"], source_path,
-                    f"{direction_path}.receive_interarrival_time"
-                )
-                _expect_list(value["agents"], source_path, f"{direction_path}.agents")
-                for index, agent in enumerate(value["agents"]):
-                    _expect_object_keys(
-                        agent, APP_AGENT_KEYS, source_path, f"{direction_path}.agents[{index}]"
-                    )
-                _expect_list(value["peers"], source_path, f"{direction_path}.peers")
-                for index, peer in enumerate(value["peers"]):
-                    _validate_peer(
-                        peer, APP_PEER_KEYS, known_nodes, source_path,
-                        f"{direction_path}.peers[{index}]"
-                    )
+                _validate_app_direction(value, known_nodes, source_path, direction_path)
             elif category_name == "tcp_stats":
-                _expect_list(value["connections"], source_path, f"{direction_path}.connections")
-                for index, connection in enumerate(value["connections"]):
-                    connection_path = f"{direction_path}.connections[{index}]"
-                    _validate_peer(
-                        connection, TCP_CONNECTION_KEYS, known_nodes, source_path, connection_path
-                    )
-                    _validate_sample_distribution(
-                        connection["round_trip_time"], source_path,
-                        f"{connection_path}.round_trip_time"
-                    )
+                _validate_tcp_direction(value, known_nodes, source_path, direction_path)
             else:
-                _validate_reason_array(
-                    value["mpdu_drops_by_reason"], source_path,
-                    f"{direction_path}.mpdu_drops_by_reason"
-                )
-                _expect_list(value["peers"], source_path, f"{direction_path}.peers")
-                for index, peer in enumerate(value["peers"]):
-                    peer_path = f"{direction_path}.peers[{index}]"
-                    _validate_peer(peer, MAC_PEER_KEYS, known_nodes, source_path, peer_path)
-                    _validate_reason_array(
-                        peer["mpdu_drops_by_reason"], source_path,
-                        f"{peer_path}.mpdu_drops_by_reason"
-                    )
+                _validate_mac_direction(value, known_nodes, source_path, direction_path)
 
     phy = record["phy_stats"]
     phy_path = f"{json_path}.phy_stats"
     _expect_object_keys(phy, PHY_KEYS, source_path, phy_path)
+    _expect_nonnegative_integer(phy["busy_time_us"], source_path, f"{phy_path}.busy_time_us")
+    _expect_optional_finite_number(
+        phy["channel_utilization_percent"],
+        source_path,
+        f"{phy_path}.channel_utilization_percent",
+        maximum=100.0,
+    )
     for direction in sorted(DIRECTIONS):
         direction_path = f"{phy_path}.{direction}"
         value = phy[direction]
         _expect_object_keys(value, PHY_DIRECTION_KEYS, source_path, direction_path)
-        _expect_list(value["peers"], source_path, f"{direction_path}.peers")
-        for index, peer in enumerate(value["peers"]):
-            _validate_peer(
-                peer, PHY_PEER_KEYS, known_nodes, source_path,
-                f"{direction_path}.peers[{index}]"
-            )
+        _validate_phy_direction(value, known_nodes, source_path, direction_path)
     return identity
 
 
@@ -944,9 +1382,80 @@ def _entity(access_point_id=0, station_index=None, node_id=1, ipv4="10.1.0.1"):
     return result
 
 
+def _populate_nested_entity(entity, peer_node_id, peer_ipv4):
+    app = entity["app_stats"]["uplink"]
+    app["agents"] = [{
+        "agent_key": "agent-1",
+        "accepted_send_count": 1,
+        "accepted_payload_bytes": 100,
+        "accepted_throughput_mbps": 0.08,
+        "accepted_bandwidth_share_percent": 100.0,
+        "drop_event_count": 0,
+        "dropped_payload_bytes": 0,
+    }]
+    app["peers"] = [{
+        "peer_node_id": peer_node_id,
+        "peer_ipv4": peer_ipv4,
+        "accepted_send_count": 1,
+        "accepted_payload_bytes": 100,
+        "accepted_throughput_mbps": 0.08,
+        "accepted_bandwidth_share_percent": 100.0,
+        "receive_event_count": 1,
+        "received_payload_bytes": 90,
+        "received_throughput_mbps": 0.072,
+        "received_bandwidth_share_percent": 100.0,
+        "drop_event_count": 0,
+        "dropped_payload_bytes": 0,
+    }]
+    entity["tcp_stats"]["uplink"]["connections"] = [{
+        "peer_node_id": peer_node_id,
+        "peer_ipv4": peer_ipv4,
+        "congestion_window_observation_duration_us": 10000,
+        "average_congestion_window_bytes": 2048.0,
+        "last_congestion_window_bytes": 4096,
+        "round_trip_time": {
+            "sample_count": 1,
+            "average_us": 100.0,
+            "standard_deviation_us": 0.0,
+            "minimum_us": 100.0,
+            "maximum_us": 100.0,
+        },
+    }]
+    mac = entity["mac_stats"]["uplink"]
+    mac["mpdu_drops_by_reason"] = [{"reason_code": 1, "drop_count": 1}]
+    mac["peers"] = [{
+        "peer_node_id": peer_node_id,
+        "peer_ipv4": peer_ipv4,
+        "estimated_transmit_event_count": 1,
+        "estimated_transmitted_tcp_payload_bytes": 100,
+        "estimated_transmit_throughput_mbps": 0.08,
+        "estimated_receive_event_count": 1,
+        "estimated_received_tcp_payload_bytes": 90,
+        "estimated_receive_throughput_mbps": 0.072,
+        "mpdu_drop_count": 1,
+        "mpdu_drop_bytes": 100,
+        "data_failure_count": 1,
+        "final_data_failure_count": 0,
+        "mpdu_drops_by_reason": [{"reason_code": 1, "drop_count": 1}],
+    }]
+    entity["phy_stats"]["uplink"]["peers"] = [{
+        "peer_node_id": peer_node_id,
+        "peer_ipv4": peer_ipv4,
+        "tagged_payload_bytes": 100,
+        "unique_tagged_payload_bytes": 100,
+        "transmission_attempt_count": 1,
+        "retransmission_count": 0,
+        "transmission_airtime_us": 10.0,
+        "average_data_rate_mbps": 80.0,
+        "throughput_mbps": 0.08,
+    }]
+
+
 def _valid_document(trace_path, run_directory="/tmp/llm-trace-live.test.random"):
     ap = _entity()
     sta = _entity(station_index=0, node_id=2, ipv4="10.1.0.2")
+    _populate_nested_entity(ap, 2, "10.1.0.2")
+    _populate_nested_entity(sta, 1, "10.1.0.1")
     configuration = {
         "general": {
             "trace_file": trace_path,
@@ -1055,6 +1564,15 @@ class LiveTraceSelfTest(unittest.TestCase):
             function(*args)
         self.assertIn(text, str(context.exception))
 
+    def assert_document_error(self, document, json_path):
+        self.assert_path_error(
+            validate_output_document,
+            document,
+            self.source,
+            self.trace,
+            text=json_path,
+        )
+
     def test_policy_coverage_accepts_exact_set(self):
         directory = Path("/workspace/contrib/llm/traces")
         discovered = [directory / name for name in reversed(POLICY)]
@@ -1095,6 +1613,99 @@ class LiveTraceSelfTest(unittest.TestCase):
         self.assertEqual(metrics["window_count"], 1)
         self.assertEqual(metrics["ap_inventory_count"], 1)
         self.assertEqual(metrics["sta_inventory_count"], 1)
+
+    def test_accepts_null_optional_averages(self):
+        document = _valid_document(self.trace)
+        general = document["windows"][0]["access_points"][0]["general_stats"]["downlink"]
+        self.assertIsNone(general["average_transmission_duration_us"])
+        self.assertIsNone(general["effective_throughput_mbps"])
+        distribution = general["application_to_phy_delay"]
+        self.assertEqual(distribution["sample_count"], 0)
+        self.assertIsNone(distribution["average_us"])
+        validate_output_document(document, self.source, self.trace)
+
+    def test_rejects_non_integer_schema_versions(self):
+        for invalid in (True, 1.0):
+            with self.subTest(invalid=invalid):
+                document = _valid_document(self.trace)
+                document["schema_version"] = invalid
+                self.assert_document_error(document, "$.schema_version")
+
+    def test_rejects_wrong_measurement_semantics_types_and_values(self):
+        document = _valid_document(self.trace)
+        document["measurement_semantics"]["access_point_role"] = 7
+        self.assert_document_error(document, "$.measurement_semantics.access_point_role")
+
+        document = _valid_document(self.trace)
+        document["measurement_semantics"]["access_point_role"] = "physical AP only"
+        self.assert_document_error(document, "$.measurement_semantics.access_point_role")
+
+    def test_rejects_invalid_required_scalar_types(self):
+        document = _valid_document(self.trace)
+        app = document["windows"][0]["access_points"][0]["app_stats"]["uplink"]
+        app["accepted_payload_bytes"] = "100"
+        self.assert_document_error(
+            document,
+            "$.windows[0].access_points[0].app_stats.uplink.accepted_payload_bytes",
+        )
+
+        document = _valid_document(self.trace)
+        app = document["windows"][0]["access_points"][0]["app_stats"]["uplink"]
+        app["accepted_send_count"] = True
+        self.assert_document_error(
+            document,
+            "$.windows[0].access_points[0].app_stats.uplink.accepted_send_count",
+        )
+
+        document = _valid_document(self.trace)
+        general = document["windows"][0]["access_points"][0]["general_stats"]["uplink"]
+        general["matched_packet_count"] = None
+        self.assert_document_error(
+            document,
+            "$.windows[0].access_points[0].general_stats.uplink.matched_packet_count",
+        )
+
+        document = _valid_document(self.trace)
+        document["validation"]["overall_matches_windows"] = 1
+        self.assert_document_error(document, "$.validation.overall_matches_windows")
+
+    def test_rejects_nonfinite_numbers(self):
+        for invalid in (float("inf"), float("-inf"), float("nan")):
+            with self.subTest(invalid=invalid):
+                document = _valid_document(self.trace)
+                document["windows"][0]["window_start_ms"] = invalid
+                self.assert_document_error(document, "$.windows[0].window_start_ms")
+
+        document = _valid_document(self.trace)
+        phy = document["windows"][0]["access_points"][0]["phy_stats"]["uplink"]
+        phy["average_data_rate_mbps"] = float("inf")
+        self.assert_document_error(
+            document,
+            "$.windows[0].access_points[0].phy_stats.uplink.average_data_rate_mbps",
+        )
+
+    def test_rejects_invalid_nested_and_configuration_types(self):
+        document = _valid_document(self.trace)
+        agent = document["windows"][0]["access_points"][0]["app_stats"]["uplink"]["agents"][0]
+        agent["agent_key"] = 1
+        self.assert_document_error(
+            document,
+            "$.windows[0].access_points[0].app_stats.uplink.agents[0].agent_key",
+        )
+
+        document = _valid_document(self.trace)
+        document["experiment_metadata"]["configuration"]["simulation"]["rng_seed"] = True
+        self.assert_document_error(
+            document,
+            "$.experiment_metadata.configuration.simulation.rng_seed",
+        )
+
+        document = _valid_document(self.trace)
+        document["experiment_metadata"]["configuration"]["general"]["trace_file"] = None
+        self.assert_document_error(
+            document,
+            "$.experiment_metadata.configuration.general.trace_file",
+        )
 
     def test_rejects_malformed_json_with_path(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1144,9 +1755,57 @@ class LiveTraceSelfTest(unittest.TestCase):
         with self.assertRaisesRegex(LiveTraceError, "Final per-second"):
             reject_legacy_console("prefix [Final per-second] row", self.source)
 
-    def test_cleanup_target_rejects_unowned_path(self):
-        with self.assertRaises(LiveTraceError):
-            validate_cleanup_target(Path("/tmp/not-owned"), Path("/tmp"))
+    def test_owned_temporary_run_context_cleans_normal_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_parent = Path(directory)
+            with OwnedTemporaryRun.create("test", temporary_parent) as owner:
+                owned_path = owner.path
+                (owned_path / "output.json").write_text("{}", encoding="utf-8")
+                self.assertTrue(owned_path.is_dir())
+            self.assertFalse(owned_path.exists())
+
+    def test_cleanup_refuses_matching_name_without_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            unowned = Path(directory) / "llm-trace-live.test.random"
+            unowned.mkdir()
+            marker = unowned / "preserve"
+            marker.write_text("user-owned", encoding="utf-8")
+            with self.assertRaises(LiveTraceError):
+                cleanup_run_directory(unowned)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "user-owned")
+
+    def test_cleanup_refuses_symlink_substitution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_parent = Path(directory)
+            owner = OwnedTemporaryRun.create("test", temporary_parent)
+            parked = temporary_parent / "parked-original"
+            owner.path.rename(parked)
+            victim = temporary_parent / "victim"
+            victim.mkdir()
+            marker = victim / "preserve"
+            marker.write_text("user-owned", encoding="utf-8")
+            owner.path.symlink_to(victim, target_is_directory=True)
+
+            with self.assertRaises(LiveTraceError):
+                cleanup_run_directory(owner)
+            self.assertTrue(owner.path.is_symlink())
+            self.assertEqual(marker.read_text(encoding="utf-8"), "user-owned")
+            self.assertTrue(parked.is_dir())
+
+    def test_cleanup_refuses_inode_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_parent = Path(directory)
+            owner = OwnedTemporaryRun.create("test", temporary_parent)
+            parked = temporary_parent / "parked-original"
+            owner.path.rename(parked)
+            owner.path.mkdir()
+            marker = owner.path / "preserve"
+            marker.write_text("replacement", encoding="utf-8")
+
+            with self.assertRaises(LiveTraceError):
+                cleanup_run_directory(owner)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "replacement")
+            self.assertTrue(parked.is_dir())
 
     def test_cleans_up_after_command_failure(self):
         self._assert_run_failure_cleans(parse_failure=False)

@@ -584,7 +584,7 @@ Each direction contains:
 
 | Field | Unit | Meaning |
 |---|---:|---|
-| `estimated_transmitted_tcp_payload_bytes` | bytes | Parsed MAC TX TCP payload, including repeated attempts |
+| `estimated_transmitted_tcp_payload_bytes` | bytes | Parsed TCP payload in device `MacTx` enqueue observations |
 | `estimated_matched_tcp_payload_bytes` | bytes | Payload in positive-duration TX/RX matches |
 | `matched_packet_count` | count | Positive-duration matched packets |
 | `total_transmission_duration_us` | us | Sum of matched RX minus TX durations |
@@ -595,9 +595,13 @@ Each direction contains:
 | `effective_throughput_mbps` | Mbps or `null` | Matched payload rate over matched duration |
 | `application_to_phy_delay` | object | First-transmission application-to-PHY sample distribution |
 
-Payload is estimated after parsing LLC/SNAP, IPv4, and TCP headers. Matching
-uses addresses, ports, estimated payload size, and observation order. It is a
-diagnostic, not an ns-3 `FlowMonitor` metric. The category-specific formula is:
+Payload is estimated after parsing LLC/SNAP, IPv4, and TCP headers. Device
+`MacTx` observes a packet enqueue into the Wi-Fi MAC. A TCP-retransmitted packet
+can therefore appear as a new enqueue, but an 802.11 retry of an already
+enqueued MPDU is not another device `MacTx` event; Wi-Fi attempts and retries
+are measured by `phy_stats`. Matching uses addresses, ports, estimated payload
+size, and observation order. It is a diagnostic, not an ns-3 `FlowMonitor`
+metric. The category-specific formula is:
 
 ```text
 effective_throughput_mbps =
@@ -669,7 +673,7 @@ Each direction has a `connections` array. Every per-peer connection contains:
 | `peer_ipv4` | IPv4 address | Inventory peer address |
 | `congestion_window_observation_duration_us` | us | Total duration with an observed CWND state |
 | `average_congestion_window_bytes` | bytes or `null` | Time-weighted CWND |
-| `last_congestion_window_bytes` | bytes or `null` | Last observed nonzero CWND |
+| `last_congestion_window_bytes` | bytes or `null` | Last observed CWND |
 | `round_trip_time` | object | RTT sample distribution |
 
 CWND is never combined across independent peer sockets. Its average is `null`
@@ -682,8 +686,8 @@ Each direction contains:
 
 | Field | Unit | Meaning |
 |---|---:|---|
-| `estimated_transmit_event_count` | count | Parsed MAC TX payload events |
-| `estimated_transmitted_tcp_payload_bytes` | bytes | Estimated transmitted TCP payload |
+| `estimated_transmit_event_count` | count | Parsed payload-bearing device `MacTx` enqueue observations |
+| `estimated_transmitted_tcp_payload_bytes` | bytes | Estimated TCP payload in those enqueue observations |
 | `estimated_transmit_throughput_mbps` | Mbps or `null` | Estimated TX payload rate |
 | `estimated_receive_event_count` | count | Parsed MAC RX payload events |
 | `estimated_received_tcp_payload_bytes` | bytes | Estimated received TCP payload |
