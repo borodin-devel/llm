@@ -22,6 +22,7 @@ namespace ns3
 {
 
 class TrafficCoordinator;
+class Packet;
 class WifiNetDevice;
 
 /** Parsed IPv4/TCP payload observation from a Wi-Fi device trace. */
@@ -239,6 +240,18 @@ void RecordParsedDeviceTransmit(WifiStatisticsState& statistics,
 void RecordParsedDeviceReceive(WifiStatisticsState& statistics,
                                int64_t absoluteTimeUs,
                                const ParsedDeviceTcpPayload& payload);
+
+/**
+ * Parse and record one device transmit packet.
+ *
+ * @param statistics Scenario statistics state.
+ * @param absoluteTimeUs Absolute transmit time in microseconds.
+ * @param packet Wi-Fi MAC payload packet.
+ * @return True when the packet contains a supported IPv4/TCP payload.
+ */
+bool RecordDeviceTransmitPacket(WifiStatisticsState& statistics,
+                                int64_t absoluteTimeUs,
+                                Ptr<const Packet> packet);
 
 /**
  * Finalize positive ordered device transmit/receive matches.

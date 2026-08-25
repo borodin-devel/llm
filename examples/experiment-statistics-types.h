@@ -152,6 +152,11 @@ struct MacPeerAccumulator
     uint64_t estimatedTransmittedTcpPayloadBytes{0}; ///< Estimated transmitted TCP payload bytes.
     uint64_t estimatedReceiveEventCount{0};          ///< Estimated TCP payload receive-event count.
     uint64_t estimatedReceivedTcpPayloadBytes{0};    ///< Estimated received TCP payload bytes.
+    uint64_t mpduDropCount{0};                       ///< Dropped MPDU count.
+    uint64_t mpduDropBytes{0};                       ///< Complete dropped MPDU bytes.
+    std::map<int, uint64_t> mpduDropsByReason;       ///< MPDU drops ordered by numeric reason.
+    uint64_t dataFailureCount{0};                    ///< MAC data transmission failure count.
+    uint64_t finalDataFailureCount{0};               ///< MAC final data transmission failure count.
 };
 
 /** MAC observations for one entity and direction. */

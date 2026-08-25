@@ -134,12 +134,18 @@ RecordMacMpduDrop(WifiStatisticsState& statistics,
                   uint32_t mpduBytes,
                   std::optional<uint32_t> peerNodeId)
 {
-    (void)peerNodeId;
     if (auto* accumulator = GetMacAccumulator(statistics, nodeId, absoluteTimeUs))
     {
         ++accumulator->mpduDropCount;
         accumulator->mpduDropBytes += mpduBytes;
         ++accumulator->mpduDropsByReason[reasonCode];
+        if (peerNodeId)
+        {
+            auto& peer = accumulator->peersByNodeId[*peerNodeId];
+            ++peer.mpduDropCount;
+            peer.mpduDropBytes += mpduBytes;
+            ++peer.mpduDropsByReason[reasonCode];
+        }
     }
     if (auto* legacy = GetLegacyNodeSecond(statistics, nodeId, absoluteTimeUs))
     {
@@ -156,7 +162,6 @@ RecordMacDataFailure(WifiStatisticsState& statistics,
                      bool finalFailure,
                      std::optional<uint32_t> peerNodeId)
 {
-    (void)peerNodeId;
     if (auto* accumulator = GetMacAccumulator(statistics, nodeId, absoluteTimeUs))
     {
         if (finalFailure)
@@ -166,6 +171,18 @@ RecordMacDataFailure(WifiStatisticsState& statistics,
         else
         {
             ++accumulator->dataFailureCount;
+        }
+        if (peerNodeId)
+        {
+            auto& peer = accumulator->peersByNodeId[*peerNodeId];
+            if (finalFailure)
+            {
+                ++peer.finalDataFailureCount;
+            }
+            else
+            {
+                ++peer.dataFailureCount;
+            }
         }
     }
     if (auto* legacy = GetLegacyNodeSecond(statistics, nodeId, absoluteTimeUs))

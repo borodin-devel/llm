@@ -3,7 +3,13 @@
 #include "llm-test-suite.h"
 
 #include "ns3/ap-generator.h"
+#include "ns3/iana-ieee802-numbers.h"
+#include "ns3/iana-internet-protocol-numbers.h"
+#include "ns3/ipv4-header.h"
+#include "ns3/llc-snap-header.h"
 #include "ns3/network-module.h"
+#include "ns3/tcp-header.h"
+#include "ns3/udp-header.h"
 
 #include <cstdint>
 #include <vector>
@@ -45,6 +51,118 @@ RegisterEntities(WifiStatisticsState& statistics)
 {
     statistics.entityRegistry.RegisterAccessPoint(0, 10, "AP0", "10.1.0.1");
     statistics.entityRegistry.RegisterStation(0, 0, 20, "AP0/STA0", "10.1.0.2");
+}
+
+/**
+ * Build one Wi-Fi device payload with explicit LLC and IPv4 protocol values.
+ *
+ * @param llcType LLC/SNAP EtherType.
+ * @param ipProtocol IPv4 next-header protocol number.
+ * @return Packet containing LLC/SNAP, IPv4, transport, and payload bytes.
+ */
+Ptr<Packet>
+BuildDevicePacket(uint16_t llcType, uint8_t ipProtocol)
+{
+    Ptr<Packet> packet;
+    if (ipProtocol == iana::internetprotocolnumbers::TCP)
+    {
+        packet = Create<Packet>(64);
+        TcpHeader tcp;
+        tcp.SetSourcePort(9000);
+        tcp.SetDestinationPort(10000);
+        packet->AddHeader(tcp);
+    }
+    else
+    {
+        uint8_t payload[32]{};
+        payload[4] = 0x50;
+        packet = Create<Packet>(payload, sizeof(payload));
+        UdpHeader udp;
+        udp.SetSourcePort(9000);
+        udp.SetDestinationPort(10000);
+        packet->AddHeader(udp);
+    }
+
+    Ipv4Header ipv4;
+    ipv4.SetSource(Ipv4Address("10.1.0.2"));
+    ipv4.SetDestination(Ipv4Address("10.1.0.1"));
+    ipv4.SetProtocol(ipProtocol);
+    ipv4.SetPayloadSize(packet->GetSize());
+    packet->AddHeader(ipv4);
+
+    LlcSnapHeader llc;
+    llc.SetType(llcType);
+    packet->AddHeader(llc);
+    return packet;
+}
+
+/**
+ * @ingroup tests
+ *
+ * Verify the device parser rejects non-IPv4 LLC payloads and non-TCP IPv4 payloads.
+ */
+class DevicePacketProtocolValidationTestCase : public TestCase
+{
+  public:
+    DevicePacketProtocolValidationTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+DevicePacketProtocolValidationTestCase::DevicePacketProtocolValidationTestCase()
+    : TestCase("reject non-IPv4 and non-TCP device payloads")
+{
+}
+
+void
+DevicePacketProtocolValidationTestCase::DoRun()
+{
+    TrafficCoordinator coordinator(30.0, 30.0);
+    const int64_t epochUs = OpenExperiment(coordinator);
+
+    WifiStatisticsState nonIpv4Statistics(coordinator, 10);
+    RegisterEntities(nonIpv4Statistics);
+    const Ptr<Packet> nonIpv4Packet =
+        BuildDevicePacket(iana::ieee802numbers::ARP, iana::internetprotocolnumbers::TCP);
+    NS_TEST_ASSERT_MSG_EQ(
+        RecordDeviceTransmitPacket(nonIpv4Statistics, epochUs + 1000, nonIpv4Packet),
+        false,
+        "Non-IPv4 LLC payload was accepted");
+    NS_TEST_ASSERT_MSG_EQ(nonIpv4Statistics.unifiedWindows.empty(),
+                          true,
+                          "Non-IPv4 LLC payload created window state");
+    NS_TEST_ASSERT_MSG_EQ(nonIpv4Statistics.deviceTransmitsByFlow.empty(),
+                          true,
+                          "Non-IPv4 LLC payload created matching state");
+
+    WifiStatisticsState udpStatistics(coordinator, 10);
+    RegisterEntities(udpStatistics);
+    const Ptr<Packet> udpPacket =
+        BuildDevicePacket(iana::ieee802numbers::IPV4, iana::internetprotocolnumbers::UDP);
+    NS_TEST_ASSERT_MSG_EQ(RecordDeviceTransmitPacket(udpStatistics, epochUs + 1000, udpPacket),
+                          false,
+                          "IPv4/UDP payload was accepted as TCP");
+    NS_TEST_ASSERT_MSG_EQ(udpStatistics.unifiedWindows.empty(),
+                          true,
+                          "IPv4/UDP payload created window state");
+    NS_TEST_ASSERT_MSG_EQ(udpStatistics.deviceTransmitsByFlow.empty(),
+                          true,
+                          "IPv4/UDP payload created matching state");
+
+    WifiStatisticsState tcpStatistics(coordinator, 10);
+    RegisterEntities(tcpStatistics);
+    const Ptr<Packet> tcpPacket =
+        BuildDevicePacket(iana::ieee802numbers::IPV4, iana::internetprotocolnumbers::TCP);
+    NS_TEST_ASSERT_MSG_EQ(RecordDeviceTransmitPacket(tcpStatistics, epochUs + 1000, tcpPacket),
+                          true,
+                          "Valid IPv4/TCP payload was rejected");
+    NS_TEST_ASSERT_MSG_EQ(
+        tcpStatistics.unifiedWindows.at(0).at(20).mac.uplink.estimatedTransmitEventCount,
+        1,
+        "Valid IPv4/TCP payload did not reach device statistics");
+
+    Simulator::Destroy();
 }
 
 /**
@@ -225,14 +343,17 @@ ExperimentMacEventTestCase::DoRun()
     RegisterEntities(statistics);
 
     RecordMacTransmitDrop(statistics, 10, epochUs + 9999, 500);
-    RecordMacMpduDrop(statistics, 10, epochUs + 2000, 9, 700);
-    RecordMacMpduDrop(statistics, 10, epochUs + 3000, 4, 300);
-    RecordMacDataFailure(statistics, 10, epochUs + 4000, false);
-    RecordMacDataFailure(statistics, 10, epochUs + 5000, true);
+    RecordMacMpduDrop(statistics, 10, epochUs + 2000, 9, 700, 20);
+    RecordMacMpduDrop(statistics, 10, epochUs + 3000, 4, 300, 20);
+    RecordMacMpduDrop(statistics, 10, epochUs + 3500, 7, 100);
+    RecordMacDataFailure(statistics, 10, epochUs + 4000, false, 20);
+    RecordMacDataFailure(statistics, 10, epochUs + 4500, false);
+    RecordMacDataFailure(statistics, 10, epochUs + 5000, true, 20);
 
     RecordMacTransmitDrop(statistics, 20, epochUs + 10000, 600);
-    RecordMacDataFailure(statistics, 20, epochUs + 12000, false);
-    RecordMacDataFailure(statistics, 20, epochUs + 13000, true);
+    RecordMacMpduDrop(statistics, 20, epochUs + 11000, 5, 200, 10);
+    RecordMacDataFailure(statistics, 20, epochUs + 12000, false, 10);
+    RecordMacDataFailure(statistics, 20, epochUs + 13000, true, 10);
     RecordMacTransmitDrop(statistics, 20, epochUs + 30000, 999);
 
     const auto& accessPoint = statistics.unifiedWindows.at(0).at(10).mac.downlink;
@@ -240,18 +361,41 @@ ExperimentMacEventTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(accessPoint.transmitDropPacketBytes,
                           500,
                           "Wrong AP transmit-drop packet bytes");
-    NS_TEST_ASSERT_MSG_EQ(accessPoint.mpduDropCount, 2, "Wrong AP MPDU-drop count");
-    NS_TEST_ASSERT_MSG_EQ(accessPoint.mpduDropBytes, 1000, "Wrong AP MPDU-drop bytes");
-    NS_TEST_ASSERT_MSG_EQ(accessPoint.dataFailureCount, 1, "Wrong AP data-failure count");
+    NS_TEST_ASSERT_MSG_EQ(accessPoint.mpduDropCount, 3, "Wrong AP MPDU-drop count");
+    NS_TEST_ASSERT_MSG_EQ(accessPoint.mpduDropBytes, 1100, "Wrong AP MPDU-drop bytes");
+    NS_TEST_ASSERT_MSG_EQ(accessPoint.dataFailureCount, 2, "Wrong AP data-failure count");
     NS_TEST_ASSERT_MSG_EQ(accessPoint.finalDataFailureCount,
                           1,
                           "Wrong AP final-data-failure count");
-    NS_TEST_ASSERT_MSG_EQ(accessPoint.mpduDropsByReason.size(), 2, "Wrong reason count");
+    NS_TEST_ASSERT_MSG_EQ(accessPoint.mpduDropsByReason.size(), 3, "Wrong reason count");
     NS_TEST_ASSERT_MSG_EQ(accessPoint.mpduDropsByReason.begin()->first,
                           4,
                           "MAC reasons are not numerically ordered");
     NS_TEST_ASSERT_MSG_EQ(accessPoint.mpduDropsByReason.at(4), 1, "Wrong reason 4 count");
+    NS_TEST_ASSERT_MSG_EQ(accessPoint.mpduDropsByReason.at(7), 1, "Wrong reason 7 count");
     NS_TEST_ASSERT_MSG_EQ(accessPoint.mpduDropsByReason.at(9), 1, "Wrong reason 9 count");
+    NS_TEST_ASSERT_MSG_EQ(accessPoint.peersByNodeId.size(),
+                          1,
+                          "Unresolved AP MAC events created a peer");
+    const auto& accessPointPeer = accessPoint.peersByNodeId.at(20);
+    NS_TEST_ASSERT_MSG_EQ(accessPointPeer.mpduDropCount, 2, "Wrong AP peer MPDU-drop count");
+    NS_TEST_ASSERT_MSG_EQ(accessPointPeer.mpduDropBytes, 1000, "Wrong AP peer MPDU-drop bytes");
+    NS_TEST_ASSERT_MSG_EQ(accessPointPeer.mpduDropsByReason.size(),
+                          2,
+                          "Wrong AP peer reason count");
+    NS_TEST_ASSERT_MSG_EQ(accessPointPeer.mpduDropsByReason.begin()->first,
+                          4,
+                          "AP peer reasons are not numerically ordered");
+    NS_TEST_ASSERT_MSG_EQ(accessPointPeer.mpduDropsByReason.at(4),
+                          1,
+                          "Wrong AP peer reason 4 count");
+    NS_TEST_ASSERT_MSG_EQ(accessPointPeer.mpduDropsByReason.at(9),
+                          1,
+                          "Wrong AP peer reason 9 count");
+    NS_TEST_ASSERT_MSG_EQ(accessPointPeer.dataFailureCount, 1, "Wrong AP peer data-failure count");
+    NS_TEST_ASSERT_MSG_EQ(accessPointPeer.finalDataFailureCount,
+                          1,
+                          "Wrong AP peer final-data-failure count");
     NS_TEST_ASSERT_MSG_EQ(statistics.unifiedWindows.at(0).at(10).mac.uplink.transmitDropCount,
                           0,
                           "AP transmitter event mapped to uplink");
@@ -259,8 +403,21 @@ ExperimentMacEventTestCase::DoRun()
     const auto& station = statistics.unifiedWindows.at(1).at(20).mac.uplink;
     NS_TEST_ASSERT_MSG_EQ(station.transmitDropCount, 1, "Wrong STA transmit-drop count");
     NS_TEST_ASSERT_MSG_EQ(station.transmitDropPacketBytes, 600, "Wrong STA transmit-drop bytes");
+    NS_TEST_ASSERT_MSG_EQ(station.mpduDropCount, 1, "Wrong STA MPDU-drop count");
+    NS_TEST_ASSERT_MSG_EQ(station.mpduDropBytes, 200, "Wrong STA MPDU-drop bytes");
     NS_TEST_ASSERT_MSG_EQ(station.dataFailureCount, 1, "Wrong STA data-failure count");
     NS_TEST_ASSERT_MSG_EQ(station.finalDataFailureCount, 1, "Wrong STA final-data-failure count");
+    NS_TEST_ASSERT_MSG_EQ(station.peersByNodeId.size(), 1, "Wrong STA MAC peer count");
+    const auto& stationPeer = station.peersByNodeId.at(10);
+    NS_TEST_ASSERT_MSG_EQ(stationPeer.mpduDropCount, 1, "Wrong STA peer MPDU-drop count");
+    NS_TEST_ASSERT_MSG_EQ(stationPeer.mpduDropBytes, 200, "Wrong STA peer MPDU-drop bytes");
+    NS_TEST_ASSERT_MSG_EQ(stationPeer.mpduDropsByReason.at(5),
+                          1,
+                          "Wrong STA peer MPDU-drop reason");
+    NS_TEST_ASSERT_MSG_EQ(stationPeer.dataFailureCount, 1, "Wrong STA peer data-failure count");
+    NS_TEST_ASSERT_MSG_EQ(stationPeer.finalDataFailureCount,
+                          1,
+                          "Wrong STA peer final-data-failure count");
     NS_TEST_ASSERT_MSG_EQ(statistics.unifiedWindows.at(1).at(20).mac.downlink.transmitDropCount,
                           0,
                           "STA transmitter event mapped to downlink");
@@ -273,10 +430,10 @@ ExperimentMacEventTestCase::DoRun()
                           1,
                           "Legacy cross-layer transmit drops were not retained");
     NS_TEST_ASSERT_MSG_EQ(legacyAccessPoint.macMpduDropBytes,
-                          1000,
+                          1100,
                           "Legacy cross-layer MPDU bytes were not retained");
     NS_TEST_ASSERT_MSG_EQ(legacyAccessPoint.macDataFailures,
-                          1,
+                          2,
                           "Legacy cross-layer failures were not retained");
     NS_TEST_ASSERT_MSG_EQ(legacyAccessPoint.macFinalDataFailures,
                           1,
@@ -290,5 +447,7 @@ ExperimentMacEventTestCase::DoRun()
 std::vector<TestCase*>
 CreateExperimentDeviceMacTestCases()
 {
-    return {new ExperimentDeviceMatchingTestCase, new ExperimentMacEventTestCase};
+    return {new DevicePacketProtocolValidationTestCase,
+            new ExperimentDeviceMatchingTestCase,
+            new ExperimentMacEventTestCase};
 }

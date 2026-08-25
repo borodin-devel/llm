@@ -4,6 +4,8 @@
 #include "wifi-statistics.h"
 
 #include "ns3/config.h"
+#include "ns3/iana-ieee802-numbers.h"
+#include "ns3/iana-internet-protocol-numbers.h"
 #include "ns3/ipv4-header.h"
 #include "ns3/llc-snap-header.h"
 #include "ns3/packet.h"
@@ -68,13 +70,17 @@ ParseTcpPayload(Ptr<const Packet> packet, ParsedDeviceTcpPayload& parsed)
 
     Ptr<Packet> packetCopy = packet->Copy();
     LlcSnapHeader llc;
-    if (packetCopy->RemoveHeader(llc) == 0)
+    if (packetCopy->RemoveHeader(llc) == 0 || llc.GetType() != iana::ieee802numbers::IPV4)
     {
         return false;
     }
 
     Ipv4Header ipHeader;
     if (packetCopy->PeekHeader(ipHeader) == 0)
+    {
+        return false;
+    }
+    if (ipHeader.GetProtocol() != iana::internetprotocolnumbers::TCP)
     {
         return false;
     }
@@ -96,17 +102,7 @@ ParseTcpPayload(Ptr<const Packet> packet, ParsedDeviceTcpPayload& parsed)
 void
 DeviceTxTrace(WifiStatisticsState* statistics, std::string, Ptr<const Packet> packet)
 {
-    ParsedDeviceTcpPayload parsed;
-    if (!ParseTcpPayload(packet, parsed))
-    {
-        return;
-    }
-
-    const int64_t nowUs = Simulator::Now().GetMicroSeconds();
-    NS_LOG_INFO("TX [" << nowUs << " us] PayloadOnly: " << parsed.estimatedPayloadBytes
-                       << " | tx: " << parsed.sourceIpv4 << ":" << parsed.sourcePort
-                       << " -> rx: " << parsed.destinationIpv4 << ":" << parsed.destinationPort);
-    RecordParsedDeviceTransmit(*statistics, nowUs, parsed);
+    RecordDeviceTransmitPacket(*statistics, Simulator::Now().GetMicroSeconds(), packet);
 }
 
 void
@@ -232,6 +228,23 @@ RecordParsedDeviceReceive(WifiStatisticsState& statistics,
     }
 
     statistics.deviceReceivesByFlow[MakeDeviceFlowKey(payload)].push_back(absoluteTimeUs);
+}
+
+bool
+RecordDeviceTransmitPacket(WifiStatisticsState& statistics,
+                           int64_t absoluteTimeUs,
+                           Ptr<const Packet> packet)
+{
+    ParsedDeviceTcpPayload parsed;
+    if (!ParseTcpPayload(packet, parsed))
+    {
+        return false;
+    }
+    NS_LOG_INFO("TX [" << absoluteTimeUs << " us] PayloadOnly: " << parsed.estimatedPayloadBytes
+                       << " | tx: " << parsed.sourceIpv4 << ":" << parsed.sourcePort
+                       << " -> rx: " << parsed.destinationIpv4 << ":" << parsed.destinationPort);
+    RecordParsedDeviceTransmit(statistics, absoluteTimeUs, parsed);
+    return true;
 }
 
 void
