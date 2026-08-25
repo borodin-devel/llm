@@ -90,6 +90,34 @@ class WifiStatistics
                          const Ipv4InterfaceContainer& stationInterfaces);
 
     /**
+     * Register the stable identity of one access point.
+     *
+     * @param accessPointId Zero-based BSS identifier.
+     * @param nodeId ns-3 node identifier.
+     * @param nodeLabel Stable report label.
+     * @param ipv4 Access point IPv4 address.
+     */
+    void RegisterAccessPointIdentity(uint32_t accessPointId,
+                                     uint32_t nodeId,
+                                     std::string nodeLabel,
+                                     Ipv4Address ipv4);
+
+    /**
+     * Register the stable identity of one station.
+     *
+     * @param accessPointId Parent zero-based BSS identifier.
+     * @param stationIndex Zero-based station index within the BSS.
+     * @param nodeId ns-3 node identifier.
+     * @param nodeLabel Stable report label.
+     * @param ipv4 Station IPv4 address.
+     */
+    void RegisterStationIdentity(uint32_t accessPointId,
+                                 uint32_t stationIndex,
+                                 uint32_t nodeId,
+                                 std::string nodeLabel,
+                                 Ipv4Address ipv4);
+
+    /**
      * Register one Wi-Fi device for trace collection.
      *
      * @param nodeId Owning ns-3 node identifier.

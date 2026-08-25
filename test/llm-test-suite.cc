@@ -30,6 +30,7 @@ LlmTestSuite::LlmTestSuite()
     AddCases(CreateTrafficFlowSummaryTestCases());
     AddCases(CreateCrossLayerSummaryTestCases());
     AddCases(CreateExperimentJsonTestCases());
+    AddCases(CreateExperimentWindowTestCases());
     AddCases(CreateWifiStatisticsTestCases());
     AddCases(CreateScenarioConfigTestCases());
     AddCases(CreateScenarioConfigJsonTestCases());

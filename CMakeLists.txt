@@ -43,6 +43,7 @@ set(test_sources
     test/scenario-run-path-test-suite.cc
     test/scenario-topology-test-suite.cc
     test/experiment-json-test-suite.cc
+    test/experiment-window-test-suite.cc
     examples/scenario-log.cc
     examples/scenario-config.cc
     examples/scenario-config-json.cc
@@ -57,6 +58,7 @@ set(test_sources
     examples/experiment-json.cc
     examples/transmission-summary-json.cc
     examples/cross-layer-summary-json.cc
+    examples/experiment-statistics-window.cc
     examples/wifi-statistics.cc
     examples/wifi-statistics-json.cc
     examples/wifi-statistics-owner.cc

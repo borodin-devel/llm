@@ -16,6 +16,7 @@ build_lib_example(
     experiment-json.cc
     transmission-summary-json.cc
     cross-layer-summary-json.cc
+    experiment-statistics-window.cc
     wifi-statistics.cc
     wifi-statistics-json.cc
     wifi-statistics-owner.cc

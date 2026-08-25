@@ -177,18 +177,30 @@ RegisterTopology(int bssIndex,
                                topology.accessPointInterfaces.GetAddress(0),
                                topology.stationInterfaces);
 
+    const std::string accessPointLabel =
+        "AP" + std::to_string(bssIndex) + "(" +
+        Ipv4ToString(topology.accessPointInterfaces.GetAddress(0)) + ")";
+    statistics.RegisterAccessPointIdentity(bssIndex,
+                                           topology.accessPointNode.Get(0)->GetId(),
+                                           accessPointLabel,
+                                           topology.accessPointInterfaces.GetAddress(0));
     statistics.RegisterWifiDevice(topology.accessPointNode.Get(0)->GetId(),
-                                  "AP" + std::to_string(bssIndex) + "(" +
-                                      Ipv4ToString(topology.accessPointInterfaces.GetAddress(0)) +
-                                      ")",
+                                  accessPointLabel,
                                   topology.accessPointDevices.Get(0));
 
     for (uint32_t stationIndex = 0; stationIndex < topology.stationDevices.GetN(); ++stationIndex)
     {
+        const std::string stationLabel =
+            "AP" + std::to_string(bssIndex) + "/STA" + std::to_string(stationIndex) + "(" +
+            Ipv4ToString(topology.stationInterfaces.GetAddress(stationIndex)) + ")";
+        statistics.RegisterStationIdentity(bssIndex,
+                                           stationIndex,
+                                           topology.stationNodes.Get(stationIndex)->GetId(),
+                                           stationLabel,
+                                           topology.stationInterfaces.GetAddress(stationIndex));
         statistics.RegisterWifiDevice(
             topology.stationNodes.Get(stationIndex)->GetId(),
-            "AP" + std::to_string(bssIndex) + "/STA" + std::to_string(stationIndex) + "(" +
-                Ipv4ToString(topology.stationInterfaces.GetAddress(stationIndex)) + ")",
+            stationLabel,
             topology.stationDevices.Get(stationIndex));
     }
 

@@ -2,6 +2,7 @@
 #define WIFI_STATISTICS_INTERNAL_H
 
 #include "wifi-statistics.h"
+#include "experiment-statistics-types.h"
 
 #include "ns3/abort.h"
 
@@ -138,6 +139,8 @@ struct WifiStatisticsState
     std::map<uint32_t, std::map<uint64_t, NodeSecondStats>> nodeSeconds; ///< Node seconds.
     std::map<uint32_t, std::string> nodeLabels;                          ///< Report label by node.
     std::set<PhyMpduKey> seenTaggedMpdus; ///< Tagged MPDUs already counted as unique.
+    ExperimentEntityRegistry entityRegistry; ///< Registered AP and station identities.
+    UnifiedExperimentWindowStore unifiedWindows; ///< Sparse unified experiment windows.
 };
 
 /**

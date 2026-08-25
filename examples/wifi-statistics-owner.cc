@@ -11,6 +11,14 @@
 namespace ns3
 {
 
+static std::string
+Ipv4ToString(Ipv4Address address)
+{
+    std::ostringstream stream;
+    address.Print(stream);
+    return stream.str();
+}
+
 void
 PhyRateAccumulator::Add(double rateBps, double allocatedAirtimeUs)
 {
@@ -136,6 +144,32 @@ WifiStatistics::RegisterApGroup(int bssIndex,
         stationIps.push_back(stationStream.str());
         state.bssByStationIp[stationStream.str()] = bssIndex;
     }
+}
+
+void
+WifiStatistics::RegisterAccessPointIdentity(uint32_t accessPointId,
+                                            uint32_t nodeId,
+                                            std::string nodeLabel,
+                                            Ipv4Address ipv4)
+{
+    m_state->entityRegistry.RegisterAccessPoint(accessPointId,
+                                                nodeId,
+                                                std::move(nodeLabel),
+                                                Ipv4ToString(ipv4));
+}
+
+void
+WifiStatistics::RegisterStationIdentity(uint32_t accessPointId,
+                                        uint32_t stationIndex,
+                                        uint32_t nodeId,
+                                        std::string nodeLabel,
+                                        Ipv4Address ipv4)
+{
+    m_state->entityRegistry.RegisterStation(accessPointId,
+                                            stationIndex,
+                                            nodeId,
+                                            std::move(nodeLabel),
+                                            Ipv4ToString(ipv4));
 }
 
 void
