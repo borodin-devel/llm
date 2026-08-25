@@ -15,6 +15,7 @@
 #include <vector>
 
 class ExperimentAppTestCase;
+class GeneratorTcpTraceTestCase;
 
 namespace ns3
 {
@@ -75,6 +76,7 @@ class APGenerator : public Application
 
   private:
     friend class ::ExperimentAppTestCase;
+    friend class ::GeneratorTcpTraceTestCase;
 
     void DoDispose() override;
     void StartApplication() override;
@@ -93,6 +95,24 @@ class APGenerator : public Application
      * @param socket Newly created TCP socket.
      */
     void ConfigureSocket(const Address& stationAddress, Ptr<Socket> socket);
+
+    /**
+     * Forward one socket congestion-window transition with peer identity.
+     *
+     * @param peer Remote station socket address.
+     * @param oldCwndBytes Previous congestion window in bytes.
+     * @param newCwndBytes New congestion window in bytes.
+     */
+    void RecordCongestionWindow(Address peer, uint32_t oldCwndBytes, uint32_t newCwndBytes);
+
+    /**
+     * Forward one nonzero socket RTT transition with peer identity.
+     *
+     * @param peer Remote station socket address.
+     * @param oldRtt Previous round-trip time.
+     * @param newRtt New round-trip time.
+     */
+    void RecordRoundTripTime(Address peer, Time oldRtt, Time newRtt);
 
     /**
      * Schedule transmissions for one station.
@@ -178,6 +198,8 @@ class APGenerator : public Application
 
     TracedCallback<Address, std::string, uint32_t, Time> m_txTrace;        ///< Accepted sends.
     TracedCallback<Address, std::string, uint32_t, Time> m_appTxDropTrace; ///< Rejected bytes.
+    TracedCallback<Address, uint32_t, Time> m_congestionWindowTrace; ///< Per-peer CWND samples.
+    TracedCallback<Address, Time, Time> m_roundTripTimeTrace;        ///< Per-peer RTT samples.
 
     /** Socket-accepted application-send trace callback signature. */
     using AcceptedSendCallback = void (*)(Address station,
@@ -197,6 +219,12 @@ class APGenerator : public Application
                                        uint32_t bytes,
                                        Time startTime,
                                        Time endTime);
+    /** Congestion-window sample callback signature. */
+    using CongestionWindowSampleCallback = void (*)(Address peer,
+                                                    uint32_t newCwndBytes,
+                                                    Time eventTime);
+    /** Round-trip-time sample callback signature. */
+    using RoundTripTimeSampleCallback = void (*)(Address peer, Time rtt, Time eventTime);
     TracedCallback<Address, std::string, uint32_t, Time, Time> m_agentSendTrace; ///< Sends.
 };
 

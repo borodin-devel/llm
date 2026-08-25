@@ -154,6 +154,9 @@ struct WifiStatisticsState
     UnifiedExperimentWindowStore unifiedWindows; ///< Sparse unified experiment windows.
     std::map<AppReceiveStreamKey, int64_t>
         lastApplicationReceiveTimeUs; ///< Last receive time by local direction and peer.
+    std::map<TcpConnectionKey, TcpConnectionState>
+        tcpConnectionStates;            ///< Current CWND step state by TCP connection.
+    bool tcpStatisticsFinalized{false}; ///< Whether TCP states were flushed through experiment end.
 };
 
 /**

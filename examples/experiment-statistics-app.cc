@@ -312,6 +312,14 @@ WifiStatistics::ConnectApGenerator(Ptr<APGenerator> generator, uint32_t nodeId)
                         "AppTxDrop",
                         MakeCallback(&WifiStatistics::RecordApApplicationDrop, this, nodeId)),
                     "Failed to connect AP application drop trace");
+    NS_ABORT_MSG_IF(!generator->TraceConnectWithoutContext(
+                        "CongestionWindowSample",
+                        MakeCallback(&WifiStatistics::RecordApCongestionWindow, this, nodeId)),
+                    "Failed to connect AP TCP congestion-window trace");
+    NS_ABORT_MSG_IF(!generator->TraceConnectWithoutContext(
+                        "RoundTripTimeSample",
+                        MakeCallback(&WifiStatistics::RecordApRoundTripTime, this, nodeId)),
+                    "Failed to connect AP TCP round-trip-time trace");
 }
 
 void
@@ -330,6 +338,14 @@ WifiStatistics::ConnectStaGenerator(Ptr<StaLlmGenerator> generator, uint32_t nod
             "AppTxDrop",
             MakeCallback(&WifiStatistics::RecordStaApplicationDrop, this, nodeId, peerNodeId)),
         "Failed to connect station application drop trace");
+    NS_ABORT_MSG_IF(!generator->TraceConnectWithoutContext(
+                        "CongestionWindowSample",
+                        MakeCallback(&WifiStatistics::RecordStaCongestionWindow, this, nodeId)),
+                    "Failed to connect station TCP congestion-window trace");
+    NS_ABORT_MSG_IF(!generator->TraceConnectWithoutContext(
+                        "RoundTripTimeSample",
+                        MakeCallback(&WifiStatistics::RecordStaRoundTripTime, this, nodeId)),
+                    "Failed to connect station TCP round-trip-time trace");
 }
 
 void

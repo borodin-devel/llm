@@ -15,6 +15,7 @@
 
 class ExperimentJsonTestCase;
 class ExperimentAppTestCase;
+class ExperimentTcpTestCase;
 
 namespace ns3
 {
@@ -156,6 +157,9 @@ class WifiStatistics
      */
     void ConnectTrafficSink(Ptr<TrafficSink> sink, uint32_t nodeId, ExperimentDirection direction);
 
+    /** Flush current TCP congestion-window states through the experiment end. */
+    void FinalizeTcpStatistics();
+
     /**
      * Record one parsed MAC payload sample.
      *
@@ -193,6 +197,83 @@ class WifiStatistics
   private:
     friend class ::ExperimentJsonTestCase;
     friend class ::ExperimentAppTestCase;
+    friend class ::ExperimentTcpTestCase;
+
+    /**
+     * Record one congestion-window transition for a peer connection.
+     *
+     * @param ownerNodeId Local owner node identifier.
+     * @param direction Traffic direction at the owner.
+     * @param peerNodeId Remote peer node identifier.
+     * @param newCwndBytes New congestion window in bytes.
+     * @param absoluteTimeUs Absolute event time in microseconds.
+     */
+    void RecordCongestionWindow(uint32_t ownerNodeId,
+                                ExperimentDirection direction,
+                                uint32_t peerNodeId,
+                                uint32_t newCwndBytes,
+                                int64_t absoluteTimeUs);
+
+    /**
+     * Record one round-trip-time sample for a peer connection.
+     *
+     * @param ownerNodeId Local owner node identifier.
+     * @param direction Traffic direction at the owner.
+     * @param peerNodeId Remote peer node identifier.
+     * @param rttUs Round-trip time in microseconds.
+     * @param absoluteTimeUs Absolute event time in microseconds.
+     */
+    void RecordRoundTripTime(uint32_t ownerNodeId,
+                             ExperimentDirection direction,
+                             uint32_t peerNodeId,
+                             int64_t rttUs,
+                             int64_t absoluteTimeUs);
+
+    /**
+     * Adapt an AP congestion-window trace to the central recording interface.
+     *
+     * @param nodeId Local AP node identifier.
+     * @param peer Remote station socket address.
+     * @param newCwndBytes New congestion window in bytes.
+     * @param eventTime Absolute event time.
+     */
+    void RecordApCongestionWindow(uint32_t nodeId,
+                                  Address peer,
+                                  uint32_t newCwndBytes,
+                                  Time eventTime);
+
+    /**
+     * Adapt an AP round-trip-time trace to the central recording interface.
+     *
+     * @param nodeId Local AP node identifier.
+     * @param peer Remote station socket address.
+     * @param rtt Round-trip time sample.
+     * @param eventTime Absolute event time.
+     */
+    void RecordApRoundTripTime(uint32_t nodeId, Address peer, Time rtt, Time eventTime);
+
+    /**
+     * Adapt a station congestion-window trace to the central recording interface.
+     *
+     * @param nodeId Local station node identifier.
+     * @param peer Remote AP socket address.
+     * @param newCwndBytes New congestion window in bytes.
+     * @param eventTime Absolute event time.
+     */
+    void RecordStaCongestionWindow(uint32_t nodeId,
+                                   Address peer,
+                                   uint32_t newCwndBytes,
+                                   Time eventTime);
+
+    /**
+     * Adapt a station round-trip-time trace to the central recording interface.
+     *
+     * @param nodeId Local station node identifier.
+     * @param peer Remote AP socket address.
+     * @param rtt Round-trip time sample.
+     * @param eventTime Absolute event time.
+     */
+    void RecordStaRoundTripTime(uint32_t nodeId, Address peer, Time rtt, Time eventTime);
 
     /**
      * Record one socket-accepted application send.

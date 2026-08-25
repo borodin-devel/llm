@@ -136,10 +136,44 @@ struct AppDirectionAccumulator
     std::map<uint32_t, AppPeerAccumulator> peersByNodeId; ///< Peer totals ordered by node ID.
 };
 
+/** Stable identity of one owner-local TCP connection. */
+struct TcpConnectionKey
+{
+    uint32_t ownerNodeId;          ///< Local owner node identifier.
+    ExperimentDirection direction; ///< Traffic direction at the owner.
+    uint32_t peerNodeId;           ///< Remote peer node identifier.
+
+    /**
+     * Compare connection identities for deterministic map ordering.
+     *
+     * @param other Connection identity to compare.
+     * @return True when this key sorts before @p other.
+     */
+    bool operator<(const TcpConnectionKey& other) const;
+};
+
+/** TCP observations for one peer in one experiment window. */
+struct TcpWindowAccumulator
+{
+    long double congestionWindowBytesUs{0.0};          ///< CWND bytes multiplied by duration.
+    uint64_t congestionWindowObservationDurationUs{0}; ///< Observed CWND duration.
+    std::optional<uint32_t> lastCongestionWindowBytes; ///< Terminal observed CWND.
+    SampleAccumulator roundTripTimeUs;                 ///< RTT samples in microseconds.
+};
+
+/** Current step-function state for one TCP connection. */
+struct TcpConnectionState
+{
+    std::optional<uint32_t> currentCongestionWindowBytes; ///< Current CWND in bytes.
+    int64_t stateStartUs{0}; ///< Absolute time at which the current state began.
+};
+
 /** Per-entity accumulator for one unified experiment window. */
 struct LocalEntityWindowAccumulator
 {
     DirectionPair<AppDirectionAccumulator> app; ///< Application observations by direction.
+    std::map<std::pair<ExperimentDirection, uint32_t>, TcpWindowAccumulator>
+        tcpConnections; ///< TCP observations by direction and peer node.
 };
 
 /** Sparse per-window state keyed by entity node identifier. */

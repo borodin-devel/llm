@@ -43,6 +43,7 @@ set(test_sources
     test/experiment-json-test-suite.cc
     test/experiment-window-test-suite.cc
     test/experiment-app-test-suite.cc
+    test/experiment-tcp-test-suite.cc
     examples/scenario-log.cc
     examples/scenario-config.cc
     examples/scenario-config-json.cc
@@ -59,6 +60,7 @@ set(test_sources
     examples/cross-layer-summary-json.cc
     examples/experiment-statistics-window.cc
     examples/experiment-statistics-app.cc
+    examples/experiment-statistics-tcp.cc
     examples/wifi-statistics.cc
     examples/wifi-statistics-json.cc
     examples/wifi-statistics-owner.cc

@@ -15,6 +15,7 @@
 #include <vector>
 
 class ExperimentAppTestCase;
+class GeneratorTcpTraceTestCase;
 
 namespace ns3
 {
@@ -75,6 +76,7 @@ class StaLlmGenerator : public SourceApplication
 
   private:
     friend class ::ExperimentAppTestCase;
+    friend class ::GeneratorTcpTraceTestCase;
 
     void DoDispose() override;
     void DoStartApplication() override;
@@ -86,6 +88,22 @@ class StaLlmGenerator : public SourceApplication
 
     /** Schedule every uplink payload against the common epoch. */
     void ScheduleAllTransmissions();
+
+    /**
+     * Forward one socket congestion-window transition with the configured peer.
+     *
+     * @param oldCwndBytes Previous congestion window in bytes.
+     * @param newCwndBytes New congestion window in bytes.
+     */
+    void RecordCongestionWindow(uint32_t oldCwndBytes, uint32_t newCwndBytes);
+
+    /**
+     * Forward one nonzero socket RTT transition with the configured peer.
+     *
+     * @param oldRtt Previous round-trip time.
+     * @param newRtt New round-trip time.
+     */
+    void RecordRoundTripTime(Time oldRtt, Time newRtt);
 
     /**
      * Send one uplink payload.
@@ -134,8 +152,10 @@ class StaLlmGenerator : public SourceApplication
     bool m_readyReported{false};          ///< Whether the readiness callback fired.
     std::vector<std::string> m_unscheduledAgentKeys; ///< Agent keys not yet scheduled.
 
-    TracedCallback<std::string, uint32_t, Time> m_txTraceCustom;  ///< Accepted sends.
-    TracedCallback<std::string, uint32_t, Time> m_appTxDropTrace; ///< Rejected bytes.
+    TracedCallback<std::string, uint32_t, Time> m_txTraceCustom;     ///< Accepted sends.
+    TracedCallback<std::string, uint32_t, Time> m_appTxDropTrace;    ///< Rejected bytes.
+    TracedCallback<Address, uint32_t, Time> m_congestionWindowTrace; ///< Per-peer CWND samples.
+    TracedCallback<Address, Time, Time> m_roundTripTimeTrace;        ///< Per-peer RTT samples.
 
     /** Socket-accepted application-send trace callback signature. */
     using AcceptedSendCallback = void (*)(std::string agentKey, uint32_t bytes, Time transmitTime);
@@ -148,6 +168,12 @@ class StaLlmGenerator : public SourceApplication
                                        uint32_t bytes,
                                        Time startTime,
                                        Time endTime);
+    /** Congestion-window sample callback signature. */
+    using CongestionWindowSampleCallback = void (*)(Address peer,
+                                                    uint32_t newCwndBytes,
+                                                    Time eventTime);
+    /** Round-trip-time sample callback signature. */
+    using RoundTripTimeSampleCallback = void (*)(Address peer, Time rtt, Time eventTime);
     TracedCallback<std::string, uint32_t, Time, Time> m_agentSendTrace; ///< Sends.
 };
 

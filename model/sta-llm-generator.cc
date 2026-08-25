@@ -51,7 +51,15 @@ StaLlmGenerator::GetTypeId()
             .AddTraceSource("AppTxDrop",
                             "Application payload rejected by the TCP socket.",
                             MakeTraceSourceAccessor(&StaLlmGenerator::m_appTxDropTrace),
-                            "ns3::StaLlmGenerator::DropCallback");
+                            "ns3::StaLlmGenerator::DropCallback")
+            .AddTraceSource("CongestionWindowSample",
+                            "A TCP congestion-window sample for the configured peer.",
+                            MakeTraceSourceAccessor(&StaLlmGenerator::m_congestionWindowTrace),
+                            "ns3::StaLlmGenerator::CongestionWindowSampleCallback")
+            .AddTraceSource("RoundTripTimeSample",
+                            "A nonzero TCP round-trip-time sample for the configured peer.",
+                            MakeTraceSourceAccessor(&StaLlmGenerator::m_roundTripTimeTrace),
+                            "ns3::StaLlmGenerator::RoundTripTimeSampleCallback");
     return tid;
 }
 
@@ -123,6 +131,14 @@ StaLlmGenerator::DoStartApplication()
     NS_LOG_FUNCTION(this);
 
     m_socket->SetRecvCallback(MakeCallback(&StaLlmGenerator::HandleRead, this));
+    NS_ABORT_MSG_IF(!m_socket->TraceConnectWithoutContext(
+                        "CongestionWindow",
+                        MakeCallback(&StaLlmGenerator::RecordCongestionWindow, this)),
+                    "Failed to connect station TCP congestion-window trace");
+    NS_ABORT_MSG_IF(!m_socket->TraceConnectWithoutContext(
+                        "LastRTT",
+                        MakeCallback(&StaLlmGenerator::RecordRoundTripTime, this)),
+                    "Failed to connect station TCP round-trip-time trace");
 
     // Connection success only opens this generator's side of the readiness
     // barrier. Payload is scheduled later from the common global epoch.
@@ -133,6 +149,23 @@ StaLlmGenerator::DoStartApplication()
     const Ipv4Address localIp = localSocketAddress.GetIpv4();
 
     NS_LOG_INFO("StaLlmGenerator::DoStartApplication " << localIp);
+}
+
+void
+StaLlmGenerator::RecordCongestionWindow(uint32_t oldCwndBytes, uint32_t newCwndBytes)
+{
+    (void)oldCwndBytes;
+    m_congestionWindowTrace(m_peer, newCwndBytes, Simulator::Now());
+}
+
+void
+StaLlmGenerator::RecordRoundTripTime(Time oldRtt, Time newRtt)
+{
+    (void)oldRtt;
+    if (!newRtt.IsZero())
+    {
+        m_roundTripTimeTrace(m_peer, newRtt, Simulator::Now());
+    }
 }
 
 void

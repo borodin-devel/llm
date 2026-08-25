@@ -28,22 +28,31 @@ NS_OBJECT_ENSURE_REGISTERED(APGenerator);
 TypeId
 APGenerator::GetTypeId()
 {
-    static TypeId tid = TypeId("ns3::APGenerator")
-                            .SetParent<Application>()
-                            .SetGroupName("Applications")
-                            .AddConstructor<APGenerator>()
-                            .AddTraceSource("Tx",
-                                            "Downlink packet sent to a station.",
-                                            MakeTraceSourceAccessor(&APGenerator::m_txTrace),
-                                            "ns3::APGenerator::AcceptedSendCallback")
-                            .AddTraceSource("AgentSend",
-                                            "A complete downlink transmission to a station.",
-                                            MakeTraceSourceAccessor(&APGenerator::m_agentSendTrace),
-                                            "ns3::APGenerator::AgentSendCallback")
-                            .AddTraceSource("AppTxDrop",
-                                            "Application payload rejected by the TCP socket.",
-                                            MakeTraceSourceAccessor(&APGenerator::m_appTxDropTrace),
-                                            "ns3::APGenerator::DropCallback");
+    static TypeId tid =
+        TypeId("ns3::APGenerator")
+            .SetParent<Application>()
+            .SetGroupName("Applications")
+            .AddConstructor<APGenerator>()
+            .AddTraceSource("Tx",
+                            "Downlink packet sent to a station.",
+                            MakeTraceSourceAccessor(&APGenerator::m_txTrace),
+                            "ns3::APGenerator::AcceptedSendCallback")
+            .AddTraceSource("AgentSend",
+                            "A complete downlink transmission to a station.",
+                            MakeTraceSourceAccessor(&APGenerator::m_agentSendTrace),
+                            "ns3::APGenerator::AgentSendCallback")
+            .AddTraceSource("AppTxDrop",
+                            "Application payload rejected by the TCP socket.",
+                            MakeTraceSourceAccessor(&APGenerator::m_appTxDropTrace),
+                            "ns3::APGenerator::DropCallback")
+            .AddTraceSource("CongestionWindowSample",
+                            "A per-peer TCP congestion-window sample.",
+                            MakeTraceSourceAccessor(&APGenerator::m_congestionWindowTrace),
+                            "ns3::APGenerator::CongestionWindowSampleCallback")
+            .AddTraceSource("RoundTripTimeSample",
+                            "A per-peer nonzero TCP round-trip-time sample.",
+                            MakeTraceSourceAccessor(&APGenerator::m_roundTripTimeTrace),
+                            "ns3::APGenerator::RoundTripTimeSampleCallback");
     return tid;
 }
 
@@ -242,8 +251,33 @@ APGenerator::ConfigureSocket(const Address& stationAddress, Ptr<Socket> socket)
     socket->SetConnectCallback(MakeCallback(&APGenerator::OnConnectionSucceeded, this),
                                MakeCallback(&APGenerator::OnConnectionFailed, this));
     socket->SetRecvCallback(MakeCallback(&APGenerator::HandleRead, this));
+    NS_ABORT_MSG_IF(!socket->TraceConnectWithoutContext(
+                        "CongestionWindow",
+                        MakeCallback(&APGenerator::RecordCongestionWindow, this, stationAddress)),
+                    "Failed to connect AP TCP congestion-window trace");
+    NS_ABORT_MSG_IF(!socket->TraceConnectWithoutContext(
+                        "LastRTT",
+                        MakeCallback(&APGenerator::RecordRoundTripTime, this, stationAddress)),
+                    "Failed to connect AP TCP round-trip-time trace");
 
     socket->Connect(stationAddress);
+}
+
+void
+APGenerator::RecordCongestionWindow(Address peer, uint32_t oldCwndBytes, uint32_t newCwndBytes)
+{
+    (void)oldCwndBytes;
+    m_congestionWindowTrace(peer, newCwndBytes, Simulator::Now());
+}
+
+void
+APGenerator::RecordRoundTripTime(Address peer, Time oldRtt, Time newRtt)
+{
+    (void)oldRtt;
+    if (!newRtt.IsZero())
+    {
+        m_roundTripTimeTrace(peer, newRtt, Simulator::Now());
+    }
 }
 
 void
