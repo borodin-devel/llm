@@ -1,5 +1,5 @@
+#include "../examples/experiment-statistics-internal.h"
 #include "../examples/traffic-coordinator.h"
-#include "../examples/wifi-statistics-internal.h"
 #include "llm-test-suite.h"
 
 #include "ns3/ap-generator.h"
@@ -49,7 +49,7 @@ OpenExperiment(TrafficCoordinator& coordinator)
  * @param statistics Test statistics state.
  */
 void
-RegisterEntities(WifiStatisticsState& statistics)
+RegisterEntities(ExperimentStatisticsState& statistics)
 {
     statistics.entityRegistry.RegisterAccessPoint(0, 10, "AP0", "10.1.0.1");
     statistics.entityRegistry.RegisterStation(0, 0, 20, "AP0/STA0", "10.1.0.2");
@@ -144,7 +144,7 @@ DevicePacketProtocolValidationTestCase::DoRun()
     TrafficCoordinator coordinator(30.0, 30.0);
     const int64_t epochUs = OpenExperiment(coordinator);
 
-    WifiStatisticsState nonIpv4Statistics(coordinator, 10);
+    ExperimentStatisticsState nonIpv4Statistics(coordinator, 10);
     RegisterEntities(nonIpv4Statistics);
     const Ptr<Packet> nonIpv4Packet = BuildArpDevicePacket();
     NS_TEST_ASSERT_MSG_EQ(
@@ -158,7 +158,7 @@ DevicePacketProtocolValidationTestCase::DoRun()
                           true,
                           "Non-IPv4 LLC payload created matching state");
 
-    WifiStatisticsState udpStatistics(coordinator, 10);
+    ExperimentStatisticsState udpStatistics(coordinator, 10);
     RegisterEntities(udpStatistics);
     const Ptr<Packet> udpPacket = BuildIpv4DevicePacket(iana::internetprotocolnumbers::UDP);
     NS_TEST_ASSERT_MSG_EQ(RecordDeviceTransmitPacket(udpStatistics, epochUs + 1000, udpPacket),
@@ -171,7 +171,7 @@ DevicePacketProtocolValidationTestCase::DoRun()
                           true,
                           "IPv4/UDP payload created matching state");
 
-    WifiStatisticsState tcpStatistics(coordinator, 10);
+    ExperimentStatisticsState tcpStatistics(coordinator, 10);
     RegisterEntities(tcpStatistics);
     const Ptr<Packet> tcpPacket = BuildIpv4DevicePacket(iana::internetprotocolnumbers::TCP);
     NS_TEST_ASSERT_MSG_EQ(RecordDeviceTransmitPacket(tcpStatistics, epochUs + 1000, tcpPacket),
@@ -209,7 +209,7 @@ ExperimentDeviceMatchingTestCase::DoRun()
 {
     TrafficCoordinator coordinator(30.0, 30.0);
     const int64_t epochUs = OpenExperiment(coordinator);
-    WifiStatisticsState statistics(coordinator, 10);
+    ExperimentStatisticsState statistics(coordinator, 10);
     RegisterEntities(statistics);
 
     const ParsedDeviceTcpPayload crossWindowUplink{"10.1.0.2", 9000, "10.1.0.1", 10000, 1000};
@@ -317,21 +317,6 @@ ExperimentDeviceMatchingTestCase::DoRun()
                           1,
                           "STA downlink peer was not resolved");
 
-    const TransmissionSummary summary = BuildTransmissionSummary(statistics);
-    NS_TEST_ASSERT_MSG_EQ(summary.senders.size(), 2, "Wrong transitional sender count");
-    NS_TEST_ASSERT_MSG_EQ(summary.senders.at(0).senderIpv4,
-                          "10.1.0.1",
-                          "Transitional senders are not ordered");
-    NS_TEST_ASSERT_MSG_EQ(summary.senders.at(1).transmittedPayloadBytes,
-                          3000001600ULL,
-                          "Transitional adapter truncated transmitted bytes");
-    NS_TEST_ASSERT_MSG_EQ(summary.senders.at(1).matchedPacketCount,
-                          2,
-                          "Transitional adapter lost matched packets");
-    NS_TEST_ASSERT_MSG_EQ(summary.senders.at(1).totalTransmissionDurationUs,
-                          800,
-                          "Transitional adapter lost durations");
-
     Simulator::Destroy();
 }
 
@@ -359,7 +344,7 @@ ExperimentMacEventTestCase::DoRun()
 {
     TrafficCoordinator coordinator(30.0, 30.0);
     const int64_t epochUs = OpenExperiment(coordinator);
-    WifiStatisticsState statistics(coordinator, 10);
+    ExperimentStatisticsState statistics(coordinator, 10);
     RegisterEntities(statistics);
 
     RecordMacTransmitDrop(statistics, 10, epochUs + 9999, 500);
@@ -444,20 +429,6 @@ ExperimentMacEventTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(statistics.unifiedWindows.contains(3),
                           false,
                           "Out-of-duration MAC event created a window");
-
-    const auto& legacyAccessPoint = statistics.nodeSeconds.at(10).at(0);
-    NS_TEST_ASSERT_MSG_EQ(legacyAccessPoint.macTxDrops,
-                          1,
-                          "Legacy cross-layer transmit drops were not retained");
-    NS_TEST_ASSERT_MSG_EQ(legacyAccessPoint.macMpduDropBytes,
-                          1100,
-                          "Legacy cross-layer MPDU bytes were not retained");
-    NS_TEST_ASSERT_MSG_EQ(legacyAccessPoint.macDataFailures,
-                          2,
-                          "Legacy cross-layer failures were not retained");
-    NS_TEST_ASSERT_MSG_EQ(legacyAccessPoint.macFinalDataFailures,
-                          1,
-                          "Legacy cross-layer final failures were not retained");
 
     Simulator::Destroy();
 }

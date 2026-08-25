@@ -1,5 +1,5 @@
+#include "../examples/experiment-statistics-internal.h"
 #include "../examples/traffic-coordinator.h"
-#include "../examples/wifi-statistics-internal.h"
 #include "llm-test-suite.h"
 
 #include "ns3/ap-generator.h"
@@ -43,36 +43,18 @@ OpenExperiment(TrafficCoordinator& coordinator)
  * @param statistics Test statistics state.
  */
 void
-RegisterExactEntities(WifiStatisticsState& statistics)
+RegisterExactEntities(ExperimentStatisticsState& statistics)
 {
     statistics.entityRegistry.RegisterAccessPoint(0, 10, "AP0", "10.1.0.1");
     statistics.entityRegistry.RegisterStation(0, 0, 20, "AP0/STA0", "10.1.0.2");
     statistics.entityRegistry.RegisterStation(0, 1, 21, "AP0/STA1", "10.1.0.3");
 }
 
-/**
- * Register one test BSS in transitional lookup state.
- *
- * @param statistics Test statistics state.
- */
+/** Register one test BSS in exact lookup state. @param statistics Test state. */
 void
-RegisterLegacyAddressing(WifiStatisticsState& statistics)
-{
-    statistics.stationIpsByBss = {{"10.1.0.2", "10.1.0.3"}};
-    statistics.bssByApIp = {{"10.1.0.1", 0}};
-    statistics.bssByStationIp = {{"10.1.0.2", 0}, {"10.1.0.3", 0}};
-}
-
-/**
- * Register one test BSS in exact and transitional lookup state.
- *
- * @param statistics Test statistics state.
- */
-void
-RegisterEntities(WifiStatisticsState& statistics)
+RegisterEntities(ExperimentStatisticsState& statistics)
 {
     RegisterExactEntities(statistics);
-    RegisterLegacyAddressing(statistics);
 }
 
 /**
@@ -168,7 +150,7 @@ ExperimentPhyMpduAttributionTestCase::DoRun()
 {
     TrafficCoordinator coordinator(30.0, 30.0);
     const int64_t epochUs = OpenExperiment(coordinator);
-    WifiStatisticsState statistics(coordinator, 10);
+    ExperimentStatisticsState statistics(coordinator, 10);
     RegisterEntities(statistics);
 
     const std::vector<PhyTaggedPayloadSpan> uplinkSpans{
@@ -270,13 +252,6 @@ ExperimentPhyMpduAttributionTestCase::DoRun()
                           0,
                           "AP sender delay was copied to the destination STA");
 
-    NS_TEST_ASSERT_MSG_EQ(statistics.nodeSeconds.at(20).at(0).phyPayloadBytes,
-                          300,
-                          "Transitional PHY payload write changed");
-    NS_TEST_ASSERT_MSG_EQ(statistics.nodeSeconds.at(20).at(0).phyRetransmissions,
-                          1,
-                          "Transitional PHY retry write changed");
-
     Simulator::Destroy();
 }
 
@@ -300,7 +275,7 @@ ExperimentPhyRateTestCase::DoRun()
 {
     TrafficCoordinator coordinator(30.0, 30.0);
     const int64_t epochUs = OpenExperiment(coordinator);
-    WifiStatisticsState statistics(coordinator, 10);
+    ExperimentStatisticsState statistics(coordinator, 10);
     RegisterEntities(statistics);
 
     RecordPhyRateAttempt(statistics, 20, epochUs + 2000, "10.1.0.2", "10.1.0.1", 10e6, 100.0L);
@@ -322,21 +297,6 @@ ExperimentPhyRateTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(accessPoint.peersByNodeId.at(20).transmissionAirtimeUs,
                           400.0L,
                           "Wrong AP parent peer airtime");
-    NS_TEST_ASSERT_MSG_EQ(statistics.phyWindows.contains(0),
-                          true,
-                          "Transitional PHY rate window was not written");
-    if (!statistics.phyWindows.contains(0))
-    {
-        Simulator::Destroy();
-        return;
-    }
-    const auto& legacy = statistics.phyWindows.at(0).at(0).upPhyRates.at("10.1.0.2");
-    NS_TEST_ASSERT_MSG_EQ(legacy.txAttempts, 2, "Transitional PHY rate attempts changed");
-    NS_TEST_ASSERT_MSG_EQ_TOL(legacy.AverageMbps(),
-                              17.5,
-                              1e-12,
-                              "Transitional weighted PHY rate changed");
-
     const PhyPeerAccumulator noAirtime;
     NS_TEST_ASSERT_MSG_EQ(CalculateAveragePhyDataRateMbps(noAirtime).has_value(),
                           false,
@@ -365,7 +325,7 @@ ExperimentPhyPacketParsingTestCase::DoRun()
 {
     TrafficCoordinator coordinator(30.0, 30.0);
     const int64_t epochUs = OpenExperiment(coordinator);
-    WifiStatisticsState statistics(coordinator, 10);
+    ExperimentStatisticsState statistics(coordinator, 10);
     RegisterEntities(statistics);
 
     Ptr<Packet> packet = BuildTaggedPayload("10.1.0.2", "10.1.0.1", 77, epochUs + 9000, 120);
@@ -428,7 +388,7 @@ ExperimentPhyPsduParsingTestCase::DoRun()
                           BuildDataHeader("00:00:00:00:00:03", "00:00:00:00:00:01", 51))},
     };
 
-    WifiStatisticsState wrongTransmitter(coordinator, 10);
+    ExperimentStatisticsState wrongTransmitter(coordinator, 10);
     RegisterExactEntities(wrongTransmitter);
     RecordPhyTxPsduBegin(wrongTransmitter,
                          20,
@@ -440,7 +400,7 @@ ExperimentPhyPsduParsingTestCase::DoRun()
                           true,
                           "PSDU flow was attributed to a node other than the callback transmitter");
 
-    WifiStatisticsState statistics(coordinator, 10);
+    ExperimentStatisticsState statistics(coordinator, 10);
     RegisterEntities(statistics);
     RecordPhyTxPsduBegin(statistics, 10, epochUs + 2000, WIFI_PHY_BAND_5GHZ, psduMap, txVector);
 
@@ -474,50 +434,6 @@ ExperimentPhyPsduParsingTestCase::DoRun()
     Simulator::Destroy();
 }
 
-/** @ingroup tests Verify legacy PHY writes remain independent of unified identities. */
-class ExperimentPhyLegacyIndependenceTestCase : public TestCase
-{
-  public:
-    ExperimentPhyLegacyIndependenceTestCase();
-
-  private:
-    void DoRun() override;
-};
-
-ExperimentPhyLegacyIndependenceTestCase::ExperimentPhyLegacyIndependenceTestCase()
-    : TestCase("preserve legacy PHY attribution without unified identities")
-{
-}
-
-void
-ExperimentPhyLegacyIndependenceTestCase::DoRun()
-{
-    TrafficCoordinator coordinator(30.0, 30.0);
-    const int64_t epochUs = OpenExperiment(coordinator);
-    WifiStatisticsState statistics(coordinator, 10);
-    RegisterLegacyAddressing(statistics);
-    const std::vector<PhyTaggedPayloadSpan> spans{
-        {"10.1.0.2", "10.1.0.1", epochUs + 1000, 125},
-    };
-
-    RecordPhyMpduAttempt(statistics, 20, epochUs + 2000, 300, spans, std::nullopt);
-    RecordPhyRateAttempt(statistics, 20, epochUs + 2000, "10.1.0.2", "10.1.0.1", 12e6, 50.0L);
-
-    NS_TEST_ASSERT_MSG_EQ(statistics.unifiedWindows.empty(),
-                          true,
-                          "Legacy-only addressing created unified PHY state");
-    NS_TEST_ASSERT_MSG_EQ(statistics.phyWindows.at(0).at(0).upBytes.at("10.1.0.2"),
-                          125,
-                          "Legacy payload attribution now depends on unified identity");
-    const auto& rate = statistics.phyWindows.at(0).at(0).upPhyRates.at("10.1.0.2");
-    NS_TEST_ASSERT_MSG_EQ(rate.txAttempts,
-                          1,
-                          "Legacy rate attribution now depends on unified identity");
-    NS_TEST_ASSERT_MSG_EQ_TOL(rate.AverageMbps(), 12.0, 1e-12, "Wrong legacy-only PHY rate");
-
-    Simulator::Destroy();
-}
-
 /** @ingroup tests Verify local busy time splitting at configured boundaries. */
 class ExperimentPhyBusyTimeTestCase : public TestCase
 {
@@ -538,7 +454,7 @@ ExperimentPhyBusyTimeTestCase::DoRun()
 {
     TrafficCoordinator coordinator(30.0, 30.0);
     const int64_t epochUs = OpenExperiment(coordinator);
-    WifiStatisticsState statistics(coordinator, 10);
+    ExperimentStatisticsState statistics(coordinator, 10);
     RegisterEntities(statistics);
 
     RecordPhyBusyInterval(statistics, 10, epochUs + 8000, 14000);
@@ -559,10 +475,6 @@ ExperimentPhyBusyTimeTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(statistics.unifiedWindows.at(0).at(10).phy.busyTimeUs,
                           2000,
                           "STA busy time was summed into the AP category");
-    NS_TEST_ASSERT_MSG_EQ(statistics.nodeSeconds.at(10).at(0).phyBusyUs,
-                          14000,
-                          "Transitional fixed-second busy split changed");
-
     Simulator::Destroy();
 }
 
@@ -575,6 +487,5 @@ CreateExperimentPhyTestCases()
             new ExperimentPhyRateTestCase,
             new ExperimentPhyPacketParsingTestCase,
             new ExperimentPhyPsduParsingTestCase,
-            new ExperimentPhyLegacyIndependenceTestCase,
             new ExperimentPhyBusyTimeTestCase};
 }

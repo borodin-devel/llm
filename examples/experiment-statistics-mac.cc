@@ -1,5 +1,5 @@
+#include "experiment-statistics-internal.h"
 #include "traffic-coordinator.h"
-#include "wifi-statistics-internal.h"
 
 #include "ns3/packet.h"
 #include "ns3/simulator.h"
@@ -22,7 +22,7 @@ GetTransmitterDirection(const ExperimentEntityIdentity& entity)
 }
 
 MacDirectionAccumulator*
-GetMacAccumulator(WifiStatisticsState& statistics, uint32_t nodeId, int64_t absoluteTimeUs)
+GetMacAccumulator(ExperimentStatisticsState& statistics, uint32_t nodeId, int64_t absoluteTimeUs)
 {
     ExperimentWindowBounds bounds;
     const auto* entity = statistics.entityRegistry.FindByNodeId(nodeId);
@@ -34,26 +34,8 @@ GetMacAccumulator(WifiStatisticsState& statistics, uint32_t nodeId, int64_t abso
         GetTransmitterDirection(*entity));
 }
 
-NodeSecondStats*
-GetLegacyNodeSecond(WifiStatisticsState& statistics, uint32_t nodeId, int64_t absoluteTimeUs)
-{
-    const int64_t experimentStartUs = statistics.coordinator.GetExperimentStartUs();
-    if (experimentStartUs < 0)
-    {
-        return nullptr;
-    }
-    const int64_t durationUs =
-        ConvertExperimentDurationMsToUs(statistics.coordinator.GetMaxExperimentDurationMs());
-    uint64_t secondIndex = 0;
-    if (!GetNodeSecondIndex(absoluteTimeUs - experimentStartUs, durationUs, secondIndex))
-    {
-        return nullptr;
-    }
-    return &statistics.nodeSeconds[nodeId][secondIndex];
-}
-
 std::optional<uint32_t>
-ResolvePeerNodeId(const WifiStatisticsState& statistics, Mac48Address peer)
+ResolvePeerNodeId(const ExperimentStatisticsState& statistics, Mac48Address peer)
 {
     const auto iterator = statistics.nodeIdsByMacAddress.find(peer);
     return iterator == statistics.nodeIdsByMacAddress.end()
@@ -62,7 +44,7 @@ ResolvePeerNodeId(const WifiStatisticsState& statistics, Mac48Address peer)
 }
 
 void
-MacTxDropTrace(WifiStatisticsState* statistics, uint32_t nodeId, Ptr<const Packet> packet)
+MacTxDropTrace(ExperimentStatisticsState* statistics, uint32_t nodeId, Ptr<const Packet> packet)
 {
     RecordMacTransmitDrop(*statistics,
                           nodeId,
@@ -71,7 +53,7 @@ MacTxDropTrace(WifiStatisticsState* statistics, uint32_t nodeId, Ptr<const Packe
 }
 
 void
-MacDroppedMpduTrace(WifiStatisticsState* statistics,
+MacDroppedMpduTrace(ExperimentStatisticsState* statistics,
                     uint32_t nodeId,
                     WifiMacDropReason reason,
                     Ptr<const WifiMpdu> mpdu)
@@ -87,7 +69,7 @@ MacDroppedMpduTrace(WifiStatisticsState* statistics,
 }
 
 void
-MacTxDataFailedTrace(WifiStatisticsState* statistics, uint32_t nodeId, Mac48Address remote)
+MacTxDataFailedTrace(ExperimentStatisticsState* statistics, uint32_t nodeId, Mac48Address remote)
 {
     RecordMacDataFailure(*statistics,
                          nodeId,
@@ -97,7 +79,9 @@ MacTxDataFailedTrace(WifiStatisticsState* statistics, uint32_t nodeId, Mac48Addr
 }
 
 void
-MacTxFinalDataFailedTrace(WifiStatisticsState* statistics, uint32_t nodeId, Mac48Address remote)
+MacTxFinalDataFailedTrace(ExperimentStatisticsState* statistics,
+                          uint32_t nodeId,
+                          Mac48Address remote)
 {
     RecordMacDataFailure(*statistics,
                          nodeId,
@@ -109,7 +93,7 @@ MacTxFinalDataFailedTrace(WifiStatisticsState* statistics, uint32_t nodeId, Mac4
 } // namespace
 
 void
-RecordMacTransmitDrop(WifiStatisticsState& statistics,
+RecordMacTransmitDrop(ExperimentStatisticsState& statistics,
                       uint32_t nodeId,
                       int64_t absoluteTimeUs,
                       uint32_t packetBytes)
@@ -119,15 +103,10 @@ RecordMacTransmitDrop(WifiStatisticsState& statistics,
         ++accumulator->transmitDropCount;
         accumulator->transmitDropPacketBytes += packetBytes;
     }
-    if (auto* legacy = GetLegacyNodeSecond(statistics, nodeId, absoluteTimeUs))
-    {
-        ++legacy->macTxDrops;
-        legacy->macTxDropBytes += packetBytes;
-    }
 }
 
 void
-RecordMacMpduDrop(WifiStatisticsState& statistics,
+RecordMacMpduDrop(ExperimentStatisticsState& statistics,
                   uint32_t nodeId,
                   int64_t absoluteTimeUs,
                   int reasonCode,
@@ -147,16 +126,10 @@ RecordMacMpduDrop(WifiStatisticsState& statistics,
             ++peer.mpduDropsByReason[reasonCode];
         }
     }
-    if (auto* legacy = GetLegacyNodeSecond(statistics, nodeId, absoluteTimeUs))
-    {
-        ++legacy->macMpduDrops;
-        legacy->macMpduDropBytes += mpduBytes;
-        ++legacy->macMpduDropsByReason[reasonCode];
-    }
 }
 
 void
-RecordMacDataFailure(WifiStatisticsState& statistics,
+RecordMacDataFailure(ExperimentStatisticsState& statistics,
                      uint32_t nodeId,
                      int64_t absoluteTimeUs,
                      bool finalFailure,
@@ -185,21 +158,10 @@ RecordMacDataFailure(WifiStatisticsState& statistics,
             }
         }
     }
-    if (auto* legacy = GetLegacyNodeSecond(statistics, nodeId, absoluteTimeUs))
-    {
-        if (finalFailure)
-        {
-            ++legacy->macFinalDataFailures;
-        }
-        else
-        {
-            ++legacy->macDataFailures;
-        }
-    }
 }
 
 void
-ConnectMacTraces(WifiStatisticsState& statistics, uint32_t nodeId, Ptr<WifiNetDevice> device)
+ConnectMacTraces(ExperimentStatisticsState& statistics, uint32_t nodeId, Ptr<WifiNetDevice> device)
 {
     statistics.nodeIdsByMacAddress[device->GetMac()->GetAddress()] = nodeId;
     device->GetMac()->TraceConnectWithoutContext(

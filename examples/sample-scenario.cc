@@ -4,11 +4,11 @@
 // Usage: ./sample-scenario --config <config.toml> [--section-field <value> ...]
 //
 
+#include "experiment-statistics.h"
 #include "scenario-config.h"
 #include "scenario-log.h"
 #include "scenario-topology.h"
 #include "traffic-coordinator.h"
-#include "wifi-statistics.h"
 
 #include "ns3/contention-aware-agent-distribution.h"
 #include "ns3/core-module.h"
@@ -120,7 +120,7 @@ main(int argc, char* argv[])
 
     const double traceDurationMs = parsedTrace.experimentDurationMs;
     TrafficCoordinator trafficCoordinator(traceDurationMs, maximumDurationMs);
-    WifiStatistics wifiStatistics(trafficCoordinator, config.statistics.windowMs);
+    ExperimentStatistics experimentStatistics(trafficCoordinator, config.statistics.windowMs);
 
     ContentionAwareDistributionConfig distributionConfig;
     distributionConfig.nAp = config.topology.bssCount;
@@ -157,7 +157,7 @@ main(int argc, char* argv[])
                      distribution.apAgentMaps[bssIndex],
                      distribution.apAddresses[bssIndex],
                      trafficCoordinator,
-                     wifiStatistics);
+                     experimentStatistics);
     }
 
     trafficCoordinator.FinalizeRegistration();
@@ -194,7 +194,7 @@ main(int argc, char* argv[])
     std::cout << "Waiting for " << trafficCoordinator.GetExpectedGeneratorCount()
               << " traffic generators to complete TCP setup..." << std::endl;
 
-    wifiStatistics.ConnectDeviceTraces();
+    experimentStatistics.ConnectDeviceTraces();
 
     const auto wallClockStart = std::chrono::steady_clock::now();
 
@@ -209,12 +209,8 @@ main(int argc, char* argv[])
 
     try
     {
-        const TransmissionSummary transmissionSummary = wifiStatistics.BuildTransmissionSummary();
-        const CrossLayerSummary crossLayerSummary = wifiStatistics.BuildCrossLayerSummary();
-        wifiStatistics.WriteExperimentJson(resolvedPaths.outputFile.string(),
-                                           transmissionSummary,
-                                           crossLayerSummary,
-                                           config);
+        experimentStatistics.Finalize();
+        experimentStatistics.WriteExperimentJson(resolvedPaths.outputFile.string(), config);
     }
     catch (const std::exception& error)
     {

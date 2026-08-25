@@ -27,8 +27,8 @@ LlmTestSuite::LlmTestSuite()
     AddCases(CreateAppTxTagTestCases());
     AddCases(CreateTrafficScheduleTestCases());
     AddCases(CreateTrafficCoordinatorTestCases());
-    AddCases(CreateCrossLayerSummaryTestCases());
     AddCases(CreateExperimentJsonTestCases());
+    AddCases(CreateExperimentHierarchyJsonTestCases());
     AddCases(CreateExperimentWindowTestCases());
     AddCases(CreateExperimentAppTestCases());
     AddCases(CreateExperimentTcpTestCases());
@@ -36,7 +36,6 @@ LlmTestSuite::LlmTestSuite()
     AddCases(CreateExperimentPhyTestCases());
     AddCases(CreateExperimentSummaryTestCases());
     AddCases(CreateExperimentValidationTestCases());
-    AddCases(CreateWifiStatisticsTestCases());
     AddCases(CreateScenarioConfigTestCases());
     AddCases(CreateScenarioConfigJsonTestCases());
     AddCases(CreateScenarioConfigValidationTestCases());

@@ -41,6 +41,7 @@ set(test_sources
     test/scenario-run-path-test-suite.cc
     test/scenario-topology-test-suite.cc
     test/experiment-json-test-suite.cc
+    test/experiment-hierarchy-json-test-suite.cc
     test/experiment-window-test-suite.cc
     test/experiment-app-test-suite.cc
     test/experiment-tcp-test-suite.cc
@@ -58,8 +59,7 @@ set(test_sources
     examples/scenario-topology.cc
     examples/traffic-coordinator.cc
     examples/experiment-json.cc
-    examples/transmission-summary-json.cc
-    examples/cross-layer-summary-json.cc
+    examples/experiment-statistics-owner.cc
     examples/experiment-statistics-window.cc
     examples/experiment-statistics-app.cc
     examples/experiment-statistics-tcp.cc
@@ -68,12 +68,13 @@ set(test_sources
     examples/experiment-statistics-phy.cc
     examples/experiment-statistics-summary.cc
     examples/experiment-statistics-validation.cc
-    examples/wifi-statistics.cc
-    examples/wifi-statistics-json.cc
-    examples/wifi-statistics-owner.cc
-    examples/wifi-statistics-summary.cc
-    test/wifi-statistics-test-suite.cc
-    test/cross-layer-summary-test-suite.cc
+    examples/experiment-statistics-json.cc
+    examples/experiment-statistics-json-general.cc
+    examples/experiment-statistics-json-app.cc
+    examples/experiment-statistics-json-tcp.cc
+    examples/experiment-statistics-json-mac.cc
+    examples/experiment-statistics-json-phy.cc
+    examples/experiment-statistics-json-entity.cc
 )
 
 build_lib(

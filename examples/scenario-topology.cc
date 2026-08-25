@@ -1,8 +1,8 @@
 #include "scenario-topology.h"
 
+#include "experiment-statistics.h"
 #include "scenario-log.h"
 #include "traffic-coordinator.h"
-#include "wifi-statistics.h"
 
 #include "ns3/ap-generator.h"
 #include "ns3/applications-module.h"
@@ -171,12 +171,8 @@ void
 RegisterTopology(int bssIndex,
                  const TopologyConfig& topologyConfig,
                  const BssTopology& topology,
-                 WifiStatistics& statistics)
+                 ExperimentStatistics& statistics)
 {
-    statistics.RegisterApGroup(bssIndex,
-                               topology.accessPointInterfaces.GetAddress(0),
-                               topology.stationInterfaces);
-
     const std::string accessPointLabel =
         "AP" + std::to_string(bssIndex) + "(" +
         Ipv4ToString(topology.accessPointInterfaces.GetAddress(0)) + ")";
@@ -185,7 +181,6 @@ RegisterTopology(int bssIndex,
                                            accessPointLabel,
                                            topology.accessPointInterfaces.GetAddress(0));
     statistics.RegisterWifiDevice(topology.accessPointNode.Get(0)->GetId(),
-                                  accessPointLabel,
                                   topology.accessPointDevices.Get(0));
 
     for (uint32_t stationIndex = 0; stationIndex < topology.stationDevices.GetN(); ++stationIndex)
@@ -199,7 +194,6 @@ RegisterTopology(int bssIndex,
                                            stationLabel,
                                            topology.stationInterfaces.GetAddress(stationIndex));
         statistics.RegisterWifiDevice(topology.stationNodes.Get(stationIndex)->GetId(),
-                                      stationLabel,
                                       topology.stationDevices.Get(stationIndex));
     }
 
@@ -216,7 +210,7 @@ void
 InstallTrafficSinks(const TopologyConfig& topologyConfig,
                     const BssTopology& topology,
                     TrafficCoordinator& coordinator,
-                    WifiStatistics& statistics)
+                    ExperimentStatistics& statistics)
 {
     Ptr<TrafficSink> accessPointSink = CreateObject<TrafficSink>();
     accessPointSink->SetAttribute("Port", UintegerValue(topologyConfig.apSinkPort));
@@ -313,7 +307,7 @@ InstallStationGenerators(Address accessPointAddress,
                          const NodeContainer& stationNodes,
                          Time generatorStart,
                          TrafficCoordinator& coordinator,
-                         WifiStatistics& statistics)
+                         ExperimentStatistics& statistics)
 {
     for (const auto& [stationIndex, agentKeys] : agentKeysByStation)
     {
@@ -347,7 +341,7 @@ InstallAccessPointGenerator(const std::map<std::string, Address>& stationAddress
                             const BssTopology& topology,
                             Time generatorStart,
                             TrafficCoordinator& coordinator,
-                            WifiStatistics& statistics)
+                            ExperimentStatistics& statistics)
 {
     Ptr<APGenerator> generator = CreateObject<APGenerator>();
     generator->SetReadyCallback(coordinator.GetReadyCallback());
@@ -410,7 +404,7 @@ SetupApGroup(int bssIndex,
              const AgentOperations& operationsByAgent,
              Address accessPointAddress,
              TrafficCoordinator& coordinator,
-             WifiStatistics& statistics)
+             ExperimentStatistics& statistics)
 {
     NS_LOG_INFO("=== Setting up AP group " << bssIndex << ", BW " << wifiConfig.bandwidthMhz
                                            << " MHz ===");

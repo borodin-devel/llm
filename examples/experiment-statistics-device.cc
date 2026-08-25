@@ -1,7 +1,7 @@
+#include "experiment-statistics-internal.h"
+#include "experiment-statistics.h"
 #include "scenario-log.h"
 #include "traffic-coordinator.h"
-#include "wifi-statistics-internal.h"
-#include "wifi-statistics.h"
 
 #include "ns3/config.h"
 #include "ns3/iana-ieee802-numbers.h"
@@ -100,13 +100,13 @@ ParseTcpPayload(Ptr<const Packet> packet, ParsedDeviceTcpPayload& parsed)
 }
 
 void
-DeviceTxTrace(WifiStatisticsState* statistics, std::string, Ptr<const Packet> packet)
+DeviceTxTrace(ExperimentStatisticsState* statistics, std::string, Ptr<const Packet> packet)
 {
     RecordDeviceTransmitPacket(*statistics, Simulator::Now().GetMicroSeconds(), packet);
 }
 
 void
-DeviceRxTrace(WifiStatisticsState* statistics, std::string, Ptr<const Packet> packet)
+DeviceRxTrace(ExperimentStatisticsState* statistics, std::string, Ptr<const Packet> packet)
 {
     ParsedDeviceTcpPayload parsed;
     if (!ParseTcpPayload(packet, parsed))
@@ -138,7 +138,7 @@ DeviceFlowKey::operator<(const DeviceFlowKey& other) const
 }
 
 bool
-ResolveStatisticsEventWindow(const WifiStatisticsState& statistics,
+ResolveStatisticsEventWindow(const ExperimentStatisticsState& statistics,
                              int64_t absoluteTimeUs,
                              ExperimentWindowBounds& bounds)
 {
@@ -156,7 +156,7 @@ ResolveStatisticsEventWindow(const WifiStatisticsState& statistics,
 }
 
 void
-RecordParsedDeviceTransmit(WifiStatisticsState& statistics,
+RecordParsedDeviceTransmit(ExperimentStatisticsState& statistics,
                            int64_t absoluteTimeUs,
                            const ParsedDeviceTcpPayload& payload)
 {
@@ -166,12 +166,6 @@ RecordParsedDeviceTransmit(WifiStatisticsState& statistics,
     {
         return;
     }
-
-    RecordMacPayloadInWindow(statistics,
-                             bounds.index,
-                             payload.sourceIpv4,
-                             payload.destinationIpv4,
-                             payload.estimatedPayloadBytes);
 
     const auto* sender = statistics.entityRegistry.FindByIpv4(payload.sourceIpv4);
     if (!sender)
@@ -199,7 +193,7 @@ RecordParsedDeviceTransmit(WifiStatisticsState& statistics,
 }
 
 void
-RecordParsedDeviceReceive(WifiStatisticsState& statistics,
+RecordParsedDeviceReceive(ExperimentStatisticsState& statistics,
                           int64_t absoluteTimeUs,
                           const ParsedDeviceTcpPayload& payload)
 {
@@ -231,7 +225,7 @@ RecordParsedDeviceReceive(WifiStatisticsState& statistics,
 }
 
 bool
-RecordDeviceTransmitPacket(WifiStatisticsState& statistics,
+RecordDeviceTransmitPacket(ExperimentStatisticsState& statistics,
                            int64_t absoluteTimeUs,
                            Ptr<const Packet> packet)
 {
@@ -248,7 +242,7 @@ RecordDeviceTransmitPacket(WifiStatisticsState& statistics,
 }
 
 void
-FinalizeDeviceStatistics(WifiStatisticsState& statistics)
+FinalizeDeviceStatistics(ExperimentStatisticsState& statistics)
 {
     if (statistics.deviceStatisticsFinalized)
     {
@@ -283,63 +277,8 @@ FinalizeDeviceStatistics(WifiStatisticsState& statistics)
     }
 }
 
-TransmissionSummary
-BuildTransmissionSummary(WifiStatisticsState& statistics)
-{
-    FinalizeDeviceStatistics(statistics);
-
-    struct SenderState
-    {
-        TransmissionSenderSummary summary; ///< Transitional summary fields.
-        uint64_t matchedPayloadBytes{0};   ///< Positive matched payload bytes.
-    };
-
-    std::map<std::string, SenderState> senders;
-    for (const auto& [flow, transmits] : statistics.deviceTransmitsByFlow)
-    {
-        auto& sender = senders[flow.sourceIpv4];
-        sender.summary.senderIpv4 = flow.sourceIpv4;
-        sender.summary.transmittedPayloadBytes +=
-            static_cast<uint64_t>(flow.estimatedPayloadBytes) * transmits.size();
-
-        const auto receiveIterator = statistics.deviceReceivesByFlow.find(flow);
-        if (receiveIterator == statistics.deviceReceivesByFlow.end())
-        {
-            continue;
-        }
-        const auto& receives = receiveIterator->second;
-        const std::size_t matchedCount = std::min(transmits.size(), receives.size());
-        for (std::size_t index = 0; index < matchedCount; ++index)
-        {
-            if (receives[index] <= transmits[index].absoluteTimeUs)
-            {
-                continue;
-            }
-            ++sender.summary.matchedPacketCount;
-            sender.summary.totalTransmissionDurationUs +=
-                static_cast<uint64_t>(receives[index] - transmits[index].absoluteTimeUs);
-            sender.matchedPayloadBytes += flow.estimatedPayloadBytes;
-        }
-    }
-
-    TransmissionSummary result;
-    result.senders.reserve(senders.size());
-    for (auto& [sourceIpv4, sender] : senders)
-    {
-        (void)sourceIpv4;
-        if (sender.summary.totalTransmissionDurationUs > 0)
-        {
-            sender.summary.effectiveThroughputMbps =
-                static_cast<double>(sender.matchedPayloadBytes) * 8.0 /
-                static_cast<double>(sender.summary.totalTransmissionDurationUs);
-        }
-        result.senders.push_back(std::move(sender.summary));
-    }
-    return result;
-}
-
 void
-WifiStatistics::ConnectDeviceTraces()
+ExperimentStatistics::ConnectDeviceTraces()
 {
     NS_ABORT_MSG_IF(m_state->deviceTracesConnected, "Wi-Fi device traces connected more than once");
     m_state->deviceTracesConnected = true;
@@ -347,12 +286,6 @@ WifiStatistics::ConnectDeviceTraces()
                     MakeBoundCallback(&DeviceTxTrace, m_state.get()));
     Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/MacRx",
                     MakeBoundCallback(&DeviceRxTrace, m_state.get()));
-}
-
-TransmissionSummary
-WifiStatistics::BuildTransmissionSummary()
-{
-    return ns3::BuildTransmissionSummary(*m_state);
 }
 
 } // namespace ns3

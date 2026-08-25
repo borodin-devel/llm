@@ -1,8 +1,8 @@
-#ifndef WIFI_STATISTICS_INTERNAL_H
-#define WIFI_STATISTICS_INTERNAL_H
+#ifndef EXPERIMENT_STATISTICS_INTERNAL_H
+#define EXPERIMENT_STATISTICS_INTERNAL_H
 
 #include "experiment-statistics-types.h"
-#include "wifi-statistics.h"
+#include "experiment-statistics.h"
 
 #include "ns3/abort.h"
 #include "ns3/mac48-address.h"
@@ -10,10 +10,7 @@
 #include "ns3/wifi-psdu.h"
 #include "ns3/wifi-tx-vector.h"
 
-#include <algorithm>
-#include <cmath>
 #include <cstdint>
-#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -65,94 +62,6 @@ struct DeviceTransmitObservation
     ExperimentDirection direction; ///< Traffic direction at the sender.
 };
 
-/** MAC and PHY observations for one fixed time window. */
-struct MacWindowStats
-{
-    std::map<std::string, uint64_t> upBytes;   ///< Uplink bytes by source station.
-    std::map<std::string, uint64_t> downBytes; ///< Downlink bytes by destination station.
-    std::map<std::string, PhyRateAccumulator> upPhyRates;   ///< Uplink PHY rates by station.
-    std::map<std::string, PhyRateAccumulator> downPhyRates; ///< Downlink PHY rates by station.
-};
-
-/** Accumulate delay samples for mean and standard-deviation reporting. */
-struct DelayAccumulator
-{
-    uint64_t count{0};             ///< Number of samples.
-    long double sumUs{0.0};        ///< Sum of delays in microseconds.
-    long double sumSquaresUs{0.0}; ///< Sum of squared delays in microseconds squared.
-    double minUs{std::numeric_limits<double>::infinity()}; ///< Minimum delay in microseconds.
-    double maxUs{0.0};                                     ///< Maximum delay in microseconds.
-
-    /** @param delayUs Delay sample in microseconds. */
-    void Add(double delayUs)
-    {
-        ++count;
-        sumUs += delayUs;
-        sumSquaresUs += static_cast<long double>(delayUs) * delayUs;
-        minUs = std::min(minUs, delayUs);
-        maxUs = std::max(maxUs, delayUs);
-    }
-
-    /** @param other Accumulator to merge. */
-    void Merge(const DelayAccumulator& other)
-    {
-        count += other.count;
-        sumUs += other.sumUs;
-        sumSquaresUs += other.sumSquaresUs;
-        minUs = std::min(minUs, other.minUs);
-        maxUs = std::max(maxUs, other.maxUs);
-    }
-
-    /** @return Mean delay in microseconds. */
-    double MeanUs() const
-    {
-        return count == 0 ? 0.0 : static_cast<double>(sumUs / count);
-    }
-
-    /** @return Population standard deviation in microseconds. */
-    double StdDevUs() const
-    {
-        if (count == 0)
-        {
-            return 0.0;
-        }
-        const long double mean = sumUs / count;
-        const long double variance = std::max<long double>(0.0, sumSquaresUs / count - mean * mean);
-        return std::sqrt(static_cast<double>(variance));
-    }
-};
-
-/** Application drop totals for one agent. */
-struct AgentDropStats
-{
-    uint64_t events{0}; ///< Drop event count.
-    uint64_t bytes{0};  ///< Dropped payload bytes.
-};
-
-/** Cross-layer observations for one node and absolute second. */
-struct NodeSecondStats
-{
-    DelayAccumulator appToPhy;                             ///< Application-to-PHY delay samples.
-    uint64_t appTxEvents{0};                               ///< Application transmit event count.
-    uint64_t appTxBytes{0};                                ///< Application transmit payload bytes.
-    uint64_t appDropEvents{0};                             ///< Application drop event count.
-    uint64_t appDropBytes{0};                              ///< Application-dropped payload bytes.
-    std::map<std::string, AgentDropStats> appDropsByAgent; ///< Drops by agent.
-    uint64_t phyTaggedMpduCount{0};                        ///< Tagged PHY MPDU count.
-    uint64_t phyPayloadBytes{0};                  ///< Tagged PHY payload bytes including retries.
-    uint64_t phyUniquePayloadBytes{0};            ///< Deduplicated tagged PHY payload bytes.
-    uint64_t phyMpduBytes{0};                     ///< Complete tagged PHY MPDU bytes.
-    uint64_t phyRetransmissions{0};               ///< Tagged PHY retransmission count.
-    int64_t phyBusyUs{0};                         ///< PHY busy time in microseconds.
-    uint64_t macTxDrops{0};                       ///< MAC transmit-drop event count.
-    uint64_t macTxDropBytes{0};                   ///< MAC transmit-drop bytes.
-    uint64_t macMpduDrops{0};                     ///< MAC MPDU-drop event count.
-    uint64_t macMpduDropBytes{0};                 ///< MAC MPDU-drop bytes.
-    std::map<int, uint64_t> macMpduDropsByReason; ///< MAC MPDU drops by reason code.
-    uint64_t macDataFailures{0};                  ///< MAC data failure count.
-    uint64_t macFinalDataFailures{0};             ///< MAC final data failure count.
-};
-
 /** Identity used to distinguish first tagged MPDU transmissions from retries. */
 using PhyMpduKey = std::tuple<uint32_t, std::string, std::string, uint16_t, uint8_t, uint64_t>;
 
@@ -176,8 +85,8 @@ struct AppReceiveStreamKey
     bool operator<(const AppReceiveStreamKey& other) const;
 };
 
-/** All mutable Wi-Fi statistics state for one scenario. */
-struct WifiStatisticsState
+/** All mutable experiment statistics state for one scenario. */
+struct ExperimentStatisticsState
 {
     /**
      * Construct scenario statistics state.
@@ -185,7 +94,8 @@ struct WifiStatisticsState
      * @param trafficCoordinator Traffic epoch and duration owner.
      * @param configuredWindowMs Statistics window width in milliseconds.
      */
-    WifiStatisticsState(const TrafficCoordinator& trafficCoordinator, uint32_t configuredWindowMs)
+    ExperimentStatisticsState(const TrafficCoordinator& trafficCoordinator,
+                              uint32_t configuredWindowMs)
         : coordinator(trafficCoordinator),
           windowMs(configuredWindowMs),
           windowUs(static_cast<int64_t>(configuredWindowMs) * 1000)
@@ -193,16 +103,9 @@ struct WifiStatisticsState
         NS_ABORT_MSG_IF(windowMs == 0, "Statistics window width must be greater than zero");
     }
 
-    const TrafficCoordinator& coordinator; ///< Traffic epoch and duration owner.
-    const uint32_t windowMs;               ///< Statistics window width in milliseconds.
-    const int64_t windowUs;                ///< Statistics window width in microseconds.
-    std::vector<std::vector<std::string>> stationIpsByBss;        ///< Station IPs by BSS.
-    std::map<std::string, int> bssByApIp;                         ///< BSS index by AP IP.
-    std::map<std::string, int> bssByStationIp;                    ///< BSS index by station IP.
-    std::map<uint64_t, std::map<int, MacWindowStats>> macWindows; ///< MAC windows by node.
-    std::map<uint64_t, std::map<int, MacWindowStats>> phyWindows; ///< PHY windows by node.
-    std::map<uint32_t, std::map<uint64_t, NodeSecondStats>> nodeSeconds; ///< Node seconds.
-    std::map<uint32_t, std::string> nodeLabels;                          ///< Report label by node.
+    const TrafficCoordinator& coordinator;       ///< Traffic epoch and duration owner.
+    const uint32_t windowMs;                     ///< Statistics window width in milliseconds.
+    const int64_t windowUs;                      ///< Statistics window width in microseconds.
     std::set<PhyMpduKey> seenTaggedMpdus;        ///< Tagged MPDUs already counted as unique.
     ExperimentEntityRegistry entityRegistry;     ///< Registered AP and station identities.
     UnifiedExperimentWindowStore unifiedWindows; ///< Sparse unified experiment windows.
@@ -266,7 +169,7 @@ bool HasEntityActivity(const LocalEntityWindowAccumulator& accumulator);
  * @param statistics Scenario statistics state.
  * @return Independently copyable raw summary state.
  */
-UnifiedSummaryRawState BuildUnifiedSummaryRawState(const WifiStatisticsState& statistics);
+UnifiedSummaryRawState BuildUnifiedSummaryRawState(const ExperimentStatisticsState& statistics);
 
 /**
  * Finalize one raw entity into the fixed output hierarchy.
@@ -278,7 +181,7 @@ UnifiedSummaryRawState BuildUnifiedSummaryRawState(const WifiStatisticsState& st
  */
 EntityStatisticsOutput FinalizeEntityStatistics(const LocalEntityWindowAccumulator& accumulator,
                                                 int64_t durationUs,
-                                                const WifiStatisticsState& statistics);
+                                                const ExperimentStatisticsState& statistics);
 
 /**
  * Validate exact raw summary invariants.
@@ -298,7 +201,7 @@ ExperimentValidationOutput ValidateUnifiedSummaryRawState(const ExperimentEntity
  * @param bounds Resolved window bounds.
  * @return True when the event lies inside the experiment interval.
  */
-bool ResolveStatisticsEventWindow(const WifiStatisticsState& statistics,
+bool ResolveStatisticsEventWindow(const ExperimentStatisticsState& statistics,
                                   int64_t absoluteTimeUs,
                                   ExperimentWindowBounds& bounds);
 
@@ -312,7 +215,7 @@ bool ResolveStatisticsEventWindow(const WifiStatisticsState& statistics,
  * @param spans Application-tagged payload spans in the MPDU.
  * @param identity Stable MPDU identity when the Wi-Fi data header is available.
  */
-void RecordPhyMpduAttempt(WifiStatisticsState& statistics,
+void RecordPhyMpduAttempt(ExperimentStatisticsState& statistics,
                           uint32_t transmitterNodeId,
                           int64_t absoluteTimeUs,
                           uint32_t completeMpduBytes,
@@ -327,7 +230,7 @@ void RecordPhyMpduAttempt(WifiStatisticsState& statistics,
  * @param absoluteTimeUs Absolute attempt time in microseconds.
  * @param packet Complete transmitted Wi-Fi packet.
  */
-void RecordPhyTxBeginPacket(WifiStatisticsState& statistics,
+void RecordPhyTxBeginPacket(ExperimentStatisticsState& statistics,
                             uint32_t transmitterNodeId,
                             int64_t absoluteTimeUs,
                             Ptr<const Packet> packet);
@@ -343,7 +246,7 @@ void RecordPhyTxBeginPacket(WifiStatisticsState& statistics,
  * @param dataRateBps Byte-weighted PHY data rate in bits per second.
  * @param allocatedAirtimeUs PPDU airtime allocated to the tagged flow in microseconds.
  */
-void RecordPhyRateAttempt(WifiStatisticsState& statistics,
+void RecordPhyRateAttempt(ExperimentStatisticsState& statistics,
                           uint32_t transmitterNodeId,
                           int64_t absoluteTimeUs,
                           const std::string& sourceIpv4,
@@ -361,7 +264,7 @@ void RecordPhyRateAttempt(WifiStatisticsState& statistics,
  * @param psduMap Transmitted PSDUs indexed by STA ID.
  * @param txVector Transmission parameters, including per-user modes.
  */
-void RecordPhyTxPsduBegin(WifiStatisticsState& statistics,
+void RecordPhyTxPsduBegin(ExperimentStatisticsState& statistics,
                           uint32_t transmitterNodeId,
                           int64_t absoluteTimeUs,
                           WifiPhyBand band,
@@ -384,7 +287,7 @@ std::optional<double> CalculateAveragePhyDataRateMbps(const PhyPeerAccumulator& 
  * @param absoluteStartUs Absolute interval start in microseconds.
  * @param durationUs Interval duration in microseconds.
  */
-void RecordPhyBusyInterval(WifiStatisticsState& statistics,
+void RecordPhyBusyInterval(ExperimentStatisticsState& statistics,
                            uint32_t nodeId,
                            int64_t absoluteStartUs,
                            int64_t durationUs);
@@ -396,7 +299,9 @@ void RecordPhyBusyInterval(WifiStatisticsState& statistics,
  * @param nodeId Owning node identifier.
  * @param device Wi-Fi device whose PHY traces are connected.
  */
-void ConnectPhyTraces(WifiStatisticsState& statistics, uint32_t nodeId, Ptr<WifiNetDevice> device);
+void ConnectPhyTraces(ExperimentStatisticsState& statistics,
+                      uint32_t nodeId,
+                      Ptr<WifiNetDevice> device);
 
 /**
  * Record one parsed device transmit observation.
@@ -405,7 +310,7 @@ void ConnectPhyTraces(WifiStatisticsState& statistics, uint32_t nodeId, Ptr<Wifi
  * @param absoluteTimeUs Absolute transmit time in microseconds.
  * @param payload Parsed TCP payload observation.
  */
-void RecordParsedDeviceTransmit(WifiStatisticsState& statistics,
+void RecordParsedDeviceTransmit(ExperimentStatisticsState& statistics,
                                 int64_t absoluteTimeUs,
                                 const ParsedDeviceTcpPayload& payload);
 
@@ -416,7 +321,7 @@ void RecordParsedDeviceTransmit(WifiStatisticsState& statistics,
  * @param absoluteTimeUs Absolute receive time in microseconds.
  * @param payload Parsed TCP payload observation.
  */
-void RecordParsedDeviceReceive(WifiStatisticsState& statistics,
+void RecordParsedDeviceReceive(ExperimentStatisticsState& statistics,
                                int64_t absoluteTimeUs,
                                const ParsedDeviceTcpPayload& payload);
 
@@ -428,7 +333,7 @@ void RecordParsedDeviceReceive(WifiStatisticsState& statistics,
  * @param packet Wi-Fi MAC payload packet.
  * @return True when the packet contains a supported IPv4/TCP payload.
  */
-bool RecordDeviceTransmitPacket(WifiStatisticsState& statistics,
+bool RecordDeviceTransmitPacket(ExperimentStatisticsState& statistics,
                                 int64_t absoluteTimeUs,
                                 Ptr<const Packet> packet);
 
@@ -437,15 +342,7 @@ bool RecordDeviceTransmitPacket(WifiStatisticsState& statistics,
  *
  * @param statistics Scenario statistics state.
  */
-void FinalizeDeviceStatistics(WifiStatisticsState& statistics);
-
-/**
- * Build the transitional transmission summary from central device state.
- *
- * @param statistics Scenario statistics state.
- * @return Per-sender transmission measurements.
- */
-TransmissionSummary BuildTransmissionSummary(WifiStatisticsState& statistics);
+void FinalizeDeviceStatistics(ExperimentStatisticsState& statistics);
 
 /**
  * Record one MAC transmit drop in configured and legacy windows.
@@ -455,7 +352,7 @@ TransmissionSummary BuildTransmissionSummary(WifiStatisticsState& statistics);
  * @param absoluteTimeUs Absolute event time in microseconds.
  * @param packetBytes Complete dropped packet bytes.
  */
-void RecordMacTransmitDrop(WifiStatisticsState& statistics,
+void RecordMacTransmitDrop(ExperimentStatisticsState& statistics,
                            uint32_t nodeId,
                            int64_t absoluteTimeUs,
                            uint32_t packetBytes);
@@ -470,7 +367,7 @@ void RecordMacTransmitDrop(WifiStatisticsState& statistics,
  * @param mpduBytes Complete dropped MPDU bytes.
  * @param peerNodeId Remote peer node identifier when resolved.
  */
-void RecordMacMpduDrop(WifiStatisticsState& statistics,
+void RecordMacMpduDrop(ExperimentStatisticsState& statistics,
                        uint32_t nodeId,
                        int64_t absoluteTimeUs,
                        int reasonCode,
@@ -486,7 +383,7 @@ void RecordMacMpduDrop(WifiStatisticsState& statistics,
  * @param finalFailure Whether this is a final data failure.
  * @param peerNodeId Remote peer node identifier when resolved.
  */
-void RecordMacDataFailure(WifiStatisticsState& statistics,
+void RecordMacDataFailure(ExperimentStatisticsState& statistics,
                           uint32_t nodeId,
                           int64_t absoluteTimeUs,
                           bool finalFailure,
@@ -499,42 +396,10 @@ void RecordMacDataFailure(WifiStatisticsState& statistics,
  * @param nodeId Owning node identifier.
  * @param device Wi-Fi device whose traces are connected.
  */
-void ConnectMacTraces(WifiStatisticsState& statistics, uint32_t nodeId, Ptr<WifiNetDevice> device);
-
-/**
- * Attribute one MAC payload to a fixed statistics window.
- *
- * @param statistics Scenario statistics state.
- * @param windowIndex Zero-based statistics-window index.
- * @param sourceIp Source IPv4 address.
- * @param destinationIp Destination IPv4 address.
- * @param payloadBytes Application payload size in bytes.
- * @return True when the flow belongs to one registered BSS.
- */
-bool RecordMacPayloadInWindow(WifiStatisticsState& statistics,
-                              uint64_t windowIndex,
-                              const std::string& sourceIp,
-                              const std::string& destinationIp,
-                              uint32_t payloadBytes);
-
-/**
- * Resolve a relative timestamp to an absolute-second statistics index.
- *
- * @param relativeUs Timestamp relative to the experiment start in microseconds.
- * @param experimentDurationUs Experiment duration in microseconds.
- * @param secondIndex Resolved zero-based second index.
- * @return True when the timestamp lies inside the experiment interval.
- */
-bool GetNodeSecondIndex(int64_t relativeUs, int64_t experimentDurationUs, uint64_t& secondIndex);
-
-/**
- * Build typed cross-layer measurements from collected trace data.
- *
- * @param statistics Scenario statistics state.
- * @return Per-node interval and overall cross-layer measurements.
- */
-CrossLayerSummary BuildCrossLayerSummary(const WifiStatisticsState& statistics);
+void ConnectMacTraces(ExperimentStatisticsState& statistics,
+                      uint32_t nodeId,
+                      Ptr<WifiNetDevice> device);
 
 } // namespace ns3
 
-#endif // WIFI_STATISTICS_INTERNAL_H
+#endif // EXPERIMENT_STATISTICS_INTERNAL_H

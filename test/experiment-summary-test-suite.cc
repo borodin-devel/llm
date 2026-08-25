@@ -1,7 +1,7 @@
+#include "../examples/experiment-statistics-internal.h"
+#include "../examples/experiment-statistics.h"
 #include "../examples/experiment-window-output.h"
 #include "../examples/traffic-coordinator.h"
-#include "../examples/wifi-statistics-internal.h"
-#include "../examples/wifi-statistics.h"
 #include "llm-test-suite.h"
 
 #include "ns3/ap-generator.h"
@@ -49,8 +49,8 @@ class SummaryFixture
         Simulator::Destroy();
     }
 
-    TrafficCoordinator coordinator; ///< Experiment timing owner.
-    WifiStatistics statistics;      ///< Statistics owner under test.
+    TrafficCoordinator coordinator;  ///< Experiment timing owner.
+    ExperimentStatistics statistics; ///< Statistics owner under test.
 };
 
 void

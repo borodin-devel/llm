@@ -16,7 +16,7 @@ namespace ns3
 {
 
 class TrafficCoordinator;
-class WifiStatistics;
+class ExperimentStatistics;
 
 /**
  * Create a Yans channel with the default propagation delay and loss models.
@@ -53,7 +53,7 @@ std::string BuildChannelSettings(const WifiConfig& wifiConfig);
  * @param operationsByAgent Traffic operations for each agent.
  * @param accessPointAddress AP address used by station generators.
  * @param coordinator Traffic readiness and lifetime coordinator.
- * @param statistics Wi-Fi statistics owner.
+ * @param statistics Experiment statistics owner.
  */
 void SetupApGroup(int bssIndex,
                   const TopologyConfig& topologyConfig,
@@ -63,7 +63,7 @@ void SetupApGroup(int bssIndex,
                   const std::map<std::string, std::vector<Operation>>& operationsByAgent,
                   Address accessPointAddress,
                   TrafficCoordinator& coordinator,
-                  WifiStatistics& statistics);
+                  ExperimentStatistics& statistics);
 
 } // namespace ns3
 

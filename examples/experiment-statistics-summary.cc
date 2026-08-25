@@ -1,6 +1,6 @@
+#include "experiment-statistics-internal.h"
+#include "experiment-statistics.h"
 #include "traffic-coordinator.h"
-#include "wifi-statistics-internal.h"
-#include "wifi-statistics.h"
 
 #include <algorithm>
 #include <cmath>
@@ -78,7 +78,7 @@ FinalizeDistribution(const SampleAccumulator& raw)
 }
 
 std::string
-PeerIpv4(const WifiStatisticsState& statistics, uint32_t nodeId)
+PeerIpv4(const ExperimentStatisticsState& statistics, uint32_t nodeId)
 {
     const auto* peer = statistics.entityRegistry.FindByNodeId(nodeId);
     return peer ? peer->ipv4 : std::string{};
@@ -106,7 +106,7 @@ FinalizeGeneral(const DeviceTransmissionAccumulator& device, const SampleAccumul
 AppDirectionOutput
 FinalizeApp(const AppDirectionAccumulator& raw,
             int64_t durationUs,
-            const WifiStatisticsState& statistics)
+            const ExperimentStatisticsState& statistics)
 {
     AppDirectionOutput output;
     output.acceptedSendCount = raw.acceptedSendCount;
@@ -158,7 +158,7 @@ FinalizeApp(const AppDirectionAccumulator& raw,
 TcpDirectionOutput
 FinalizeTcp(const LocalEntityWindowAccumulator& raw,
             ExperimentDirection direction,
-            const WifiStatisticsState& statistics)
+            const ExperimentStatisticsState& statistics)
 {
     TcpDirectionOutput output;
     for (const auto& [key, value] : raw.tcpConnections)
@@ -204,7 +204,7 @@ FinalizeReasons(const std::map<int, uint64_t>& reasons)
 MacDirectionOutput
 FinalizeMac(const MacDirectionAccumulator& raw,
             int64_t durationUs,
-            const WifiStatisticsState& statistics)
+            const ExperimentStatisticsState& statistics)
 {
     MacDirectionOutput output;
     output.estimatedTransmitEventCount = raw.estimatedTransmitEventCount;
@@ -261,7 +261,7 @@ FinalizePhyBase(Output& output, const PhyPeerAccumulator& raw, int64_t durationU
 PhyDirectionOutput
 FinalizePhy(const PhyDirectionAccumulator& raw,
             int64_t durationUs,
-            const WifiStatisticsState& statistics)
+            const ExperimentStatisticsState& statistics)
 {
     PhyDirectionOutput output;
     FinalizePhyBase(output, raw, durationUs);
@@ -283,7 +283,7 @@ FinalizePhy(const PhyDirectionAccumulator& raw,
 }
 
 int64_t
-ExperimentDurationUs(const WifiStatisticsState& statistics)
+ExperimentDurationUs(const ExperimentStatisticsState& statistics)
 {
     return ConvertExperimentDurationMsToUs(statistics.coordinator.GetMaxExperimentDurationMs());
 }
@@ -292,7 +292,7 @@ AccessPointStatisticsOutput
 FinalizeAccessPoint(const ExperimentEntityIdentity& identity,
                     const LocalEntityWindowAccumulator& raw,
                     int64_t durationUs,
-                    const WifiStatisticsState& statistics)
+                    const ExperimentStatisticsState& statistics)
 {
     return {identity.accessPointId,
             identity.nodeId,
@@ -305,7 +305,7 @@ StationStatisticsOutput
 FinalizeStation(const ExperimentEntityIdentity& identity,
                 const LocalEntityWindowAccumulator& raw,
                 int64_t durationUs,
-                const WifiStatisticsState& statistics)
+                const ExperimentStatisticsState& statistics)
 {
     return {identity.accessPointId,
             identity.stationIndex.value(),
@@ -433,7 +433,7 @@ MergeStationIntoAccessPoint(LocalEntityWindowAccumulator& target,
 }
 
 UnifiedSummaryRawState
-BuildUnifiedSummaryRawState(const WifiStatisticsState& statistics)
+BuildUnifiedSummaryRawState(const ExperimentStatisticsState& statistics)
 {
     UnifiedSummaryRawState raw;
     raw.localWindows = statistics.unifiedWindows;
@@ -489,7 +489,7 @@ BuildUnifiedSummaryRawState(const WifiStatisticsState& statistics)
 EntityStatisticsOutput
 FinalizeEntityStatistics(const LocalEntityWindowAccumulator& raw,
                          int64_t durationUs,
-                         const WifiStatisticsState& statistics)
+                         const ExperimentStatisticsState& statistics)
 {
     EntityStatisticsOutput output;
     output.generalStats.uplink =
@@ -514,10 +514,9 @@ FinalizeEntityStatistics(const LocalEntityWindowAccumulator& raw,
 }
 
 UnifiedExperimentSummary
-WifiStatistics::BuildUnifiedExperimentSummary()
+ExperimentStatistics::BuildUnifiedExperimentSummary()
 {
-    FinalizeDeviceStatistics(*m_state);
-    FinalizeTcpStatistics();
+    Finalize();
     const UnifiedSummaryRawState raw = BuildUnifiedSummaryRawState(*m_state);
     const int64_t experimentDurationUs = ExperimentDurationUs(*m_state);
 

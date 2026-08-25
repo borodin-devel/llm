@@ -12,8 +12,7 @@ build_lib_example(
     scenario-topology.cc
     traffic-coordinator.cc
     experiment-json.cc
-    transmission-summary-json.cc
-    cross-layer-summary-json.cc
+    experiment-statistics-owner.cc
     experiment-statistics-window.cc
     experiment-statistics-app.cc
     experiment-statistics-tcp.cc
@@ -22,9 +21,12 @@ build_lib_example(
     experiment-statistics-phy.cc
     experiment-statistics-summary.cc
     experiment-statistics-validation.cc
-    wifi-statistics.cc
-    wifi-statistics-json.cc
-    wifi-statistics-owner.cc
-    wifi-statistics-summary.cc
+    experiment-statistics-json.cc
+    experiment-statistics-json-general.cc
+    experiment-statistics-json-app.cc
+    experiment-statistics-json-tcp.cc
+    experiment-statistics-json-mac.cc
+    experiment-statistics-json-phy.cc
+    experiment-statistics-json-entity.cc
   LIBRARIES_TO_LINK ${libllm}
 )

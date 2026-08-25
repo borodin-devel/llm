@@ -1,5 +1,5 @@
+#include "experiment-statistics-internal.h"
 #include "traffic-coordinator.h"
-#include "wifi-statistics-internal.h"
 
 #include "ns3/app-tx-tag.h"
 #include "ns3/simulator.h"
@@ -29,14 +29,6 @@ struct PhyFlowAttribution
     ExperimentDirection direction;            ///< Direction shared by both entity views.
 };
 
-/** Transitional endpoint resolution for one tagged BSS flow. */
-struct LegacyPhyFlowAttribution
-{
-    int accessPointId;       ///< Legacy BSS index.
-    std::string stationIpv4; ///< Legacy station map key.
-    bool uplink;             ///< Whether the flow is uplink.
-};
-
 /** Tagged flow contribution extracted from one PPDU. */
 struct PpduFlowContribution
 {
@@ -61,13 +53,13 @@ MacToString(Mac48Address address)
 }
 
 int64_t
-GetExperimentDurationUs(const WifiStatisticsState& statistics)
+GetExperimentDurationUs(const ExperimentStatisticsState& statistics)
 {
     return ConvertExperimentDurationMsToUs(statistics.coordinator.GetMaxExperimentDurationMs());
 }
 
 std::optional<PhyFlowAttribution>
-ResolvePhyFlow(const WifiStatisticsState& statistics,
+ResolvePhyFlow(const ExperimentStatisticsState& statistics,
                const std::string& sourceIpv4,
                const std::string& destinationIpv4)
 {
@@ -87,31 +79,6 @@ ResolvePhyFlow(const WifiStatisticsState& statistics,
         destination->kind == ExperimentEntityKind::STATION)
     {
         return PhyFlowAttribution{source, destination, ExperimentDirection::DOWNLINK};
-    }
-    return std::nullopt;
-}
-
-std::optional<LegacyPhyFlowAttribution>
-ResolveLegacyPhyFlow(const WifiStatisticsState& statistics,
-                     const std::string& sourceIpv4,
-                     const std::string& destinationIpv4)
-{
-    const auto sourceStation = statistics.bssByStationIp.find(sourceIpv4);
-    const auto destinationAp = statistics.bssByApIp.find(destinationIpv4);
-    if (sourceStation != statistics.bssByStationIp.end() &&
-        destinationAp != statistics.bssByApIp.end() &&
-        sourceStation->second == destinationAp->second)
-    {
-        return LegacyPhyFlowAttribution{sourceStation->second, sourceIpv4, true};
-    }
-
-    const auto sourceAp = statistics.bssByApIp.find(sourceIpv4);
-    const auto destinationStation = statistics.bssByStationIp.find(destinationIpv4);
-    if (sourceAp != statistics.bssByApIp.end() &&
-        destinationStation != statistics.bssByStationIp.end() &&
-        sourceAp->second == destinationStation->second)
-    {
-        return LegacyPhyFlowAttribution{sourceAp->second, destinationIpv4, false};
     }
     return std::nullopt;
 }
@@ -154,55 +121,8 @@ AddRate(PhyDirectionAccumulator& accumulator,
     peer.transmissionAirtimeUs += allocatedAirtimeUs;
 }
 
-NodeSecondStats*
-GetLegacyNodeSecond(WifiStatisticsState& statistics, uint32_t nodeId, int64_t absoluteTimeUs)
-{
-    const int64_t experimentStartUs = statistics.coordinator.GetExperimentStartUs();
-    if (experimentStartUs < 0)
-    {
-        return nullptr;
-    }
-    uint64_t secondIndex = 0;
-    if (!GetNodeSecondIndex(absoluteTimeUs - experimentStartUs,
-                            GetExperimentDurationUs(statistics),
-                            secondIndex))
-    {
-        return nullptr;
-    }
-    return &statistics.nodeSeconds[nodeId][secondIndex];
-}
-
 void
-RecordLegacyPhyPayload(WifiStatisticsState& statistics,
-                       uint64_t windowIndex,
-                       const LegacyPhyFlowAttribution& flow,
-                       uint32_t bytes)
-{
-    auto& legacy = statistics.phyWindows[windowIndex][flow.accessPointId];
-    if (flow.uplink)
-    {
-        legacy.upBytes[flow.stationIpv4] += bytes;
-    }
-    else
-    {
-        legacy.downBytes[flow.stationIpv4] += bytes;
-    }
-}
-
-void
-RecordLegacyPhyRate(WifiStatisticsState& statistics,
-                    uint64_t windowIndex,
-                    const LegacyPhyFlowAttribution& flow,
-                    double dataRateBps,
-                    long double allocatedAirtimeUs)
-{
-    auto& legacy = statistics.phyWindows[windowIndex][flow.accessPointId];
-    auto& rates = flow.uplink ? legacy.upPhyRates : legacy.downPhyRates;
-    rates[flow.stationIpv4].Add(dataRateBps, static_cast<double>(allocatedAirtimeUs));
-}
-
-void
-PhyTxBeginTrace(WifiStatisticsState* statistics,
+PhyTxBeginTrace(ExperimentStatisticsState* statistics,
                 uint32_t nodeId,
                 Ptr<const Packet> packet,
                 double txPowerW)
@@ -212,7 +132,7 @@ PhyTxBeginTrace(WifiStatisticsState* statistics,
 }
 
 void
-PhyTxPsduBeginTrace(WifiStatisticsState* statistics,
+PhyTxPsduBeginTrace(ExperimentStatisticsState* statistics,
                     uint32_t nodeId,
                     WifiPhyBand band,
                     WifiConstPsduMap psduMap,
@@ -229,7 +149,7 @@ PhyTxPsduBeginTrace(WifiStatisticsState* statistics,
 }
 
 void
-PhyStateTrace(WifiStatisticsState* statistics,
+PhyStateTrace(ExperimentStatisticsState* statistics,
               uint32_t nodeId,
               Time start,
               Time duration,
@@ -247,7 +167,7 @@ PhyStateTrace(WifiStatisticsState* statistics,
 } // namespace
 
 void
-RecordPhyTxBeginPacket(WifiStatisticsState& statistics,
+RecordPhyTxBeginPacket(ExperimentStatisticsState& statistics,
                        uint32_t transmitterNodeId,
                        int64_t absoluteTimeUs,
                        Ptr<const Packet> packet)
@@ -305,7 +225,7 @@ RecordPhyTxBeginPacket(WifiStatisticsState& statistics,
 }
 
 void
-RecordPhyMpduAttempt(WifiStatisticsState& statistics,
+RecordPhyMpduAttempt(ExperimentStatisticsState& statistics,
                      uint32_t transmitterNodeId,
                      int64_t absoluteTimeUs,
                      uint32_t completeMpduBytes,
@@ -323,12 +243,6 @@ RecordPhyMpduAttempt(WifiStatisticsState& statistics,
     std::map<DirectionViewKey, std::set<uint32_t>> peersByView;
     for (const auto& span : spans)
     {
-        if (const auto legacy =
-                ResolveLegacyPhyFlow(statistics, span.sourceIpv4, span.destinationIpv4))
-        {
-            RecordLegacyPhyPayload(statistics, bounds.index, *legacy, span.bytes);
-        }
-
         const auto flow = ResolvePhyFlow(statistics, span.sourceIpv4, span.destinationIpv4);
         if (!flow || flow->sender->nodeId != transmitterNodeId)
         {
@@ -370,34 +284,10 @@ RecordPhyMpduAttempt(WifiStatisticsState& statistics,
             }
         }
     }
-
-    // Transitional one-second fields remain the source for the current serializer through Task 7.
-    if (auto* legacy = GetLegacyNodeSecond(statistics, transmitterNodeId, absoluteTimeUs))
-    {
-        ++legacy->phyTaggedMpduCount;
-        legacy->phyMpduBytes += completeMpduBytes;
-        if (!firstTransmission)
-        {
-            ++legacy->phyRetransmissions;
-        }
-        for (const auto& span : spans)
-        {
-            legacy->phyPayloadBytes += span.bytes;
-            if (firstTransmission)
-            {
-                legacy->phyUniquePayloadBytes += span.bytes;
-                if (absoluteTimeUs >= span.applicationTransmitTimeUs)
-                {
-                    legacy->appToPhy.Add(
-                        static_cast<double>(absoluteTimeUs - span.applicationTransmitTimeUs));
-                }
-            }
-        }
-    }
 }
 
 void
-RecordPhyRateAttempt(WifiStatisticsState& statistics,
+RecordPhyRateAttempt(ExperimentStatisticsState& statistics,
                      uint32_t transmitterNodeId,
                      int64_t absoluteTimeUs,
                      const std::string& sourceIpv4,
@@ -410,13 +300,6 @@ RecordPhyRateAttempt(WifiStatisticsState& statistics,
         !ResolveStatisticsEventWindow(statistics, absoluteTimeUs, bounds))
     {
         return;
-    }
-
-    // Transitional writes intentionally retain the legacy IP maps and do not depend on exact
-    // entity identity or callback-transmitter validation through Task 7.
-    if (const auto legacy = ResolveLegacyPhyFlow(statistics, sourceIpv4, destinationIpv4))
-    {
-        RecordLegacyPhyRate(statistics, bounds.index, *legacy, dataRateBps, allocatedAirtimeUs);
     }
 
     const auto flow = ResolvePhyFlow(statistics, sourceIpv4, destinationIpv4);
@@ -438,7 +321,7 @@ RecordPhyRateAttempt(WifiStatisticsState& statistics,
 }
 
 void
-RecordPhyTxPsduBegin(WifiStatisticsState& statistics,
+RecordPhyTxPsduBegin(ExperimentStatisticsState& statistics,
                      uint32_t transmitterNodeId,
                      int64_t absoluteTimeUs,
                      WifiPhyBand band,
@@ -476,8 +359,7 @@ RecordPhyTxPsduBegin(WifiStatisticsState& statistics,
                 const std::string sourceIpv4 = Ipv4ToString(tag.GetSource());
                 const std::string destinationIpv4 = Ipv4ToString(tag.GetDestination());
                 const auto exact = ResolvePhyFlow(statistics, sourceIpv4, destinationIpv4);
-                const auto legacy = ResolveLegacyPhyFlow(statistics, sourceIpv4, destinationIpv4);
-                if (taggedBytes == 0 || (!exact && !legacy))
+                if (taggedBytes == 0 || !exact)
                 {
                     continue;
                 }
@@ -530,7 +412,7 @@ CalculateAveragePhyDataRateMbps(const PhyPeerAccumulator& accumulator)
 }
 
 void
-RecordPhyBusyInterval(WifiStatisticsState& statistics,
+RecordPhyBusyInterval(ExperimentStatisticsState& statistics,
                       uint32_t nodeId,
                       int64_t absoluteStartUs,
                       int64_t durationUs)
@@ -554,17 +436,10 @@ RecordPhyBusyInterval(WifiStatisticsState& statistics,
             statistics.unifiedWindows[windowIndex][nodeId].phy.busyTimeUs += overlapUs;
         }
     }
-
-    // Transitional fixed-second fields remain the source for the current serializer through Task 7.
-    for (const auto& [secondIndex, overlapUs] :
-         SplitExperimentInterval(relativeStartUs, relativeEndUs, experimentDurationUs, 1000000))
-    {
-        statistics.nodeSeconds[nodeId][secondIndex].phyBusyUs += overlapUs;
-    }
 }
 
 void
-ConnectPhyTraces(WifiStatisticsState& statistics, uint32_t nodeId, Ptr<WifiNetDevice> device)
+ConnectPhyTraces(ExperimentStatisticsState& statistics, uint32_t nodeId, Ptr<WifiNetDevice> device)
 {
     device->GetPhy()->TraceConnectWithoutContext(
         "PhyTxBegin",
