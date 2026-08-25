@@ -169,7 +169,7 @@ std::optional<LogLevel> ParseScenarioLogLevel(std::string_view level);
 /**
  * Enable scenario log components at their configured levels.
  *
- * Components configured as off remain disabled.
+ * Components configured as off cause no LogComponentEnable() call and retain their existing state.
  *
  * @param logging Scenario component logging configuration.
  * @throws ScenarioConfigError if a level name is invalid.

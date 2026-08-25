@@ -6,13 +6,95 @@
 
 #include "ns3/json.hpp"
 
+#include <array>
 #include <fstream>
+#include <utility>
 #include <vector>
 
 using namespace ns3;
 
 namespace
 {
+
+constexpr std::array<LogLevel, 10> g_publicLogComponentBits{LOG_ERROR,
+                                                            LOG_WARN,
+                                                            LOG_INFO,
+                                                            LOG_FUNCTION,
+                                                            LOG_LOGIC,
+                                                            LOG_DEBUG,
+                                                            LOG_PREFIX_FUNC,
+                                                            LOG_PREFIX_TIME,
+                                                            LOG_PREFIX_NODE,
+                                                            LOG_PREFIX_LEVEL};
+
+/**
+ * Read the enabled public log and prefix bits for one component.
+ *
+ * @param component Log component to inspect.
+ * @return Enabled public log and prefix bits.
+ */
+LogLevel
+GetEnabledPublicBits(const LogComponent& component)
+{
+    LogLevel enabled = LOG_NONE;
+    for (const auto bit : g_publicLogComponentBits)
+    {
+        if (component.IsEnabled(bit))
+        {
+            enabled = static_cast<LogLevel>(enabled | bit);
+        }
+    }
+    return enabled;
+}
+
+/** Restore the exact public log state of a set of components on scope exit. */
+class ScopedLogComponentState
+{
+  public:
+    /**
+     * Snapshot component log and prefix bits.
+     *
+     * @param componentNames Registered component names to preserve.
+     */
+    explicit ScopedLogComponentState(const std::vector<std::string>& componentNames)
+    {
+        m_savedStates.reserve(componentNames.size());
+        for (const auto& name : componentNames)
+        {
+            auto& component = GetLogComponent(name);
+            m_savedStates.emplace_back(&component, GetEnabledPublicBits(component));
+        }
+    }
+
+    /** Restore all snapshotted component states. */
+    ~ScopedLogComponentState()
+    {
+        for (const auto& [component, enabledBits] : m_savedStates)
+        {
+            component->Disable(LOG_LEVEL_ALL);
+            component->Disable(LOG_PREFIX_ALL);
+            component->Enable(enabledBits);
+        }
+    }
+
+  private:
+    std::vector<std::pair<LogComponent*, LogLevel>> m_savedStates; ///< Saved states by component.
+};
+
+/**
+ * Set the enabled public bits for one registered component.
+ *
+ * @param name Registered component name.
+ * @param enabledBits Public log and prefix bits to enable.
+ */
+void
+SetEnabledPublicBits(const std::string& name, LogLevel enabledBits)
+{
+    auto& component = GetLogComponent(name);
+    component.Disable(LOG_LEVEL_ALL);
+    component.Disable(LOG_PREFIX_ALL);
+    component.Enable(enabledBits);
+}
 
 /**
  * @ingroup tests
@@ -81,51 +163,77 @@ ScenarioLoggingTestCase::DoRun()
                                                   "StaLlmGenerator",
                                                   "TrafficSink",
                                                   "ContentionAwareAgentDistribution"};
-    for (const auto& name : componentNames)
+    const ScopedLogComponentState restoreOriginalState(componentNames);
+
+    const std::array seededStates{
+        std::pair{"SampleScenario", static_cast<LogLevel>(LOG_ERROR | LOG_PREFIX_FUNC)},
+        std::pair{"APGenerator", static_cast<LogLevel>(LOG_WARN)},
+        std::pair{"StaLlmGenerator", static_cast<LogLevel>(LOG_INFO | LOG_PREFIX_TIME)},
+        std::pair{"TrafficSink", static_cast<LogLevel>(LOG_FUNCTION | LOG_LOGIC | LOG_PREFIX_NODE)},
+        std::pair{"ContentionAwareAgentDistribution",
+                  static_cast<LogLevel>(LOG_DEBUG | LOG_PREFIX_LEVEL)},
+    };
+    for (const auto& [name, enabledBits] : seededStates)
     {
-        LogComponentDisable(name, LOG_LEVEL_ALL);
+        SetEnabledPublicBits(name, enabledBits);
     }
 
-    LoggingConfig logging;
-    logging.sampleScenarioLevel = "error";
-    logging.apGeneratorLevel = "warn";
-    logging.staGeneratorLevel = "function";
-    logging.trafficSinkLevel = "logic";
-    logging.contentionDistributionLevel = "off";
-    ConfigureScenarioLogging(logging);
-
-    const auto& scenario = GetLogComponent("SampleScenario");
-    NS_TEST_ASSERT_MSG_EQ(scenario.IsEnabled(LOG_ERROR), true, "Scenario error level is disabled");
-    NS_TEST_ASSERT_MSG_EQ(scenario.IsEnabled(LOG_WARN), false, "Scenario warning level is enabled");
-
-    const auto& apGenerator = GetLogComponent("APGenerator");
-    NS_TEST_ASSERT_MSG_EQ(apGenerator.IsEnabled(LOG_WARN), true, "AP warning level is disabled");
-    NS_TEST_ASSERT_MSG_EQ(apGenerator.IsEnabled(LOG_INFO), false, "AP info level is enabled");
-
-    const auto& staGenerator = GetLogComponent("StaLlmGenerator");
-    NS_TEST_ASSERT_MSG_EQ(staGenerator.IsEnabled(LOG_FUNCTION),
-                          true,
-                          "Station function level is disabled");
-    NS_TEST_ASSERT_MSG_EQ(staGenerator.IsEnabled(LOG_LOGIC),
-                          false,
-                          "Station logic level is enabled");
-
-    const auto& trafficSink = GetLogComponent("TrafficSink");
-    NS_TEST_ASSERT_MSG_EQ(trafficSink.IsEnabled(LOG_LOGIC),
-                          true,
-                          "Traffic sink logic level is disabled");
-    NS_TEST_ASSERT_MSG_EQ(trafficSink.IsEnabled(LOG_DEBUG),
-                          false,
-                          "Traffic sink debug level is enabled");
-
-    const auto& distribution = GetLogComponent("ContentionAwareAgentDistribution");
-    NS_TEST_ASSERT_MSG_EQ(distribution.IsEnabled(LOG_LEVEL_ALL),
-                          false,
-                          "Off distribution logging was enabled");
-
-    for (const auto& name : componentNames)
     {
-        LogComponentDisable(name, LOG_LEVEL_ALL);
+        const ScopedLogComponentState restoreSeededState(componentNames);
+        for (const auto& name : componentNames)
+        {
+            SetEnabledPublicBits(name, LOG_NONE);
+        }
+
+        LoggingConfig logging;
+        logging.sampleScenarioLevel = "error";
+        logging.apGeneratorLevel = "warn";
+        logging.staGeneratorLevel = "function";
+        logging.trafficSinkLevel = "logic";
+        logging.contentionDistributionLevel = "off";
+        ConfigureScenarioLogging(logging);
+
+        const auto& scenario = GetLogComponent("SampleScenario");
+        NS_TEST_ASSERT_MSG_EQ(scenario.IsEnabled(LOG_ERROR),
+                              true,
+                              "Scenario error level is disabled");
+        NS_TEST_ASSERT_MSG_EQ(scenario.IsEnabled(LOG_WARN),
+                              false,
+                              "Scenario warning level is enabled");
+
+        const auto& apGenerator = GetLogComponent("APGenerator");
+        NS_TEST_ASSERT_MSG_EQ(apGenerator.IsEnabled(LOG_WARN),
+                              true,
+                              "AP warning level is disabled");
+        NS_TEST_ASSERT_MSG_EQ(apGenerator.IsEnabled(LOG_INFO), false, "AP info level is enabled");
+
+        const auto& staGenerator = GetLogComponent("StaLlmGenerator");
+        NS_TEST_ASSERT_MSG_EQ(staGenerator.IsEnabled(LOG_FUNCTION),
+                              true,
+                              "Station function level is disabled");
+        NS_TEST_ASSERT_MSG_EQ(staGenerator.IsEnabled(LOG_LOGIC),
+                              false,
+                              "Station logic level is enabled");
+
+        const auto& trafficSink = GetLogComponent("TrafficSink");
+        NS_TEST_ASSERT_MSG_EQ(trafficSink.IsEnabled(LOG_LOGIC),
+                              true,
+                              "Traffic sink logic level is disabled");
+        NS_TEST_ASSERT_MSG_EQ(trafficSink.IsEnabled(LOG_DEBUG),
+                              false,
+                              "Traffic sink debug level is enabled");
+
+        const auto& distribution = GetLogComponent("ContentionAwareAgentDistribution");
+        NS_TEST_ASSERT_MSG_EQ(distribution.IsEnabled(LOG_LEVEL_ALL),
+                              false,
+                              "Off distribution logging was enabled");
+    }
+
+    for (const auto& [name, expectedBits] : seededStates)
+    {
+        NS_TEST_ASSERT_MSG_EQ(GetEnabledPublicBits(GetLogComponent(name)),
+                              expectedBits,
+                              "Configured logging test did not restore " << name);
     }
 }
 
