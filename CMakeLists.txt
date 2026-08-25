@@ -51,11 +51,14 @@ set(test_sources
     examples/scenario-run-path.cc
     examples/scenario-topology.cc
     examples/traffic-coordinator.cc
+    examples/traffic-flow-monitor.cc
+    examples/traffic-flow-summary.cc
     examples/wifi-statistics.cc
     examples/wifi-statistics-json.cc
     examples/wifi-statistics-owner.cc
     examples/wifi-statistics-report.cc
     test/wifi-statistics-test-suite.cc
+    test/traffic-flow-summary-test-suite.cc
 )
 
 build_lib(

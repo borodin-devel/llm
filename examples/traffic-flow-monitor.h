@@ -1,6 +1,8 @@
 #ifndef TRAFFIC_FLOW_MONITOR_H
 #define TRAFFIC_FLOW_MONITOR_H
 
+#include "experiment-output.h"
+
 #include "ns3/ptr.h"
 
 #include <memory>
@@ -45,6 +47,13 @@ class TrafficFlowMonitor
      * @param packet Received packet.
      */
     void RecordDeviceRx(std::string context, Ptr<const Packet> packet);
+
+    /**
+     * Build aggregate transmission measurements for every observed sender.
+     *
+     * @return Typed per-sender transmission measurements.
+     */
+    TransmissionSummary BuildTransmissionSummary() const;
 
     /** Print aggregate transmission time and payload per sender. */
     void PrintTransmissionTimePerSender() const;

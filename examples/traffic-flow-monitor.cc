@@ -2,6 +2,7 @@
 
 #include "scenario-log.h"
 #include "traffic-coordinator.h"
+#include "traffic-flow-monitor-internal.h"
 #include "wifi-statistics.h"
 
 #include "ns3/config.h"
@@ -11,14 +12,8 @@
 #include "ns3/simulator.h"
 #include "ns3/tcp-header.h"
 
-#include <algorithm>
-#include <cstdint>
-#include <map>
-#include <numeric>
 #include <sstream>
-#include <tuple>
 #include <utility>
-#include <vector>
 
 namespace ns3
 {
@@ -27,25 +22,6 @@ namespace
 {
 
 LogComponent& g_log = llm_example::GetScenarioLog();
-
-struct FlowKey
-{
-    std::string sourceIp;
-    uint16_t sourcePort;
-    std::string destinationIp;
-    uint16_t destinationPort;
-    uint32_t payloadBytes;
-
-    bool operator<(const FlowKey& other) const
-    {
-        return std::tie(sourceIp, sourcePort, destinationIp, destinationPort, payloadBytes) <
-               std::tie(other.sourceIp,
-                        other.sourcePort,
-                        other.destinationIp,
-                        other.destinationPort,
-                        other.payloadBytes);
-    }
-};
 
 struct ParsedPacket
 {
@@ -113,13 +89,6 @@ DeviceRxTrace(TrafficFlowMonitor* monitor, std::string context, Ptr<const Packet
 
 } // namespace
 
-struct TrafficFlowMonitorState
-{
-    std::map<std::string, std::vector<uint64_t>> transmittedBytesBySource;
-    std::map<FlowKey, std::vector<uint64_t>> transmitTimestampsByFlow;
-    std::map<FlowKey, std::vector<uint64_t>> receiveTimestampsByFlow;
-};
-
 TrafficFlowMonitor::TrafficFlowMonitor(const TrafficCoordinator& coordinator,
                                        WifiStatistics& wifiStatistics)
     : m_coordinator(coordinator),
@@ -165,11 +134,11 @@ TrafficFlowMonitor::RecordDeviceTx(std::string, Ptr<const Packet> packet)
                                       parsed.destinationIp,
                                       parsed.payloadBytes);
 
-    FlowKey key{parsed.sourceIp,
-                parsed.sourcePort,
-                parsed.destinationIp,
-                parsed.destinationPort,
-                parsed.payloadBytes};
+    TrafficFlowKey key{parsed.sourceIp,
+                       parsed.sourcePort,
+                       parsed.destinationIp,
+                       parsed.destinationPort,
+                       parsed.payloadBytes};
     m_state->transmitTimestampsByFlow[key].push_back(nowUs);
     m_state->transmittedBytesBySource[parsed.sourceIp].push_back(parsed.payloadBytes);
 }
@@ -195,61 +164,40 @@ TrafficFlowMonitor::RecordDeviceRx(std::string, Ptr<const Packet> packet)
                        << "tx: " << parsed.sourceIp << ":" << parsed.sourcePort << " -> "
                        << "rx: " << parsed.destinationIp << ":" << parsed.destinationPort);
 
-    FlowKey key{parsed.sourceIp,
-                parsed.sourcePort,
-                parsed.destinationIp,
-                parsed.destinationPort,
-                parsed.payloadBytes};
+    TrafficFlowKey key{parsed.sourceIp,
+                       parsed.sourcePort,
+                       parsed.destinationIp,
+                       parsed.destinationPort,
+                       parsed.payloadBytes};
     m_state->receiveTimestampsByFlow[key].push_back(nowUs);
+}
+
+TransmissionSummary
+TrafficFlowMonitor::BuildTransmissionSummary() const
+{
+    return ns3::BuildTransmissionSummary(*m_state);
 }
 
 void
 TrafficFlowMonitor::PrintTransmissionTimePerSender() const
 {
+    const TransmissionSummary summary = BuildTransmissionSummary();
+
     NS_LOG_INFO("========== MAC Layer Transmission time per sender ==========");
-
-    std::map<std::string, uint64_t> totalDurationUsBySender;
-    std::map<std::string, uint64_t> totalBytesBySender;
-
-    for (const auto& [flow, receiveTimestamps] : m_state->receiveTimestampsByFlow)
+    for (const auto& sender : summary.senders)
     {
-        auto transmitIt = m_state->transmitTimestampsByFlow.find(flow);
-        if (transmitIt == m_state->transmitTimestampsByFlow.end() || transmitIt->second.empty())
-        {
-            continue;
-        }
-
-        const auto& transmitTimestamps = transmitIt->second;
-        const std::size_t matchedCount =
-            std::min(transmitTimestamps.size(), receiveTimestamps.size());
-
-        for (std::size_t index = 0; index < matchedCount; ++index)
-        {
-            const int64_t durationUs = static_cast<int64_t>(receiveTimestamps[index]) -
-                                       static_cast<int64_t>(transmitTimestamps[index]);
-            if (durationUs > 0)
-            {
-                totalDurationUsBySender[flow.sourceIp] += static_cast<uint64_t>(durationUs);
-            }
-        }
-    }
-
-    for (const auto& [sourceIp, byteSamples] : m_state->transmittedBytesBySource)
-    {
-        const int totalBytes = std::accumulate(byteSamples.begin(), byteSamples.end(), 0);
-        totalBytesBySender[sourceIp] = totalBytes;
-    }
-
-    for (const auto& [sender, totalDurationUs] : totalDurationUsBySender)
-    {
-        const double totalMs = static_cast<double>(totalDurationUs) / 1000.0;
-        const double totalSec = static_cast<double>(totalDurationUs) / 1e6;
+        const double totalMs = static_cast<double>(sender.totalTransmissionDurationUs) / 1000.0;
+        const double totalSec = static_cast<double>(sender.totalTransmissionDurationUs) / 1e6;
         const double totalBytesMb =
-            static_cast<double>(totalBytesBySender[sender]) / (1024.0 * 1024.0);
-        NS_LOG_INFO("Sender " << sender << ": txTime=" << totalMs << " ms (" << totalSec << " s), "
-                              << "PayloadOnly=" << totalBytesBySender[sender] << " ("
-                              << totalBytesMb << " MB)"
-                              << "effRate=" << totalBytesMb * 8 / totalSec << " mbps");
+            static_cast<double>(sender.transmittedPayloadBytes) / (1024.0 * 1024.0);
+        NS_LOG_INFO("Sender " << sender.senderIpv4 << ": matched=" << sender.matchedPacketCount
+                              << ", txTime=" << totalMs << " ms (" << totalSec << " s), "
+                              << "PayloadOnly=" << sender.transmittedPayloadBytes << " ("
+                              << totalBytesMb << " MB), effRate="
+                              << (sender.effectiveThroughputMbps
+                                      ? std::to_string(*sender.effectiveThroughputMbps)
+                                      : std::string{"null"})
+                              << " Mbps");
     }
 
     NS_LOG_INFO("============================================================");

@@ -12,6 +12,7 @@ build_lib_example(
     scenario-topology.cc
     traffic-coordinator.cc
     traffic-flow-monitor.cc
+    traffic-flow-summary.cc
     wifi-statistics.cc
     wifi-statistics-json.cc
     wifi-statistics-owner.cc
