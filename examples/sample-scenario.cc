@@ -13,8 +13,6 @@
 
 #include "ns3/contention-aware-agent-distribution.h"
 #include "ns3/core-module.h"
-#include "ns3/tcp-highspeed.h"
-#include "ns3/tcp-linux-reno.h"
 
 #include <chrono>
 #include <filesystem>
@@ -48,7 +46,11 @@ main(int argc, char* argv[])
     RngSeedManager::SetSeed(config.simulation.rngSeed);
     RngSeedManager::SetRun(config.simulation.rngRun);
 
-    Config::SetDefault("ns3::TcpL4Protocol::SocketType", TypeIdValue(TcpHighSpeed::GetTypeId()));
+    Config::SetDefault("ns3::TcpL4Protocol::SocketType",
+                       TypeIdValue(ResolveTcpCongestionType(config.tcp.congestionControl)));
+    Config::SetDefault("ns3::TcpSocket::SegmentSize", UintegerValue(config.tcp.segmentSizeBytes));
+    Config::SetDefault("ns3::TcpSocket::SndBufSize", UintegerValue(config.tcp.sendBufferBytes));
+    Config::SetDefault("ns3::TcpSocket::RcvBufSize", UintegerValue(config.tcp.receiveBufferBytes));
 
     std::cout << "=== ns-3 Sample Scenario: " << config.topology.bssCount << " APs x "
               << config.topology.stationsPerBss << " Stations ===" << std::endl;
@@ -57,8 +59,9 @@ main(int argc, char* argv[])
     std::cout << "MAC stats JSON: " << config.general.outputName << std::endl;
     std::cout << "Standard: 802.11ax (Wi-Fi 6)" << std::endl;
     std::cout << "Transport: TCP" << std::endl;
-    std::cout << "Channel model: separate YansWifiChannel per AP group" << std::endl;
-    std::cout << "Channel policy: physically isolated AP groups; default 5 GHz channel"
+    std::cout << "Channel model: "
+              << (config.topology.isolateBssChannels ? "separate YansWifiChannel per AP group"
+                                                     : "shared YansWifiChannel across AP groups")
               << std::endl;
 
     LogComponentEnable("SampleScenario", LOG_LEVEL_INFO);
@@ -87,14 +90,21 @@ main(int argc, char* argv[])
     DistributionResult distribution =
         DistributeAgentsContentionAware(parsedTrace, distributionConfig);
 
+    Ptr<YansWifiChannel> sharedChannel;
+    if (!config.topology.isolateBssChannels)
+    {
+        sharedChannel = CreateDefaultYansChannel();
+    }
+
     for (int bssIndex = 0; bssIndex < config.topology.bssCount; ++bssIndex)
     {
         SetupApGroup(bssIndex,
-                     config.wifi.bandwidthMhz,
+                     config.topology,
+                     config.wifi,
+                     sharedChannel,
                      distribution.apStationMaps[bssIndex],
                      distribution.apAgentMaps[bssIndex],
                      distribution.apAddresses[bssIndex],
-                     config.topology.stationsPerBss,
                      trafficCoordinator,
                      wifiStatistics);
     }
@@ -134,11 +144,6 @@ main(int argc, char* argv[])
               << " traffic generators to complete TCP setup..." << std::endl;
 
     trafficFlowMonitor.ConnectDeviceTraces();
-
-    Config::SetDefault("ns3::TcpL4Protocol::SocketType", TypeIdValue(TcpLinuxReno::GetTypeId()));
-    Config::SetDefault("ns3::TcpSocket::SegmentSize", UintegerValue(1460));
-    Config::SetDefault("ns3::TcpSocket::SndBufSize", UintegerValue(32 * 1024 * 1024));
-    Config::SetDefault("ns3::TcpSocket::RcvBufSize", UintegerValue(32 * 1024 * 1024));
 
     const auto wallClockStart = std::chrono::steady_clock::now();
 

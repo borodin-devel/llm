@@ -31,6 +31,7 @@ LlmTestSuite::LlmTestSuite()
     AddCases(CreateScenarioConfigTestCases());
     AddCases(CreateScenarioConfigValidationTestCases());
     AddCases(CreateScenarioRunPathTestCases());
+    AddCases(CreateScenarioTopologyTestCases());
 }
 
 void

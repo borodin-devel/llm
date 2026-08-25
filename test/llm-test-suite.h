@@ -14,5 +14,6 @@ std::vector<ns3::TestCase*> CreateWifiStatisticsTestCases();
 std::vector<ns3::TestCase*> CreateScenarioConfigTestCases();
 std::vector<ns3::TestCase*> CreateScenarioConfigValidationTestCases();
 std::vector<ns3::TestCase*> CreateScenarioRunPathTestCases();
+std::vector<ns3::TestCase*> CreateScenarioTopologyTestCases();
 
 #endif // LLM_TEST_SUITE_H
