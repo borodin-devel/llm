@@ -832,9 +832,11 @@ file.
 Validation, path resolution, and directory preparation finish before ns-3
 topology objects are created. Startup prints the resolved config, trace, run,
 and output paths plus the major duration, topology, distribution, Wi-Fi, TCP,
-RNG, and statistics choices. Measurements are written only to the printed
-output file. Its metadata preserves configured path strings and does not copy
-these resolved paths into the JSON.
+RNG, and statistics choices. End-of-experiment measurement summaries are
+written only to the printed output file. Ordinary startup, progress, error,
+and completion messages and per-event/debug logging remain available. Its
+metadata preserves configured path strings and does not copy these resolved
+paths into the JSON.
 
 Fixed-duration example:
 
