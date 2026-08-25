@@ -178,29 +178,4 @@ TrafficFlowMonitor::BuildTransmissionSummary() const
     return ns3::BuildTransmissionSummary(*m_state);
 }
 
-void
-TrafficFlowMonitor::PrintTransmissionTimePerSender() const
-{
-    const TransmissionSummary summary = BuildTransmissionSummary();
-
-    NS_LOG_INFO("========== MAC Layer Transmission time per sender ==========");
-    for (const auto& sender : summary.senders)
-    {
-        const double totalMs = static_cast<double>(sender.totalTransmissionDurationUs) / 1000.0;
-        const double totalSec = static_cast<double>(sender.totalTransmissionDurationUs) / 1e6;
-        const double totalBytesMb =
-            static_cast<double>(sender.transmittedPayloadBytes) / (1024.0 * 1024.0);
-        NS_LOG_INFO("Sender " << sender.senderIpv4 << ": matched=" << sender.matchedPacketCount
-                              << ", txTime=" << totalMs << " ms (" << totalSec << " s), "
-                              << "PayloadOnly=" << sender.transmittedPayloadBytes << " ("
-                              << totalBytesMb << " MB), effRate="
-                              << (sender.effectiveThroughputMbps
-                                      ? std::to_string(*sender.effectiveThroughputMbps)
-                                      : std::string{"null"})
-                              << " Mbps");
-    }
-
-    NS_LOG_INFO("============================================================");
-}
-
 } // namespace ns3

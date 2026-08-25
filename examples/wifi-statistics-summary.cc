@@ -1,4 +1,3 @@
-#include "scenario-log.h"
 #include "traffic-coordinator.h"
 #include "wifi-statistics-internal.h"
 #include "wifi-statistics.h"
@@ -11,8 +10,6 @@
 
 namespace ns3
 {
-
-static LogComponent& g_log = llm_example::GetScenarioLog();
 
 static DelaySummary
 BuildDelaySummary(const DelayAccumulator& accumulator)
@@ -120,17 +117,17 @@ BuildCrossLayerSummary(const WifiStatisticsState& statistics)
         int64_t totalBusyUs = 0;
         std::map<int, uint64_t> totalMacMpduDropsByReason;
 
-        const auto nodeIt = statistics.nodeSeconds.find(nodeId);
+        const auto nodeIterator = statistics.nodeSeconds.find(nodeId);
         for (uint64_t intervalIndex = 0; intervalIndex < totalSecondBuckets; ++intervalIndex)
         {
             static const NodeSecondStats emptyStatistics;
             const NodeSecondStats* intervalStatistics = &emptyStatistics;
-            if (nodeIt != statistics.nodeSeconds.end())
+            if (nodeIterator != statistics.nodeSeconds.end())
             {
-                const auto intervalIt = nodeIt->second.find(intervalIndex);
-                if (intervalIt != nodeIt->second.end())
+                const auto intervalIterator = nodeIterator->second.find(intervalIndex);
+                if (intervalIterator != nodeIterator->second.end())
                 {
-                    intervalStatistics = &intervalIt->second;
+                    intervalStatistics = &intervalIterator->second;
                 }
             }
 
@@ -193,96 +190,10 @@ BuildCrossLayerSummary(const WifiStatisticsState& statistics)
     return summary;
 }
 
-static void
-PrintCrossLayerStats(const CrossLayerSummary& summary)
-{
-    NS_LOG_WARN("========== App -> PHY / reliability statistics ==========");
-    for (const auto& node : summary.nodes)
-    {
-        for (const auto& interval : node.oneSecondIntervals)
-        {
-            NS_LOG_WARN(
-                "[Node stats] node="
-                << node.nodeLabel << " second=" << interval.intervalIndex
-                << " app_to_phy_count=" << interval.applicationToPhyDelay.sampleCount
-                << " app_to_phy_mean_us=" << interval.applicationToPhyDelay.meanUs
-                << " app_to_phy_stddev_us=" << interval.applicationToPhyDelay.standardDeviationUs
-                << " app_to_phy_min_us=" << interval.applicationToPhyDelay.minimumUs
-                << " app_to_phy_max_us=" << interval.applicationToPhyDelay.maximumUs
-                << " app_tx_mbps=" << interval.applicationTransmitThroughputMbps
-                << " phy_payload_mbps=" << interval.phyPayloadThroughputMbps
-                << " phy_unique_payload_mbps=" << interval.uniquePhyPayloadThroughputMbps
-                << " channel_utilization=" << interval.channelUtilizationPercent
-                << "% phy_retrans=" << interval.phyRetransmissionCount
-                << " mac_tx_drops=" << interval.macTransmitDropCount << " mac_tx_drop_bytes="
-                << interval.macTransmitDropBytes << " mac_mpdu_drops=" << interval.macMpduDropCount
-                << " mac_mpdu_drop_bytes=" << interval.macMpduDropBytes
-                << " mac_data_failed=" << interval.macDataFailureCount
-                << " mac_final_data_failed=" << interval.macFinalDataFailureCount
-                << " app_drop_events=" << interval.applicationDropEventCount
-                << " app_drop_bytes=" << interval.applicationDropBytes);
-
-            for (const auto& reason : interval.macMpduDropsByReason)
-            {
-                NS_LOG_WARN("[MAC MPDU drop] node="
-                            << node.nodeLabel << " second=" << interval.intervalIndex
-                            << " reason=" << reason.reasonCode << " count=" << reason.dropCount);
-            }
-            for (const auto& agent : interval.applicationDropsByAgent)
-            {
-                NS_LOG_WARN("[App drop] node=" << node.nodeLabel
-                                               << " second=" << interval.intervalIndex
-                                               << " agent=\"" << agent.agentKey << "\""
-                                               << " events=" << agent.dropEventCount
-                                               << " bytes=" << agent.droppedPayloadBytes);
-            }
-        }
-
-        const auto& overall = node.overall;
-        NS_LOG_WARN("[Node overall] node="
-                    << node.nodeLabel << " seconds=" << overall.experimentDurationS
-                    << " app_to_phy_count=" << overall.applicationToPhyDelay.sampleCount
-                    << " app_to_phy_mean_us=" << overall.applicationToPhyDelay.meanUs
-                    << " app_to_phy_stddev_us=" << overall.applicationToPhyDelay.standardDeviationUs
-                    << " app_to_phy_min_us=" << overall.applicationToPhyDelay.minimumUs
-                    << " app_to_phy_max_us=" << overall.applicationToPhyDelay.maximumUs
-                    << " app_tx_bytes=" << overall.applicationTransmittedPayloadBytes
-                    << " phy_payload_bytes=" << overall.phyPayloadBytes
-                    << " phy_unique_payload_bytes=" << overall.uniquePhyPayloadBytes
-                    << " phy_mpdu_bytes=" << overall.phyMpduBytes
-                    << " avg_app_tx_mbps=" << overall.averageApplicationTransmitThroughputMbps
-                    << " avg_phy_payload_mbps=" << overall.averagePhyPayloadThroughputMbps
-                    << " avg_channel_utilization=" << overall.averageChannelUtilizationPercent
-                    << "% phy_retrans=" << overall.phyRetransmissionCount
-                    << " mac_tx_drops=" << overall.macTransmitDropCount
-                    << " mac_tx_drop_bytes=" << overall.macTransmitDropBytes
-                    << " mac_mpdu_drops=" << overall.macMpduDropCount
-                    << " mac_mpdu_drop_bytes=" << overall.macMpduDropBytes
-                    << " mac_data_failed=" << overall.macDataFailureCount
-                    << " mac_final_data_failed=" << overall.macFinalDataFailureCount
-                    << " app_drop_events=" << overall.applicationDropEventCount
-                    << " app_drop_bytes=" << overall.applicationDropBytes);
-
-        for (const auto& reason : overall.macMpduDropsByReason)
-        {
-            NS_LOG_WARN("[MAC MPDU drop overall] node=" << node.nodeLabel
-                                                        << " reason=" << reason.reasonCode
-                                                        << " count=" << reason.dropCount);
-        }
-    }
-    NS_LOG_WARN("==========================================================");
-}
-
 CrossLayerSummary
 WifiStatistics::BuildCrossLayerSummary() const
 {
     return ns3::BuildCrossLayerSummary(*m_state);
-}
-
-void
-WifiStatistics::PrintCrossLayerReport() const
-{
-    PrintCrossLayerStats(BuildCrossLayerSummary());
 }
 
 } // namespace ns3

@@ -167,15 +167,6 @@ bool RecordMacPayloadInWindow(WifiStatisticsState& statistics,
 bool GetNodeSecondIndex(int64_t relativeUs, int64_t experimentDurationUs, uint64_t& secondIndex);
 
 /**
- * Serialize a statistics state to JSON.
- *
- * @param statistics Scenario statistics state.
- * @param outputPath Destination JSON path.
- * @throws std::runtime_error if the output cannot be exclusively created or fully written.
- */
-void WriteWifiStatisticsJson(const WifiStatisticsState& statistics, const std::string& outputPath);
-
-/**
  * Build typed cross-layer measurements from collected trace data.
  *
  * @param statistics Scenario statistics state.

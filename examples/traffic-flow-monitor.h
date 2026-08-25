@@ -55,9 +55,6 @@ class TrafficFlowMonitor
      */
     TransmissionSummary BuildTransmissionSummary() const;
 
-    /** Print aggregate transmission time and payload per sender. */
-    void PrintTransmissionTimePerSender() const;
-
   private:
     const TrafficCoordinator& m_coordinator;          ///< Traffic epoch owner.
     WifiStatistics& m_wifiStatistics;                 ///< Cross-layer statistics receiver.

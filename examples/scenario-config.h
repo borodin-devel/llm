@@ -21,8 +21,8 @@ namespace ns3
 /** Configuration values for general scenario input and output. */
 struct GeneralConfig
 {
-    std::string traceFile;                         ///< Input JSON trace path.
-    std::optional<std::string> runFolder;          ///< Optional output directory path.
+    std::string traceFile;                 ///< Input JSON trace path.
+    std::optional<std::string> runFolder;  ///< Optional output directory path.
     std::string outputName{"output.json"}; ///< Statistics JSON filename.
 };
 

@@ -15,11 +15,11 @@ namespace ns3
 /** Key that identifies a TCP payload flow observed at a Wi-Fi device. */
 struct TrafficFlowKey
 {
-    std::string sourceIp;        ///< Source IPv4 address.
-    uint16_t sourcePort;         ///< Source TCP port.
-    std::string destinationIp;   ///< Destination IPv4 address.
-    uint16_t destinationPort;    ///< Destination TCP port.
-    uint32_t payloadBytes;       ///< TCP payload size in bytes.
+    std::string sourceIp;      ///< Source IPv4 address.
+    uint16_t sourcePort;       ///< Source TCP port.
+    std::string destinationIp; ///< Destination IPv4 address.
+    uint16_t destinationPort;  ///< Destination TCP port.
+    uint32_t payloadBytes;     ///< TCP payload size in bytes.
 
     /**
      * Order keys lexicographically by all flow fields.
@@ -41,9 +41,12 @@ struct TrafficFlowKey
 /** Trace data used to construct a transmission summary. */
 struct TrafficFlowMonitorState
 {
-    std::map<std::string, std::vector<uint64_t>> transmittedBytesBySource; ///< Payload samples by sender.
-    std::map<TrafficFlowKey, std::vector<uint64_t>> transmitTimestampsByFlow; ///< TX timestamps in us.
-    std::map<TrafficFlowKey, std::vector<uint64_t>> receiveTimestampsByFlow;  ///< RX timestamps in us.
+    std::map<std::string, std::vector<uint64_t>>
+        transmittedBytesBySource; ///< Payload samples by sender.
+    std::map<TrafficFlowKey, std::vector<uint64_t>>
+        transmitTimestampsByFlow; ///< TX timestamps in us.
+    std::map<TrafficFlowKey, std::vector<uint64_t>>
+        receiveTimestampsByFlow; ///< RX timestamps in us.
 };
 
 /**

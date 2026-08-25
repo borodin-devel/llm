@@ -1,14 +1,11 @@
+#include "experiment-output-internal.h"
 #include "scenario-log.h"
 #include "traffic-coordinator.h"
 #include "wifi-statistics-internal.h"
-#include "wifi-statistics.h"
 
-#include <algorithm>
 #include <cmath>
-#include <fstream>
-#include <iomanip>
 #include <map>
-#include <stdexcept>
+#include <ostream>
 #include <string>
 #include <vector>
 
@@ -18,47 +15,45 @@ namespace ns3
 static LogComponent& g_log = llm_example::GetScenarioLog();
 
 static uint64_t
-GetMacBytes(const MacWindowStats* stats, const std::string& staIp, bool uplink)
+GetMacBytes(const MacWindowStats* statistics, const std::string& stationIpv4, bool uplink)
 {
-    if (!stats)
+    if (!statistics)
     {
         return 0;
     }
-
-    const auto& bytesBySta = uplink ? stats->upBytes : stats->downBytes;
-    auto it = bytesBySta.find(staIp);
-    return it == bytesBySta.end() ? 0 : it->second;
+    const auto& bytesByStation = uplink ? statistics->upBytes : statistics->downBytes;
+    const auto iterator = bytesByStation.find(stationIpv4);
+    return iterator == bytesByStation.end() ? 0 : iterator->second;
 }
 
 static const PhyRateAccumulator*
-GetPhyRateStats(const MacWindowStats* stats, const std::string& staIp, bool uplink)
+GetPhyRateStats(const MacWindowStats* statistics, const std::string& stationIpv4, bool uplink)
 {
-    if (!stats)
+    if (!statistics)
     {
         return nullptr;
     }
-
-    const auto& ratesBySta = uplink ? stats->upPhyRates : stats->downPhyRates;
-    const auto it = ratesBySta.find(staIp);
-    return it == ratesBySta.end() ? nullptr : &it->second;
+    const auto& ratesByStation = uplink ? statistics->upPhyRates : statistics->downPhyRates;
+    const auto iterator = ratesByStation.find(stationIpv4);
+    return iterator == ratesByStation.end() ? nullptr : &iterator->second;
 }
 
 static void
-WritePhyRateJsonFields(std::ofstream& out, const PhyRateAccumulator* rateStats)
+WritePhyRateJsonFields(std::ostream& output, const PhyRateAccumulator* rateStatistics)
 {
-    out << ", \"avg_phy_data_rate_mbps\": ";
-    if (rateStats && rateStats->txAttempts > 0)
+    output << ", \"average_phy_data_rate_mbps\": ";
+    if (rateStatistics && rateStatistics->txAttempts > 0)
     {
-        out << std::fixed << std::setprecision(6) << rateStats->AverageMbps();
+        WriteJsonScalar(output, rateStatistics->AverageMbps());
     }
     else
     {
-        out << "null";
+        WriteJsonScalar(output, nullptr);
     }
-
-    out << ", \"phy_tx_attempts\": " << (rateStats ? rateStats->txAttempts : 0)
-        << ", \"phy_tx_airtime_us\": " << std::fixed << std::setprecision(3)
-        << (rateStats ? rateStats->AirtimeUs() : 0.0);
+    output << ", \"phy_transmission_attempt_count\": ";
+    WriteJsonScalar(output, rateStatistics ? rateStatistics->txAttempts : 0);
+    output << ", \"phy_transmission_airtime_us\": ";
+    WriteJsonScalar(output, rateStatistics ? rateStatistics->AirtimeUs() : 0.0);
 }
 
 struct MacSummaryStats
@@ -72,417 +67,313 @@ struct MacSummaryStats
 };
 
 static uint64_t
-SumMacDirectionBytes(const MacWindowStats* stats, bool uplink)
+SumMacDirectionBytes(const MacWindowStats* statistics, bool uplink)
 {
-    if (!stats)
+    if (!statistics)
     {
         return 0;
     }
-
-    const auto& bytesBySta = uplink ? stats->upBytes : stats->downBytes;
+    const auto& bytesByStation = uplink ? statistics->upBytes : statistics->downBytes;
     uint64_t total = 0;
-
-    for (const auto& [staIp, bytes] : bytesBySta)
+    for (const auto& [stationIpv4, bytes] : bytesByStation)
     {
-        (void)staIp;
+        (void)stationIpv4;
         total += bytes;
     }
-
     return total;
 }
 
 static uint64_t
-WriteMacFlowArray(std::ofstream& out,
+WriteMacFlowArray(std::ostream& output,
                   const WifiStatisticsState& statistics,
-                  const std::vector<std::string>& staIps,
-                  const MacWindowStats* stats,
+                  const std::vector<std::string>& stationIpv4Addresses,
+                  const MacWindowStats* windowStatistics,
                   bool uplink,
                   MacSummaryStats& summary,
                   const std::string& indent)
 {
-    out << "[";
-
-    uint64_t windowTotalBytes = 0;
-    auto& summaryBytesBySta = uplink ? summary.upBytes : summary.downBytes;
-    auto& summaryRatesBySta = uplink ? summary.upPhyRates : summary.downPhyRates;
+    output << '[';
+    uint64_t windowTotalPayloadBytes = 0;
+    auto& summaryBytesByStation = uplink ? summary.upBytes : summary.downBytes;
+    auto& summaryRatesByStation = uplink ? summary.upPhyRates : summary.downPhyRates;
     bool first = true;
 
-    for (const auto& staIp : staIps)
+    for (const auto& stationIpv4 : stationIpv4Addresses)
     {
-        const uint64_t bytes = GetMacBytes(stats, staIp, uplink);
-        if (bytes == 0)
+        const uint64_t payloadBytes = GetMacBytes(windowStatistics, stationIpv4, uplink);
+        if (payloadBytes == 0)
         {
             continue;
         }
 
-        windowTotalBytes += bytes;
-        summaryBytesBySta[staIp] += bytes;
-
-        const PhyRateAccumulator* rateStats = GetPhyRateStats(stats, staIp, uplink);
-        if (rateStats)
+        windowTotalPayloadBytes += payloadBytes;
+        summaryBytesByStation[stationIpv4] += payloadBytes;
+        const PhyRateAccumulator* rateStatistics =
+            GetPhyRateStats(windowStatistics, stationIpv4, uplink);
+        if (rateStatistics)
         {
-            summaryRatesBySta[staIp].Merge(*rateStats);
+            summaryRatesByStation[stationIpv4].Merge(*rateStatistics);
         }
-
         if (uplink)
         {
-            summary.upTotalBytes += bytes;
+            summary.upTotalBytes += payloadBytes;
         }
         else
         {
-            summary.downTotalBytes += bytes;
+            summary.downTotalBytes += payloadBytes;
         }
 
-        // Mbps for this fixed window:
-        // bytes * 8 / (window_seconds * 1e6).
-        // Since window_seconds = window_us / 1e6, this simplifies to
-        // bytes * 8 / window_us.
-        const double bwMbps =
-            static_cast<double>(bytes) * 8.0 / static_cast<double>(statistics.windowUs);
-
-        if (first)
-        {
-            out << "\n";
-            first = false;
-        }
-        else
-        {
-            out << ",\n";
-        }
-
-        out << indent << "{\"host_id\": \"" << staIp << "\", \"bytes\": " << bytes
-            << ", \"bw\": " << std::fixed << std::setprecision(6) << bwMbps;
-        WritePhyRateJsonFields(out, rateStats);
-        out << "}";
+        const double throughputMbps =
+            static_cast<double>(payloadBytes) * 8.0 / static_cast<double>(statistics.windowUs);
+        output << (first ? "\n" : ",\n") << indent << "{\"station_ipv4\": ";
+        WriteJsonScalar(output, stationIpv4);
+        output << ", \"payload_bytes\": ";
+        WriteJsonScalar(output, payloadBytes);
+        output << ", \"throughput_mbps\": ";
+        WriteJsonScalar(output, throughputMbps);
+        WritePhyRateJsonFields(output, rateStatistics);
+        output << '}';
+        first = false;
     }
 
     if (!first)
     {
-        out << "\n" << indent.substr(0, indent.size() >= 2 ? indent.size() - 2 : 0);
+        output << '\n' << indent.substr(0, indent.size() >= 2 ? indent.size() - 2 : 0);
     }
-    out << "]";
-    return windowTotalBytes;
+    output << ']';
+    return windowTotalPayloadBytes;
 }
 
 static void
-WriteMacSummaryFlowArray(std::ofstream& out,
-                         const std::vector<std::string>& staIps,
-                         const std::map<std::string, uint64_t>& totalBytesBySta,
-                         const std::map<std::string, PhyRateAccumulator>& phyRatesBySta,
+WriteMacSummaryFlowArray(std::ostream& output,
+                         const std::vector<std::string>& stationIpv4Addresses,
+                         const std::map<std::string, uint64_t>& totalBytesByStation,
+                         const std::map<std::string, PhyRateAccumulator>& phyRatesByStation,
                          const std::string& indent)
 {
-    out << "[";
+    output << '[';
     bool first = true;
-
-    for (const auto& staIp : staIps)
+    for (const auto& stationIpv4 : stationIpv4Addresses)
     {
-        auto it = totalBytesBySta.find(staIp);
-        if (it == totalBytesBySta.end() || it->second == 0)
+        const auto byteIterator = totalBytesByStation.find(stationIpv4);
+        if (byteIterator == totalBytesByStation.end() || byteIterator->second == 0)
         {
             continue;
         }
 
-        if (first)
-        {
-            out << "\n";
-            first = false;
-        }
-        else
-        {
-            out << ",\n";
-        }
-
-        out << indent << "{\"host_id\": \"" << staIp << "\", \"total_bytes\": " << it->second;
-
-        const auto rateIt = phyRatesBySta.find(staIp);
-        WritePhyRateJsonFields(out, rateIt == phyRatesBySta.end() ? nullptr : &rateIt->second);
-        out << "}";
+        output << (first ? "\n" : ",\n") << indent << "{\"station_ipv4\": ";
+        WriteJsonScalar(output, stationIpv4);
+        output << ", \"total_payload_bytes\": ";
+        WriteJsonScalar(output, byteIterator->second);
+        const auto rateIterator = phyRatesByStation.find(stationIpv4);
+        WritePhyRateJsonFields(output,
+                               rateIterator == phyRatesByStation.end() ? nullptr
+                                                                       : &rateIterator->second);
+        output << '}';
+        first = false;
     }
 
     if (!first)
     {
-        out << "\n" << indent.substr(0, indent.size() >= 2 ? indent.size() - 2 : 0);
+        output << '\n' << indent.substr(0, indent.size() >= 2 ? indent.size() - 2 : 0);
     }
-    out << "]";
+    output << ']';
 }
 
 static std::vector<MacSummaryStats>
 BuildSparseMacSummary(const WifiStatisticsState& statistics)
 {
     std::vector<MacSummaryStats> summary(statistics.stationIpsByBss.size());
-
-    for (const auto& [bucketIndex, apStats] : statistics.phyWindows)
+    for (const auto& [windowIndex, accessPointStatistics] : statistics.phyWindows)
     {
-        (void)bucketIndex;
-
-        for (const auto& [apId, stats] : apStats)
+        (void)windowIndex;
+        for (const auto& [accessPointId, windowStatistics] : accessPointStatistics)
         {
-            if (apId < 0 || static_cast<std::size_t>(apId) >= summary.size())
+            if (accessPointId < 0 ||
+                static_cast<std::size_t>(accessPointId) >= statistics.stationIpsByBss.size())
             {
                 continue;
             }
-
-            auto& apSummary = summary[apId];
-
-            for (const auto& [staIp, bytes] : stats.upBytes)
+            auto& accessPointSummary = summary[accessPointId];
+            for (const auto& [stationIpv4, bytes] : windowStatistics.upBytes)
             {
-                apSummary.upBytes[staIp] += bytes;
-                apSummary.upTotalBytes += bytes;
+                accessPointSummary.upBytes[stationIpv4] += bytes;
+                accessPointSummary.upTotalBytes += bytes;
             }
-
-            for (const auto& [staIp, bytes] : stats.downBytes)
+            for (const auto& [stationIpv4, bytes] : windowStatistics.downBytes)
             {
-                apSummary.downBytes[staIp] += bytes;
-                apSummary.downTotalBytes += bytes;
+                accessPointSummary.downBytes[stationIpv4] += bytes;
+                accessPointSummary.downTotalBytes += bytes;
             }
         }
     }
-
     return summary;
 }
 
 static bool
-MacSummaryEqual(const MacSummaryStats& lhs, const MacSummaryStats& rhs)
+MacSummaryEqual(const MacSummaryStats& left, const MacSummaryStats& right)
 {
-    return lhs.upTotalBytes == rhs.upTotalBytes && lhs.downTotalBytes == rhs.downTotalBytes &&
-           lhs.upBytes == rhs.upBytes && lhs.downBytes == rhs.downBytes;
+    return left.upTotalBytes == right.upTotalBytes && left.downTotalBytes == right.downTotalBytes &&
+           left.upBytes == right.upBytes && left.downBytes == right.downBytes;
 }
 
-void
-WriteWifiStatisticsJson(const WifiStatisticsState& statistics, const std::string& outputPath)
+WifiJsonValidation
+WriteWifiStatisticsJsonMembers(std::ostream& output, const WifiStatisticsState& statistics)
 {
-    std::ofstream out(outputPath, std::ios::out | std::ios::noreplace);
-    if (!out.is_open())
-    {
-        throw std::runtime_error("cannot exclusively create PHY statistics output: '" + outputPath +
-                                 "'");
-    }
-
-    const int64_t statsDurationUs = static_cast<int64_t>(
+    const int64_t statisticsDurationUs = static_cast<int64_t>(
         std::ceil(statistics.coordinator.GetMaxExperimentDurationMs() * 1000.0));
-
     uint64_t windowCount = 0;
-    if (statsDurationUs > 0)
+    if (statisticsDurationUs > 0)
     {
-        const auto durationUs = static_cast<uint64_t>(statsDurationUs);
+        const auto durationUs = static_cast<uint64_t>(statisticsDurationUs);
         const auto windowUs = static_cast<uint64_t>(statistics.windowUs);
         windowCount = durationUs / windowUs + (durationUs % windowUs != 0);
     }
 
     std::vector<MacSummaryStats> summaryFromWindows(statistics.stationIpsByBss.size());
-    bool windowTotalsConsistent = true;
-
-    out << "{\n"
-        << "  \"source\": \"PhyTxBegin+PhyTxPsduBegin/AppTxTag\",\n"
-        << "  \"byte_semantics\": \"tagged application payload observed at PHY; retransmissions "
-           "included\",\n"
-        << "  \"phy_rate_semantics\": \"airtime-weighted nominal WifiTxVector data rate of actual "
-           "tagged PPDU attempts; retransmissions included; PPDU airtime allocated by tagged "
-           "payload bytes\",\n"
-        << "  \"window_ms\": " << statistics.windowMs << ",\n"
-        << "  \"windows\": [\n";
+    WifiJsonValidation validation;
+    output << "  \"statistics_window_ms\": ";
+    WriteJsonScalar(output, statistics.windowMs);
+    output << ",\n  \"wifi_windows\": [\n";
 
     bool firstWindow = true;
-    uint64_t emittedWindowCount = 0;
-
-    // The window map is sparse; absent windows and flows represent zero traffic.
-    for (const auto& [bucketIndex, apStats] : statistics.phyWindows)
+    for (const auto& [windowIndex, accessPointStatistics] : statistics.phyWindows)
     {
-        if (bucketIndex >= windowCount)
+        if (windowIndex >= windowCount)
         {
             NS_LOG_ERROR("[MAC stats] bucket outside configured experiment range: bucket="
-                         << bucketIndex << " windowCount=" << windowCount);
-            windowTotalsConsistent = false;
+                         << windowIndex << " windowCount=" << windowCount);
+            validation.windowPayloadTotalsConsistent = false;
             continue;
         }
 
-        const uint64_t timestampMs = (bucketIndex + 1) * static_cast<uint64_t>(statistics.windowMs);
-
-        if (!firstWindow)
-        {
-            out << ",\n";
-        }
+        const uint64_t windowEndMs = (windowIndex + 1) * static_cast<uint64_t>(statistics.windowMs);
+        output << (firstWindow ? "" : ",\n") << "    {\n      \"window_end_ms\": ";
+        WriteJsonScalar(output, windowEndMs);
+        output << ",\n      \"access_points\": [\n";
         firstWindow = false;
-        ++emittedWindowCount;
+        bool firstAccessPoint = true;
 
-        out << "    {\n"
-            << "      \"timestamp\": " << timestampMs << ",\n"
-            << "      \"stats\": [\n";
-
-        bool firstAp = true;
-
-        for (const auto& [apIdInt, statsValue] : apStats)
+        for (const auto& [accessPointIdValue, windowStatisticsValue] : accessPointStatistics)
         {
-            if (apIdInt < 0 ||
-                static_cast<std::size_t>(apIdInt) >= statistics.stationIpsByBss.size())
+            if (accessPointIdValue < 0 ||
+                static_cast<std::size_t>(accessPointIdValue) >= statistics.stationIpsByBss.size())
             {
-                NS_LOG_ERROR("[MAC stats] invalid AP id in bucket=" << bucketIndex
-                                                                    << " AP=" << apIdInt);
-                windowTotalsConsistent = false;
+                NS_LOG_ERROR("[MAC stats] invalid AP id in bucket=" << windowIndex << " AP="
+                                                                    << accessPointIdValue);
+                validation.windowPayloadTotalsConsistent = false;
                 continue;
             }
 
-            const std::size_t apId = static_cast<std::size_t>(apIdInt);
-            const MacWindowStats* stats = &statsValue;
-
-            const uint64_t sparseUpTotal = SumMacDirectionBytes(stats, true);
-            const uint64_t sparseDownTotal = SumMacDirectionBytes(stats, false);
-
-            // Defensive guard: RecordMacStats only inserts positive payloads,
-            // but do not serialize an empty AP object if that invariant changes.
-            if (sparseUpTotal == 0 && sparseDownTotal == 0)
+            const std::size_t accessPointId = static_cast<std::size_t>(accessPointIdValue);
+            const auto* windowStatistics = &windowStatisticsValue;
+            const uint64_t sparseUplinkTotal = SumMacDirectionBytes(windowStatistics, true);
+            const uint64_t sparseDownlinkTotal = SumMacDirectionBytes(windowStatistics, false);
+            if (sparseUplinkTotal == 0 && sparseDownlinkTotal == 0)
             {
                 continue;
             }
 
-            if (!firstAp)
+            output << (firstAccessPoint ? "" : ",\n")
+                   << "        {\n          \"access_point_id\": ";
+            WriteJsonScalar(output, accessPointId);
+            output << ",\n          \"uplink\": {\n"
+                   << "            \"total_payload_bytes\": ";
+            WriteJsonScalar(output, sparseUplinkTotal);
+            output << ",\n            \"flows\": ";
+            const uint64_t emittedUplinkTotal =
+                WriteMacFlowArray(output,
+                                  statistics,
+                                  statistics.stationIpsByBss[accessPointId],
+                                  windowStatistics,
+                                  true,
+                                  summaryFromWindows[accessPointId],
+                                  "              ");
+            output << "\n          },\n          \"downlink\": {\n"
+                   << "            \"total_payload_bytes\": ";
+            WriteJsonScalar(output, sparseDownlinkTotal);
+            output << ",\n            \"flows\": ";
+            const uint64_t emittedDownlinkTotal =
+                WriteMacFlowArray(output,
+                                  statistics,
+                                  statistics.stationIpsByBss[accessPointId],
+                                  windowStatistics,
+                                  false,
+                                  summaryFromWindows[accessPointId],
+                                  "              ");
+            output << "\n          }\n        }";
+            firstAccessPoint = false;
+
+            if (emittedUplinkTotal != sparseUplinkTotal)
             {
-                out << ",\n";
-            }
-            firstAp = false;
-
-            out << "        {\n"
-                << "          \"ap_id\": " << apId << ",\n"
-                << "          \"up_flows\": ";
-
-            const uint64_t upTotalBytes = WriteMacFlowArray(out,
-                                                            statistics,
-                                                            statistics.stationIpsByBss[apId],
-                                                            stats,
-                                                            true,
-                                                            summaryFromWindows[apId],
-                                                            "            ");
-
-            if (upTotalBytes != sparseUpTotal)
-            {
-                windowTotalsConsistent = false;
+                validation.windowPayloadTotalsConsistent = false;
                 NS_LOG_ERROR("[MAC stats] UL window total mismatch: bucket="
-                             << bucketIndex << " AP=" << apId << " emitted=" << upTotalBytes
-                             << " sparse=" << sparseUpTotal);
+                             << windowIndex << " AP=" << accessPointId << " emitted="
+                             << emittedUplinkTotal << " sparse=" << sparseUplinkTotal);
             }
-
-            out << ",\n"
-                << "          \"up_total_bytes\": " << upTotalBytes << ",\n"
-                << "          \"down_flows\": ";
-
-            const uint64_t downTotalBytes = WriteMacFlowArray(out,
-                                                              statistics,
-                                                              statistics.stationIpsByBss[apId],
-                                                              stats,
-                                                              false,
-                                                              summaryFromWindows[apId],
-                                                              "            ");
-
-            if (downTotalBytes != sparseDownTotal)
+            if (emittedDownlinkTotal != sparseDownlinkTotal)
             {
-                windowTotalsConsistent = false;
+                validation.windowPayloadTotalsConsistent = false;
                 NS_LOG_ERROR("[MAC stats] DL window total mismatch: bucket="
-                             << bucketIndex << " AP=" << apId << " emitted=" << downTotalBytes
-                             << " sparse=" << sparseDownTotal);
+                             << windowIndex << " AP=" << accessPointId << " emitted="
+                             << emittedDownlinkTotal << " sparse=" << sparseDownlinkTotal);
             }
-
-            out << ",\n"
-                << "          \"down_total_bytes\": " << downTotalBytes << "\n        }";
         }
-
-        out << "\n      ]\n"
-            << "    }";
+        output << "\n      ]\n    }";
     }
-
     if (!firstWindow)
     {
-        out << "\n";
+        output << '\n';
     }
 
     const std::vector<MacSummaryStats> summaryFromSparse = BuildSparseMacSummary(statistics);
-
-    bool summaryTotalsConsistent = summaryFromWindows.size() == summaryFromSparse.size();
-
-    if (summaryTotalsConsistent)
+    validation.summaryPayloadTotalsConsistent =
+        summaryFromWindows.size() == summaryFromSparse.size();
+    if (validation.summaryPayloadTotalsConsistent)
     {
-        for (std::size_t apId = 0; apId < summaryFromWindows.size(); ++apId)
+        for (std::size_t accessPointId = 0; accessPointId < summaryFromWindows.size();
+             ++accessPointId)
         {
-            if (!MacSummaryEqual(summaryFromWindows[apId], summaryFromSparse[apId]))
+            if (!MacSummaryEqual(summaryFromWindows[accessPointId],
+                                 summaryFromSparse[accessPointId]))
             {
-                summaryTotalsConsistent = false;
-                NS_LOG_ERROR("[MAC stats] summary mismatch for AP " << apId);
+                validation.summaryPayloadTotalsConsistent = false;
+                NS_LOG_ERROR("[MAC stats] summary mismatch for AP " << accessPointId);
             }
         }
     }
 
-    out << "  ],\n"
-        << "  \"summary\": [\n";
-
-    for (std::size_t apId = 0; apId < summaryFromWindows.size(); ++apId)
+    output << "  ],\n  \"wifi_summary\": [\n";
+    for (std::size_t accessPointId = 0; accessPointId < summaryFromWindows.size(); ++accessPointId)
     {
-        const auto& summary = summaryFromWindows[apId];
-
-        out << "    {\n"
-            << "      \"ap_id\": " << apId << ",\n"
-            << "      \"up_total_bytes\": " << summary.upTotalBytes << ",\n"
-            << "      \"down_total_bytes\": " << summary.downTotalBytes << ",\n"
-            << "      \"up_flows\": ";
-
-        WriteMacSummaryFlowArray(out,
-                                 statistics.stationIpsByBss[apId],
+        const auto& summary = summaryFromWindows[accessPointId];
+        output << "    {\n      \"access_point_id\": ";
+        WriteJsonScalar(output, accessPointId);
+        output << ",\n      \"uplink\": {\n        \"total_payload_bytes\": ";
+        WriteJsonScalar(output, summary.upTotalBytes);
+        output << ",\n        \"flows\": ";
+        WriteMacSummaryFlowArray(output,
+                                 statistics.stationIpsByBss[accessPointId],
                                  summary.upBytes,
                                  summary.upPhyRates,
-                                 "        ");
-
-        out << ",\n"
-            << "      \"down_flows\": ";
-
-        WriteMacSummaryFlowArray(out,
-                                 statistics.stationIpsByBss[apId],
+                                 "          ");
+        output << "\n      },\n      \"downlink\": {\n        \"total_payload_bytes\": ";
+        WriteJsonScalar(output, summary.downTotalBytes);
+        output << ",\n        \"flows\": ";
+        WriteMacSummaryFlowArray(output,
+                                 statistics.stationIpsByBss[accessPointId],
                                  summary.downBytes,
                                  summary.downPhyRates,
-                                 "        ");
-
-        out << "\n"
-            << "    }";
-
-        if (apId + 1 < summaryFromWindows.size())
+                                 "          ");
+        output << "\n      }\n    }";
+        if (accessPointId + 1 < summaryFromWindows.size())
         {
-            out << ",";
+            output << ',';
         }
-        out << "\n";
+        output << '\n';
     }
-
-    out << "  ],\n"
-        << "  \"validation\": {\n"
-        << "    \"window_totals_consistent\": " << (windowTotalsConsistent ? "true" : "false")
-        << ",\n"
-        << "    \"summary_totals_consistent\": " << (summaryTotalsConsistent ? "true" : "false")
-        << "\n"
-        << "  }\n"
-        << "}\n";
-
-    if (!out)
-    {
-        throw std::runtime_error("failed to write PHY statistics output: '" + outputPath + "'");
-    }
-    out.flush();
-    if (!out)
-    {
-        throw std::runtime_error("failed to flush PHY statistics output: '" + outputPath + "'");
-    }
-    out.close();
-    if (out.fail())
-    {
-        throw std::runtime_error("failed to close PHY statistics output: '" + outputPath + "'");
-    }
-
-    NS_LOG_INFO("PHY per-node statistics written to "
-                << outputPath << " (" << emittedWindowCount << " non-empty / " << windowCount
-                << " total x " << statistics.windowMs << "ms windows)"
-                << ", windowTotalsConsistent=" << (windowTotalsConsistent ? "true" : "false")
-                << ", summaryTotalsConsistent=" << (summaryTotalsConsistent ? "true" : "false"));
-}
-
-void
-WifiStatistics::WriteJson(const std::string& outputPath) const
-{
-    WriteWifiStatisticsJson(*m_state, outputPath);
+    output << "  ]";
+    return validation;
 }
 
 } // namespace ns3

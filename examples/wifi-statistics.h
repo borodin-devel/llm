@@ -11,6 +11,8 @@
 #include <memory>
 #include <string>
 
+class ExperimentJsonTestCase;
+
 namespace ns3
 {
 
@@ -19,6 +21,7 @@ class Ipv4InterfaceContainer;
 class NetDevice;
 class StaLlmGenerator;
 class TrafficCoordinator;
+struct ScenarioConfig;
 struct WifiStatisticsState;
 
 /** Accumulate PHY rates weighted by allocated airtime. */
@@ -125,24 +128,28 @@ class WifiStatistics
                           uint32_t payloadBytes);
 
     /**
-     * Serialize all collected statistics to JSON.
-     *
-     * @param outputPath Destination JSON path.
-     * @throws std::runtime_error if the output cannot be exclusively created or fully written.
-     */
-    void WriteJson(const std::string& outputPath) const;
-
-    /**
      * Build cross-layer measurements for every registered node and interval.
      *
      * @return Typed per-node cross-layer measurements.
      */
     CrossLayerSummary BuildCrossLayerSummary() const;
 
-    /** Print the final cross-layer consistency report. */
-    void PrintCrossLayerReport() const;
+    /**
+     * Serialize the complete experiment output to JSON.
+     *
+     * @param outputPath Destination JSON path.
+     * @param transmissionSummary Typed transmission measurements.
+     * @param crossLayerSummary Typed cross-layer measurements.
+     * @param configuration Effective scenario configuration.
+     * @throws std::runtime_error if the output cannot be exclusively created or fully written.
+     */
+    void WriteExperimentJson(const std::string& outputPath,
+                             const TransmissionSummary& transmissionSummary,
+                             const CrossLayerSummary& crossLayerSummary,
+                             const ScenarioConfig& configuration) const;
 
   private:
+    friend class ::ExperimentJsonTestCase;
     std::unique_ptr<WifiStatisticsState> m_state; ///< Scenario statistics state.
 };
 

@@ -13,9 +13,12 @@ build_lib_example(
     traffic-coordinator.cc
     traffic-flow-monitor.cc
     traffic-flow-summary.cc
+    experiment-json.cc
+    transmission-summary-json.cc
+    cross-layer-summary-json.cc
     wifi-statistics.cc
     wifi-statistics-json.cc
     wifi-statistics-owner.cc
-    wifi-statistics-report.cc
+    wifi-statistics-summary.cc
   LIBRARIES_TO_LINK ${libllm}
 )

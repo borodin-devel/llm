@@ -211,17 +211,21 @@ main(int argc, char* argv[])
 
     try
     {
-        wifiStatistics.WriteJson(resolvedPaths.outputFile.string());
+        const TransmissionSummary transmissionSummary =
+            trafficFlowMonitor.BuildTransmissionSummary();
+        const CrossLayerSummary crossLayerSummary = wifiStatistics.BuildCrossLayerSummary();
+        wifiStatistics.WriteExperimentJson(resolvedPaths.outputFile.string(),
+                                           transmissionSummary,
+                                           crossLayerSummary,
+                                           config);
     }
     catch (const std::exception& error)
     {
         Simulator::Destroy();
-        std::cerr << "error: cannot write statistics output '" << resolvedPaths.outputFile.string()
+        std::cerr << "error: cannot write experiment output '" << resolvedPaths.outputFile.string()
                   << "': " << error.what() << std::endl;
         return 1;
     }
-    trafficFlowMonitor.PrintTransmissionTimePerSender();
-    wifiStatistics.PrintCrossLayerReport();
 
     Simulator::Destroy();
 
