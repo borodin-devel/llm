@@ -19,6 +19,7 @@ build_lib_example(
     experiment-statistics-tcp.cc
     experiment-statistics-device.cc
     experiment-statistics-mac.cc
+    experiment-statistics-phy.cc
     wifi-statistics.cc
     wifi-statistics-json.cc
     wifi-statistics-owner.cc

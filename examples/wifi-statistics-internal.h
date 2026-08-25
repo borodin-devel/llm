@@ -150,7 +150,17 @@ struct NodeSecondStats
     uint64_t macFinalDataFailures{0};             ///< MAC final data failure count.
 };
 
+/** Identity used to distinguish first tagged MPDU transmissions from retries. */
 using PhyMpduKey = std::tuple<uint32_t, std::string, std::string, uint16_t, uint8_t, uint64_t>;
+
+/** One application-tagged byte span observed in a transmitted MPDU. */
+struct PhyTaggedPayloadSpan
+{
+    std::string sourceIpv4;            ///< Tagged source IPv4 address.
+    std::string destinationIpv4;       ///< Tagged destination IPv4 address.
+    int64_t applicationTransmitTimeUs; ///< Original application transmit time in microseconds.
+    uint32_t bytes;                    ///< Number of bytes covered by the tag.
+};
 
 /** Identity of one application receive stream across experiment windows. */
 struct AppReceiveStreamKey
@@ -218,6 +228,70 @@ struct WifiStatisticsState
 bool ResolveStatisticsEventWindow(const WifiStatisticsState& statistics,
                                   int64_t absoluteTimeUs,
                                   ExperimentWindowBounds& bounds);
+
+/**
+ * Record one tagged MPDU transmission attempt in configured and legacy windows.
+ *
+ * @param statistics Scenario statistics state.
+ * @param transmitterNodeId Local PHY transmitter node identifier.
+ * @param absoluteTimeUs Absolute attempt time in microseconds.
+ * @param completeMpduBytes Complete transmitted MPDU size in bytes.
+ * @param spans Application-tagged payload spans in the MPDU.
+ * @param identity Stable MPDU identity when the Wi-Fi data header is available.
+ */
+void RecordPhyMpduAttempt(WifiStatisticsState& statistics,
+                          uint32_t transmitterNodeId,
+                          int64_t absoluteTimeUs,
+                          uint32_t completeMpduBytes,
+                          const std::vector<PhyTaggedPayloadSpan>& spans,
+                          const std::optional<PhyMpduKey>& identity);
+
+/**
+ * Record one grouped tagged-flow contribution to a PPDU attempt.
+ *
+ * @param statistics Scenario statistics state.
+ * @param absoluteTimeUs Absolute attempt time in microseconds.
+ * @param sourceIpv4 Tagged source IPv4 address.
+ * @param destinationIpv4 Tagged destination IPv4 address.
+ * @param dataRateBps Byte-weighted PHY data rate in bits per second.
+ * @param allocatedAirtimeUs PPDU airtime allocated to the tagged flow in microseconds.
+ */
+void RecordPhyRateAttempt(WifiStatisticsState& statistics,
+                          int64_t absoluteTimeUs,
+                          const std::string& sourceIpv4,
+                          const std::string& destinationIpv4,
+                          double dataRateBps,
+                          long double allocatedAirtimeUs);
+
+/**
+ * Calculate the airtime-weighted data rate for one PHY accumulator.
+ *
+ * @param accumulator PHY accumulator to summarize.
+ * @return Average data rate in megabits per second, or null without positive airtime.
+ */
+std::optional<double> CalculateAveragePhyDataRateMbps(const PhyPeerAccumulator& accumulator);
+
+/**
+ * Record one local PHY busy interval in configured and legacy windows.
+ *
+ * @param statistics Scenario statistics state.
+ * @param nodeId Local PHY node identifier.
+ * @param absoluteStartUs Absolute interval start in microseconds.
+ * @param durationUs Interval duration in microseconds.
+ */
+void RecordPhyBusyInterval(WifiStatisticsState& statistics,
+                           uint32_t nodeId,
+                           int64_t absoluteStartUs,
+                           int64_t durationUs);
+
+/**
+ * Connect all PHY traces for one Wi-Fi device.
+ *
+ * @param statistics Scenario statistics state.
+ * @param nodeId Owning node identifier.
+ * @param device Wi-Fi device whose PHY traces are connected.
+ */
+void ConnectPhyTraces(WifiStatisticsState& statistics, uint32_t nodeId, Ptr<WifiNetDevice> device);
 
 /**
  * Record one parsed device transmit observation.

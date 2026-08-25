@@ -176,6 +176,33 @@ struct MacDirectionAccumulator
     std::map<uint32_t, MacPeerAccumulator> peersByNodeId; ///< Payload totals by peer node.
 };
 
+/** PHY observations for one peer in one experiment window. */
+struct PhyPeerAccumulator
+{
+    uint64_t taggedPayloadBytes{0};         ///< Tagged payload bytes including retransmissions.
+    uint64_t uniqueTaggedPayloadBytes{0};   ///< Tagged payload bytes from first transmissions.
+    uint64_t transmissionAttemptCount{0};   ///< Tagged PPDU transmission attempts.
+    uint64_t retransmissionCount{0};        ///< Repeated tagged MPDU identities.
+    long double dataRateBpsUs{0.0};         ///< PHY data rate multiplied by allocated airtime.
+    long double transmissionAirtimeUs{0.0}; ///< Allocated transmission airtime in microseconds.
+};
+
+/** PHY observations for one entity and traffic direction. */
+struct PhyDirectionAccumulator : PhyPeerAccumulator
+{
+    uint64_t taggedMpduCount{0};                          ///< Complete tagged MPDU attempt count.
+    uint64_t completeTaggedMpduBytes{0};                  ///< Complete tagged MPDU attempt bytes.
+    std::map<uint32_t, PhyPeerAccumulator> peersByNodeId; ///< PHY totals by peer node.
+};
+
+/** PHY observations for one entity in one experiment window. */
+struct PhyCategoryAccumulator
+{
+    int64_t busyTimeUs{0};            ///< Local PHY busy time in microseconds.
+    PhyDirectionAccumulator uplink;   ///< Uplink PHY observations.
+    PhyDirectionAccumulator downlink; ///< Downlink PHY observations.
+};
+
 /** Stable identity of one owner-local TCP connection. */
 struct TcpConnectionKey
 {
@@ -213,8 +240,11 @@ struct LocalEntityWindowAccumulator
 {
     DirectionPair<AppDirectionAccumulator> app; ///< Application observations by direction.
     DirectionPair<DeviceTransmissionAccumulator>
-        deviceTransmission;                     ///< Device transmission observations by direction.
+        deviceTransmission; ///< Device transmission observations by direction.
+    DirectionPair<SampleAccumulator>
+        applicationToPhyDelayUs;                ///< Application-to-PHY delay by sender direction.
     DirectionPair<MacDirectionAccumulator> mac; ///< MAC observations by direction.
+    PhyCategoryAccumulator phy;                 ///< PHY observations and local busy time.
     std::map<std::pair<ExperimentDirection, uint32_t>, TcpWindowAccumulator>
         tcpConnections; ///< TCP observations by direction and peer node.
 };

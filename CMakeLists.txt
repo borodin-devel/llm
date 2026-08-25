@@ -45,6 +45,7 @@ set(test_sources
     test/experiment-app-test-suite.cc
     test/experiment-tcp-test-suite.cc
     test/experiment-device-mac-test-suite.cc
+    test/experiment-phy-test-suite.cc
     examples/scenario-log.cc
     examples/scenario-config.cc
     examples/scenario-config-json.cc
@@ -62,6 +63,7 @@ set(test_sources
     examples/experiment-statistics-tcp.cc
     examples/experiment-statistics-device.cc
     examples/experiment-statistics-mac.cc
+    examples/experiment-statistics-phy.cc
     examples/wifi-statistics.cc
     examples/wifi-statistics-json.cc
     examples/wifi-statistics-owner.cc
