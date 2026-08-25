@@ -17,6 +17,8 @@ set(source_files
 
 set(header_files
     lib/json.hpp
+    # toml++ v3.4.0, MIT, https://github.com/marzer/tomlplusplus
+    lib/toml.hpp
     model/agent-data.h
     model/app-tx-tag.h
     model/traffic-sink.h

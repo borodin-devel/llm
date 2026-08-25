@@ -27,17 +27,10 @@
 
 using namespace ns3;
 
-static constexpr double kAutoExperimentTailMarginMs = 2000.0;
-
 int
 main(int argc, char* argv[])
 {
     LogComponent& g_log = llm_example::GetScenarioLog();
-
-    RngSeedManager::SetSeed(12345);
-    RngSeedManager::SetRun(1);
-
-    Config::SetDefault("ns3::TcpL4Protocol::SocketType", TypeIdValue(TcpHighSpeed::GetTypeId()));
 
     const std::vector<std::string> arguments(argv + 1, argv + argc);
     const ScenarioArgumentResult argumentResult = ParseScenarioArguments(arguments);
@@ -55,11 +48,16 @@ main(int argc, char* argv[])
     }
     const ScenarioConfig& config = argumentResult.config;
 
-    std::cout << "=== ns-3 Sample Scenario: " << config.bssCount << " APs x "
-              << config.stationsPerBss << " Stations ===" << std::endl;
-    std::cout << "JSON: " << config.tracePath << std::endl;
-    std::cout << "Bandwidth: " << config.bandwidthMhz << " MHz" << std::endl;
-    std::cout << "MAC stats JSON: " << config.statisticsOutputPath << std::endl;
+    RngSeedManager::SetSeed(config.simulation.rngSeed);
+    RngSeedManager::SetRun(config.simulation.rngRun);
+
+    Config::SetDefault("ns3::TcpL4Protocol::SocketType", TypeIdValue(TcpHighSpeed::GetTypeId()));
+
+    std::cout << "=== ns-3 Sample Scenario: " << config.topology.bssCount << " APs x "
+              << config.topology.stationsPerBss << " Stations ===" << std::endl;
+    std::cout << "JSON: " << config.general.traceFile << std::endl;
+    std::cout << "Bandwidth: " << config.wifi.bandwidthMhz << " MHz" << std::endl;
+    std::cout << "MAC stats JSON: " << config.general.outputName << std::endl;
     std::cout << "Standard: 802.11ax (Wi-Fi 6)" << std::endl;
     std::cout << "Transport: TCP" << std::endl;
     std::cout << "Channel model: separate YansWifiChannel per AP group" << std::endl;
@@ -72,48 +70,48 @@ main(int argc, char* argv[])
     LogComponentEnable("TrafficSink", LOG_LEVEL_WARN);
     LogComponentEnable("ContentionAwareAgentDistribution", LOG_LEVEL_INFO);
 
-    ParsedResult parsedTrace = ParseJsonFile(config.tracePath);
+    ParsedResult parsedTrace = ParseJsonFile(config.general.traceFile);
     const double traceDurationMs = parsedTrace.experimentDurationMs;
-    const double maxExperimentDurationMs = config.automaticDuration
-                                               ? traceDurationMs + kAutoExperimentTailMarginMs
-                                               : config.fixedDurationMs;
+    const double maxExperimentDurationMs =
+        config.simulation.durationMode == DurationMode::AUTO
+            ? traceDurationMs + config.simulation.autoTailSeconds * 1000.0
+            : config.simulation.fixedDurationSeconds * 1000.0;
     TrafficCoordinator trafficCoordinator(traceDurationMs, maxExperimentDurationMs);
     WifiStatistics wifiStatistics(trafficCoordinator);
     TrafficFlowMonitor trafficFlowMonitor(trafficCoordinator, wifiStatistics);
 
     ContentionAwareDistributionConfig distributionConfig;
-    distributionConfig.nAp = config.bssCount;
-    distributionConfig.nStationsPerAp = config.stationsPerBss;
-    // This cap is intentionally above the largest supported trace population.
-    distributionConfig.maxAgentsPerStation = 832;
-    distributionConfig.lowContentionPriority = true;
-    distributionConfig.slotMs = 10;
+    distributionConfig.nAp = config.topology.bssCount;
+    distributionConfig.nStationsPerAp = config.topology.stationsPerBss;
+    distributionConfig.maxAgentsPerStation = config.distribution.maxAgentsPerStation;
+    distributionConfig.lowContentionPriority = config.distribution.lowContentionPriority;
+    distributionConfig.slotMs = config.distribution.slotMs;
 
     DistributionResult distribution =
         DistributeAgentsContentionAware(parsedTrace, distributionConfig);
 
-    for (int bssIndex = 0; bssIndex < config.bssCount; ++bssIndex)
+    for (int bssIndex = 0; bssIndex < config.topology.bssCount; ++bssIndex)
     {
         SetupApGroup(bssIndex,
-                     config.bandwidthMhz,
+                     config.wifi.bandwidthMhz,
                      distribution.apStationMaps[bssIndex],
                      distribution.apAgentMaps[bssIndex],
                      distribution.apAddresses[bssIndex],
-                     config.stationsPerBss,
+                     config.topology.stationsPerBss,
                      trafficCoordinator,
                      wifiStatistics);
     }
 
     trafficCoordinator.FinalizeRegistration();
 
-    if (config.automaticDuration)
+    if (config.simulation.durationMode == DurationMode::AUTO)
     {
         std::cout << "\nExperiment time mode: auto" << std::endl;
         std::cout << "Experiment duration from JSON: "
                   << trafficCoordinator.GetTraceDurationMs() / 1000.0 << " seconds" << std::endl;
         std::cout << "Max experiment time: "
                   << trafficCoordinator.GetMaxExperimentDurationMs() / 1000.0
-                  << " seconds (JSON duration + " << kAutoExperimentTailMarginMs / 1000.0
+                  << " seconds (JSON duration + " << config.simulation.autoTailSeconds
                   << " seconds)" << std::endl;
     }
     else
@@ -156,7 +154,7 @@ main(int argc, char* argv[])
     NS_ABORT_MSG_IF(trafficCoordinator.GetExperimentStartUs() < 0,
                     "Simulation ended before the global traffic barrier opened");
 
-    wifiStatistics.WriteJson(config.statisticsOutputPath);
+    wifiStatistics.WriteJson(config.general.outputName);
     trafficFlowMonitor.PrintTransmissionTimePerSender();
     wifiStatistics.PrintCrossLayerReport();
 

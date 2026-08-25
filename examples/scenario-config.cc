@@ -26,6 +26,34 @@ InvalidDurationMessage(const std::string& value)
 
 } // namespace
 
+std::ostream&
+operator<<(std::ostream& output, DurationMode durationMode)
+{
+    switch (durationMode)
+    {
+    case DurationMode::AUTO:
+        return output << "AUTO";
+    case DurationMode::FIXED:
+        return output << "FIXED";
+    }
+    return output << "unknown DurationMode";
+}
+
+std::ostream&
+operator<<(std::ostream& output, WifiBandConfig band)
+{
+    switch (band)
+    {
+    case WifiBandConfig::BAND_2_4_GHZ:
+        return output << "BAND_2_4_GHZ";
+    case WifiBandConfig::BAND_5_GHZ:
+        return output << "BAND_5_GHZ";
+    case WifiBandConfig::BAND_6_GHZ:
+        return output << "BAND_6_GHZ";
+    }
+    return output << "unknown WifiBandConfig";
+}
+
 ScenarioArgumentResult
 ParseScenarioArguments(const std::vector<std::string>& arguments)
 {
@@ -36,15 +64,15 @@ ParseScenarioArguments(const std::vector<std::string>& arguments)
         return result;
     }
 
-    result.config.tracePath = arguments[0];
+    result.config.general.traceFile = arguments[0];
     if (arguments.size() >= 2)
     {
         // Preserve the sample's existing std::stoi behavior for malformed input.
-        result.config.bandwidthMhz = std::stoi(arguments[1]);
+        result.config.wifi.bandwidthMhz = std::stoi(arguments[1]);
     }
     if (arguments.size() >= 3)
     {
-        result.config.statisticsOutputPath = arguments[2];
+        result.config.general.outputName = arguments[2];
     }
     if (arguments.size() >= 4 && arguments[3] != "auto")
     {
@@ -58,8 +86,8 @@ ParseScenarioArguments(const std::vector<std::string>& arguments)
                 throw std::invalid_argument("invalid experiment time");
             }
 
-            result.config.automaticDuration = false;
-            result.config.fixedDurationMs = fixedDurationSeconds * 1000.0;
+            result.config.simulation.durationMode = DurationMode::FIXED;
+            result.config.simulation.fixedDurationSeconds = fixedDurationSeconds;
         }
         catch (const std::exception&)
         {
@@ -72,9 +100,9 @@ ParseScenarioArguments(const std::vector<std::string>& arguments)
         result.error = "Too many command-line arguments.";
         return result;
     }
-    if (!IsSupportedBandwidth(result.config.bandwidthMhz))
+    if (!IsSupportedBandwidth(result.config.wifi.bandwidthMhz))
     {
-        result.error = "Unsupported bandwidth: " + std::to_string(result.config.bandwidthMhz) +
+        result.error = "Unsupported bandwidth: " + std::to_string(result.config.wifi.bandwidthMhz) +
                        " MHz. Expected 20, 40, 80 or 160.";
         return result;
     }

@@ -1,0 +1,115 @@
+[general]
+# Required input JSON trace. Relative paths use the process working directory.
+trace_file = "contrib/llm/test/data/minimal-trace.json"
+
+# Optional exact output directory. Omit to create ./run/YY-MM-DD_hh-mm-ss.
+# run_folder = "./run/custom"
+
+# JSON filename written inside the resolved run folder.
+output_name = "mac-node-stats.json"
+
+[simulation]
+# Experiment duration policy: "auto" or "fixed".
+duration_mode = "auto"
+
+# Positive duration in seconds when duration_mode is "fixed".
+fixed_duration_seconds = 0.0
+
+# Extra seconds after trace end in automatic mode.
+auto_tail_seconds = 2.0
+
+# Deterministic ns-3 random-number seed.
+rng_seed = 12345
+
+# Deterministic ns-3 run/substream number.
+rng_run = 1
+
+[topology]
+# Number of independent AP/BSS groups.
+bss_count = 3
+
+# Number of physical stations created in each BSS.
+stations_per_bss = 30
+
+# Coordinate increment on X, Y, and Z between neighboring APs, in meters.
+bss_spacing_m = 100.0
+
+# Radius of the uniform station disc around each AP, in meters.
+station_radius_m = 5.0
+
+# True creates one YansWifiChannel per BSS; false shares one channel.
+isolate_bss_channels = true
+
+# Prefix used to build one SSID per BSS.
+ssid_prefix = "llm-ap-"
+
+# TCP sink port on every AP.
+ap_sink_port = 10000
+
+# First TCP sink port assigned to STA 0; later STAs increment it by one.
+station_sink_base_port = 9000
+
+# Simulation time when generators begin TCP setup, in seconds.
+generator_start_seconds = 1.0
+
+[distribution]
+# Maximum application agents assigned to one physical STA; zero is unlimited.
+max_agents_per_station = 832
+
+# True minimizes active physical STA/slot pairs; false maximizes STA use first.
+low_contention_priority = true
+
+# Uplink-overlap slot width in milliseconds.
+slot_ms = 10
+
+[wifi]
+# Operating band for fixed 802.11ax: "2.4GHz", "5GHz", or "6GHz".
+band = "5GHz"
+
+# IEEE channel number; zero asks ns-3 to select the first valid channel.
+channel_number = 0
+
+# Channel width in MHz: 20, 40, 80, or 160.
+bandwidth_mhz = 20
+
+# Index of the primary 20 MHz subchannel.
+primary_20_index = 0
+
+# Registered ns-3 WifiRemoteStationManager TypeId name.
+rate_manager = "ns3::MinstrelHtWifiManager"
+
+# Whether non-AP STAs actively probe for their configured SSID.
+active_probing = true
+
+[tcp]
+# Registered ns-3 TcpCongestionOps TypeId used before Internet stack creation.
+congestion_control = "ns3::TcpHighSpeed"
+
+# TCP maximum segment payload in bytes.
+segment_size_bytes = 1460
+
+# TCP send-buffer size in bytes.
+send_buffer_bytes = 33554432
+
+# TCP receive-buffer size in bytes.
+receive_buffer_bytes = 33554432
+
+[statistics]
+# Width of sparse PHY statistics windows in milliseconds.
+window_ms = 10
+
+[logging]
+# SampleScenario level: off/error/warn/info/debug/function/logic/all.
+sample_scenario_level = "info"
+
+# APGenerator level: off/error/warn/info/debug/function/logic/all.
+ap_generator_level = "warn"
+
+# StaLlmGenerator level: off/error/warn/info/debug/function/logic/all.
+sta_generator_level = "warn"
+
+# TrafficSink level: off/error/warn/info/debug/function/logic/all.
+traffic_sink_level = "warn"
+
+# ContentionAwareAgentDistribution level: off/error/warn/info/debug/function/logic/all.
+contention_distribution_level = "info"
