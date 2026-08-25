@@ -64,8 +64,13 @@ bool GetStatisticsWindowIndex(int64_t absoluteUs,
 class WifiStatistics
 {
   public:
-    /** @param coordinator Traffic epoch and duration owner. */
-    explicit WifiStatistics(const TrafficCoordinator& coordinator);
+    /**
+     * Construct scenario statistics collection.
+     *
+     * @param coordinator Traffic epoch and duration owner.
+     * @param windowMs Statistics window width in milliseconds.
+     */
+    WifiStatistics(const TrafficCoordinator& coordinator, uint32_t windowMs);
     ~WifiStatistics();
 
     /**

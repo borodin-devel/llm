@@ -119,6 +119,26 @@ ParseScenarioLogLevel(std::string_view level)
     throw ScenarioConfigError("unknown scenario log level: " + std::string(level));
 }
 
+void
+ConfigureScenarioLogging(const LoggingConfig& logging)
+{
+    const std::array components{
+        std::pair{"SampleScenario", std::string_view(logging.sampleScenarioLevel)},
+        std::pair{"APGenerator", std::string_view(logging.apGeneratorLevel)},
+        std::pair{"StaLlmGenerator", std::string_view(logging.staGeneratorLevel)},
+        std::pair{"TrafficSink", std::string_view(logging.trafficSinkLevel)},
+        std::pair{"ContentionAwareAgentDistribution",
+                  std::string_view(logging.contentionDistributionLevel)},
+    };
+    for (const auto& [name, configuredLevel] : components)
+    {
+        if (const auto level = ParseScenarioLogLevel(configuredLevel))
+        {
+            LogComponentEnable(name, *level);
+        }
+    }
+}
+
 TypeId
 ResolveWifiManagerType(std::string_view name)
 {

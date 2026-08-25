@@ -167,6 +167,16 @@ WifiPhyBand ToWifiPhyBand(WifiBandConfig band);
 std::optional<LogLevel> ParseScenarioLogLevel(std::string_view level);
 
 /**
+ * Enable scenario log components at their configured levels.
+ *
+ * Components configured as off remain disabled.
+ *
+ * @param logging Scenario component logging configuration.
+ * @throws ScenarioConfigError if a level name is invalid.
+ */
+void ConfigureScenarioLogging(const LoggingConfig& logging);
+
+/**
  * Resolve and validate a Wi-Fi rate-manager TypeId.
  *
  * @param name Fully qualified TypeId name.
@@ -244,10 +254,10 @@ struct ScenarioLaunchConfig
 /** Filesystem paths resolved for one scenario run. */
 struct ResolvedRunPaths
 {
-    std::filesystem::path configFile; ///< Resolved TOML configuration path.
-    std::filesystem::path traceFile;  ///< Resolved input trace path.
-    std::filesystem::path runFolder;  ///< Directory that owns run output.
-    std::filesystem::path outputFile; ///< Final statistics output path.
+    std::filesystem::path configFile;   ///< Resolved TOML configuration path.
+    std::filesystem::path traceFile;    ///< Resolved input trace path.
+    std::filesystem::path runFolder;    ///< Directory that owns run output.
+    std::filesystem::path outputFile;   ///< Final statistics output path.
     bool usesAutomaticRunFolder{false}; ///< Whether the run folder uses a launch timestamp.
 };
 

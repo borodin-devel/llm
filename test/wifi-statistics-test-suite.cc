@@ -1,3 +1,4 @@
+#include "../examples/scenario-config.h"
 #include "../examples/traffic-coordinator.h"
 #include "../examples/wifi-statistics-internal.h"
 #include "../examples/wifi-statistics.h"
@@ -36,21 +37,96 @@ void
 StatisticsWindowTestCase::DoRun()
 {
     uint32_t index = 999;
-    NS_TEST_ASSERT_MSG_EQ(GetStatisticsWindowIndex(1000000, 1000000, 25.0, 10, index),
+    NS_TEST_ASSERT_MSG_EQ(GetStatisticsWindowIndex(1000000, 1000000, 50.0, 25, index),
                           true,
                           "Epoch must be included");
     NS_TEST_ASSERT_MSG_EQ(index, 0, "Wrong first window");
-    NS_TEST_ASSERT_MSG_EQ(GetStatisticsWindowIndex(1009999, 1000000, 25.0, 10, index),
+    NS_TEST_ASSERT_MSG_EQ(GetStatisticsWindowIndex(1024999, 1000000, 50.0, 25, index),
                           true,
                           "Last microsecond of first window must be included");
     NS_TEST_ASSERT_MSG_EQ(index, 0, "Wrong boundary window");
-    NS_TEST_ASSERT_MSG_EQ(GetStatisticsWindowIndex(1010000, 1000000, 25.0, 10, index),
+    NS_TEST_ASSERT_MSG_EQ(GetStatisticsWindowIndex(1025000, 1000000, 50.0, 25, index),
                           true,
                           "Second window must be included");
     NS_TEST_ASSERT_MSG_EQ(index, 1, "Wrong second window");
-    NS_TEST_ASSERT_MSG_EQ(GetStatisticsWindowIndex(1025000, 1000000, 25.0, 10, index),
+    NS_TEST_ASSERT_MSG_EQ(GetStatisticsWindowIndex(1050000, 1000000, 50.0, 25, index),
                           false,
                           "End boundary must be excluded");
+}
+
+/**
+ * @ingroup tests
+ *
+ * Verify configured levels are applied to the intended scenario components.
+ */
+class ScenarioLoggingTestCase : public TestCase
+{
+  public:
+    ScenarioLoggingTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+ScenarioLoggingTestCase::ScenarioLoggingTestCase()
+    : TestCase("configure scenario logging components")
+{
+}
+
+void
+ScenarioLoggingTestCase::DoRun()
+{
+    const std::vector<std::string> componentNames{"SampleScenario",
+                                                  "APGenerator",
+                                                  "StaLlmGenerator",
+                                                  "TrafficSink",
+                                                  "ContentionAwareAgentDistribution"};
+    for (const auto& name : componentNames)
+    {
+        LogComponentDisable(name, LOG_LEVEL_ALL);
+    }
+
+    LoggingConfig logging;
+    logging.sampleScenarioLevel = "error";
+    logging.apGeneratorLevel = "warn";
+    logging.staGeneratorLevel = "function";
+    logging.trafficSinkLevel = "logic";
+    logging.contentionDistributionLevel = "off";
+    ConfigureScenarioLogging(logging);
+
+    const auto& scenario = GetLogComponent("SampleScenario");
+    NS_TEST_ASSERT_MSG_EQ(scenario.IsEnabled(LOG_ERROR), true, "Scenario error level is disabled");
+    NS_TEST_ASSERT_MSG_EQ(scenario.IsEnabled(LOG_WARN), false, "Scenario warning level is enabled");
+
+    const auto& apGenerator = GetLogComponent("APGenerator");
+    NS_TEST_ASSERT_MSG_EQ(apGenerator.IsEnabled(LOG_WARN), true, "AP warning level is disabled");
+    NS_TEST_ASSERT_MSG_EQ(apGenerator.IsEnabled(LOG_INFO), false, "AP info level is enabled");
+
+    const auto& staGenerator = GetLogComponent("StaLlmGenerator");
+    NS_TEST_ASSERT_MSG_EQ(staGenerator.IsEnabled(LOG_FUNCTION),
+                          true,
+                          "Station function level is disabled");
+    NS_TEST_ASSERT_MSG_EQ(staGenerator.IsEnabled(LOG_LOGIC),
+                          false,
+                          "Station logic level is enabled");
+
+    const auto& trafficSink = GetLogComponent("TrafficSink");
+    NS_TEST_ASSERT_MSG_EQ(trafficSink.IsEnabled(LOG_LOGIC),
+                          true,
+                          "Traffic sink logic level is disabled");
+    NS_TEST_ASSERT_MSG_EQ(trafficSink.IsEnabled(LOG_DEBUG),
+                          false,
+                          "Traffic sink debug level is enabled");
+
+    const auto& distribution = GetLogComponent("ContentionAwareAgentDistribution");
+    NS_TEST_ASSERT_MSG_EQ(distribution.IsEnabled(LOG_LEVEL_ALL),
+                          false,
+                          "Off distribution logging was enabled");
+
+    for (const auto& name : componentNames)
+    {
+        LogComponentDisable(name, LOG_LEVEL_ALL);
+    }
 }
 
 /**
@@ -106,10 +182,12 @@ void
 WifiStatisticsAttributionTestCase::DoRun()
 {
     TrafficCoordinator coordinator(50.0, 50.0);
-    WifiStatistics firstOwner(coordinator);
-    WifiStatistics secondOwner(coordinator);
+    WifiStatistics firstOwner(coordinator, 25);
+    WifiStatistics secondOwner(coordinator, 25);
 
-    WifiStatisticsState statistics(coordinator);
+    WifiStatisticsState statistics(coordinator, 25);
+    NS_TEST_ASSERT_MSG_EQ(statistics.windowMs, 25, "Wrong stored window width");
+    NS_TEST_ASSERT_MSG_EQ(statistics.windowUs, 25000, "Wrong derived window width");
     statistics.stationIpsByBss = {{"10.1.0.2"}, {"10.1.1.2"}};
     statistics.bssByApIp = {{"10.1.0.1", 0}, {"10.1.1.1", 1}};
     statistics.bssByStationIp = {{"10.1.0.2", 0}, {"10.1.1.2", 1}};
@@ -154,12 +232,12 @@ WifiStatisticsJsonTestCase::WifiStatisticsJsonTestCase()
 void
 WifiStatisticsJsonTestCase::DoRun()
 {
-    TrafficCoordinator coordinator(50.0, 50.0);
-    WifiStatisticsState statistics(coordinator);
+    TrafficCoordinator coordinator(100.0, 100.0);
+    WifiStatisticsState statistics(coordinator, 25);
     statistics.stationIpsByBss = {{"10.1.0.2", "10.1.0.3"}};
 
     auto& uplinkWindow = statistics.phyWindows[0][0];
-    uplinkWindow.upBytes["10.1.0.2"] = 120;
+    uplinkWindow.upBytes["10.1.0.2"] = 1000;
     uplinkWindow.upPhyRates["10.1.0.2"].Add(12e6, 100.0);
     statistics.phyWindows[3][0].downBytes["10.1.0.3"] = 80;
 
@@ -170,19 +248,23 @@ WifiStatisticsJsonTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(input.good(), true, "Statistics JSON was not created");
     const nlohmann::json document = nlohmann::json::parse(input);
 
-    NS_TEST_ASSERT_MSG_EQ(document.at("window_ms").get<uint32_t>(), 10, "Wrong window unit");
+    NS_TEST_ASSERT_MSG_EQ(document.at("window_ms").get<uint32_t>(), 25, "Wrong window unit");
     NS_TEST_ASSERT_MSG_EQ(document.at("windows").size(), 2, "Sparse windows were materialized");
     NS_TEST_ASSERT_MSG_EQ(document.at("windows").at(0).at("timestamp").get<uint32_t>(),
-                          10,
+                          25,
                           "Wrong first sparse timestamp");
     NS_TEST_ASSERT_MSG_EQ(document.at("windows").at(1).at("timestamp").get<uint32_t>(),
-                          40,
+                          100,
                           "Wrong second sparse timestamp");
 
     const auto& uplinkFlow = document.at("windows").at(0).at("stats").at(0).at("up_flows").at(0);
     NS_TEST_ASSERT_MSG_EQ(uplinkFlow.at("bytes").get<uint64_t>(),
-                          120,
+                          1000,
                           "Wrong serialized uplink bytes");
+    NS_TEST_ASSERT_MSG_EQ_TOL(uplinkFlow.at("bw").get<double>(),
+                              0.32,
+                              1e-9,
+                              "Wrong serialized bandwidth unit");
     NS_TEST_ASSERT_MSG_EQ_TOL(uplinkFlow.at("avg_phy_data_rate_mbps").get<double>(),
                               12.0,
                               1e-9,
@@ -194,7 +276,7 @@ WifiStatisticsJsonTestCase::DoRun()
 
     const auto& summary = document.at("summary").at(0);
     NS_TEST_ASSERT_MSG_EQ(summary.at("up_total_bytes").get<uint64_t>(),
-                          120,
+                          1000,
                           "Wrong uplink summary");
     NS_TEST_ASSERT_MSG_EQ(summary.at("down_total_bytes").get<uint64_t>(),
                           80,
@@ -213,6 +295,7 @@ std::vector<TestCase*>
 CreateWifiStatisticsTestCases()
 {
     return {new StatisticsWindowTestCase,
+            new ScenarioLoggingTestCase,
             new PhyRateAccumulatorTestCase,
             new WifiStatisticsAttributionTestCase,
             new WifiStatisticsJsonTestCase};

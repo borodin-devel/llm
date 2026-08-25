@@ -45,6 +45,7 @@ main(int argc, char* argv[])
 
     RngSeedManager::SetSeed(config.simulation.rngSeed);
     RngSeedManager::SetRun(config.simulation.rngRun);
+    ConfigureScenarioLogging(config.logging);
 
     Config::SetDefault("ns3::TcpL4Protocol::SocketType",
                        TypeIdValue(ResolveTcpCongestionType(config.tcp.congestionControl)));
@@ -64,12 +65,6 @@ main(int argc, char* argv[])
                                                      : "shared YansWifiChannel across AP groups")
               << std::endl;
 
-    LogComponentEnable("SampleScenario", LOG_LEVEL_INFO);
-    LogComponentEnable("APGenerator", LOG_LEVEL_WARN);
-    LogComponentEnable("StaLlmGenerator", LOG_LEVEL_WARN);
-    LogComponentEnable("TrafficSink", LOG_LEVEL_WARN);
-    LogComponentEnable("ContentionAwareAgentDistribution", LOG_LEVEL_INFO);
-
     ParsedResult parsedTrace = ParseJsonFile(config.general.traceFile);
     const double traceDurationMs = parsedTrace.experimentDurationMs;
     const double maxExperimentDurationMs =
@@ -77,7 +72,7 @@ main(int argc, char* argv[])
             ? traceDurationMs + config.simulation.autoTailSeconds * 1000.0
             : config.simulation.fixedDurationSeconds * 1000.0;
     TrafficCoordinator trafficCoordinator(traceDurationMs, maxExperimentDurationMs);
-    WifiStatistics wifiStatistics(trafficCoordinator);
+    WifiStatistics wifiStatistics(trafficCoordinator, config.statistics.windowMs);
     TrafficFlowMonitor trafficFlowMonitor(trafficCoordinator, wifiStatistics);
 
     ContentionAwareDistributionConfig distributionConfig;

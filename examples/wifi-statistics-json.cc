@@ -15,8 +15,6 @@ namespace ns3
 {
 
 static LogComponent& g_log = llm_example::GetScenarioLog();
-static constexpr uint32_t kMacStatsWindowMs = 10;
-static constexpr int64_t kMacStatsWindowUs = static_cast<int64_t>(kMacStatsWindowMs) * 1000;
 
 static uint64_t
 GetMacBytes(const MacWindowStats* stats, const std::string& staIp, bool uplink)
@@ -94,6 +92,7 @@ SumMacDirectionBytes(const MacWindowStats* stats, bool uplink)
 
 static uint64_t
 WriteMacFlowArray(std::ofstream& out,
+                  const WifiStatisticsState& statistics,
                   const std::vector<std::string>& staIps,
                   const MacWindowStats* stats,
                   bool uplink,
@@ -138,7 +137,7 @@ WriteMacFlowArray(std::ofstream& out,
         // Since window_seconds = window_us / 1e6, this simplifies to
         // bytes * 8 / window_us.
         const double bwMbps =
-            static_cast<double>(bytes) * 8.0 / static_cast<double>(kMacStatsWindowUs);
+            static_cast<double>(bytes) * 8.0 / static_cast<double>(statistics.windowUs);
 
         if (first)
         {
@@ -262,9 +261,9 @@ WriteWifiStatisticsJson(const WifiStatisticsState& statistics, const std::string
         std::ceil(statistics.coordinator.GetMaxExperimentDurationMs() * 1000.0));
 
     const uint32_t windowCount =
-        statsDurationUs > 0
-            ? static_cast<uint32_t>((statsDurationUs + kMacStatsWindowUs - 1) / kMacStatsWindowUs)
-            : 0;
+        statsDurationUs > 0 ? static_cast<uint32_t>((statsDurationUs + statistics.windowUs - 1) /
+                                                    statistics.windowUs)
+                            : 0;
 
     std::vector<MacSummaryStats> summaryFromWindows(statistics.stationIpsByBss.size());
     bool windowTotalsConsistent = true;
@@ -276,7 +275,7 @@ WriteWifiStatisticsJson(const WifiStatisticsState& statistics, const std::string
         << "  \"phy_rate_semantics\": \"airtime-weighted nominal WifiTxVector data rate of actual "
            "tagged PPDU attempts; retransmissions included; PPDU airtime allocated by tagged "
            "payload bytes\",\n"
-        << "  \"window_ms\": " << kMacStatsWindowMs << ",\n"
+        << "  \"window_ms\": " << statistics.windowMs << ",\n"
         << "  \"windows\": [\n";
 
     bool firstWindow = true;
@@ -293,7 +292,7 @@ WriteWifiStatisticsJson(const WifiStatisticsState& statistics, const std::string
             continue;
         }
 
-        const uint32_t timestampMs = (bucketIndex + 1) * kMacStatsWindowMs;
+        const uint32_t timestampMs = (bucketIndex + 1) * statistics.windowMs;
 
         if (!firstWindow)
         {
@@ -343,6 +342,7 @@ WriteWifiStatisticsJson(const WifiStatisticsState& statistics, const std::string
                 << "          \"up_flows\": ";
 
             const uint64_t upTotalBytes = WriteMacFlowArray(out,
+                                                            statistics,
                                                             statistics.stationIpsByBss[apId],
                                                             stats,
                                                             true,
@@ -362,6 +362,7 @@ WriteWifiStatisticsJson(const WifiStatisticsState& statistics, const std::string
                 << "          \"down_flows\": ";
 
             const uint64_t downTotalBytes = WriteMacFlowArray(out,
+                                                              statistics,
                                                               statistics.stationIpsByBss[apId],
                                                               stats,
                                                               false,
@@ -456,7 +457,7 @@ WriteWifiStatisticsJson(const WifiStatisticsState& statistics, const std::string
 
     NS_LOG_INFO("PHY per-node statistics written to "
                 << outputPath << " (" << emittedWindowCount << " non-empty / " << windowCount
-                << " total x " << kMacStatsWindowMs << "ms windows)"
+                << " total x " << statistics.windowMs << "ms windows)"
                 << ", windowTotalsConsistent=" << (windowTotalsConsistent ? "true" : "false")
                 << ", summaryTotalsConsistent=" << (summaryTotalsConsistent ? "true" : "false"));
 }

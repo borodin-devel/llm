@@ -11,8 +11,6 @@
 namespace ns3
 {
 
-static constexpr int64_t kMacStatsWindowUs = 10000;
-
 void
 PhyRateAccumulator::Add(double rateBps, double allocatedAirtimeUs)
 {
@@ -70,8 +68,8 @@ GetStatisticsWindowIndex(int64_t absoluteUs,
     return true;
 }
 
-WifiStatistics::WifiStatistics(const TrafficCoordinator& coordinator)
-    : m_state(std::make_unique<WifiStatisticsState>(coordinator))
+WifiStatistics::WifiStatistics(const TrafficCoordinator& coordinator, uint32_t windowMs)
+    : m_state(std::make_unique<WifiStatisticsState>(coordinator, windowMs))
 {
 }
 
@@ -160,7 +158,7 @@ WifiStatistics::RecordMacPayload(int64_t nowUs,
     {
         return;
     }
-    const uint32_t windowIndex = static_cast<uint32_t>(relativeUs / kMacStatsWindowUs);
+    const uint32_t windowIndex = static_cast<uint32_t>(relativeUs / state.windowUs);
 
     RecordMacPayloadInWindow(state, windowIndex, sourceIp, destinationIp, payloadBytes);
 }

@@ -3,6 +3,8 @@
 
 #include "wifi-statistics.h"
 
+#include "ns3/abort.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -111,18 +113,28 @@ using PhyMpduKey = std::tuple<uint32_t, std::string, std::string, uint16_t, uint
 /** All mutable Wi-Fi statistics state for one scenario. */
 struct WifiStatisticsState
 {
-    /** @param trafficCoordinator Traffic epoch and duration owner. */
-    explicit WifiStatisticsState(const TrafficCoordinator& trafficCoordinator)
-        : coordinator(trafficCoordinator)
+    /**
+     * Construct scenario statistics state.
+     *
+     * @param trafficCoordinator Traffic epoch and duration owner.
+     * @param configuredWindowMs Statistics window width in milliseconds.
+     */
+    WifiStatisticsState(const TrafficCoordinator& trafficCoordinator, uint32_t configuredWindowMs)
+        : coordinator(trafficCoordinator),
+          windowMs(configuredWindowMs),
+          windowUs(static_cast<int64_t>(configuredWindowMs) * 1000)
     {
+        NS_ABORT_MSG_IF(windowMs == 0, "Statistics window width must be greater than zero");
     }
 
-    const TrafficCoordinator& coordinator;                 ///< Traffic epoch and duration owner.
-    std::vector<std::vector<std::string>> stationIpsByBss; ///< Station IPs by BSS.
-    std::map<std::string, int> bssByApIp;                  ///< BSS index by AP IP.
-    std::map<std::string, int> bssByStationIp;             ///< BSS index by station IP.
-    std::map<uint32_t, std::map<int, MacWindowStats>> macWindows;        ///< MAC windows by node.
-    std::map<uint32_t, std::map<int, MacWindowStats>> phyWindows;        ///< PHY windows by node.
+    const TrafficCoordinator& coordinator; ///< Traffic epoch and duration owner.
+    const uint32_t windowMs;               ///< Statistics window width in milliseconds.
+    const int64_t windowUs;                ///< Statistics window width in microseconds.
+    std::vector<std::vector<std::string>> stationIpsByBss;        ///< Station IPs by BSS.
+    std::map<std::string, int> bssByApIp;                         ///< BSS index by AP IP.
+    std::map<std::string, int> bssByStationIp;                    ///< BSS index by station IP.
+    std::map<uint32_t, std::map<int, MacWindowStats>> macWindows; ///< MAC windows by node.
+    std::map<uint32_t, std::map<int, MacWindowStats>> phyWindows; ///< PHY windows by node.
     std::map<uint32_t, std::map<uint32_t, NodeSecondStats>> nodeSeconds; ///< Node seconds.
     std::map<uint32_t, std::string> nodeLabels;                          ///< Report label by node.
     std::set<PhyMpduKey> seenTaggedMpdus; ///< Tagged MPDUs already counted as unique.

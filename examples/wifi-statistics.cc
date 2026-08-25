@@ -30,8 +30,6 @@ namespace ns3
 {
 
 static LogComponent& g_log = llm_example::GetScenarioLog();
-static constexpr uint32_t kMacStatsWindowMs = 10;
-static constexpr int64_t kMacStatsWindowUs = static_cast<int64_t>(kMacStatsWindowMs) * 1000;
 
 static std::string
 Ipv4ToString(Ipv4Address address)
@@ -131,7 +129,7 @@ GetPhyWindowIndex(const WifiStatisticsState& statistics, int64_t nowUs, uint32_t
         return false;
     }
 
-    bucketIndex = static_cast<uint32_t>(relativeUs / kMacStatsWindowUs);
+    bucketIndex = static_cast<uint32_t>(relativeUs / statistics.windowUs);
     return true;
 }
 
