@@ -3,10 +3,12 @@
 #include "llm-test-suite.h"
 
 #include "ns3/ap-generator.h"
+#include "ns3/arp-header.h"
 #include "ns3/iana-ieee802-numbers.h"
 #include "ns3/iana-internet-protocol-numbers.h"
 #include "ns3/ipv4-header.h"
 #include "ns3/llc-snap-header.h"
+#include "ns3/mac48-address.h"
 #include "ns3/network-module.h"
 #include "ns3/tcp-header.h"
 #include "ns3/udp-header.h"
@@ -54,14 +56,13 @@ RegisterEntities(WifiStatisticsState& statistics)
 }
 
 /**
- * Build one Wi-Fi device payload with explicit LLC and IPv4 protocol values.
+ * Build one IPv4 Wi-Fi device payload with an explicit transport protocol.
  *
- * @param llcType LLC/SNAP EtherType.
  * @param ipProtocol IPv4 next-header protocol number.
  * @return Packet containing LLC/SNAP, IPv4, transport, and payload bytes.
  */
 Ptr<Packet>
-BuildDevicePacket(uint16_t llcType, uint8_t ipProtocol)
+BuildIpv4DevicePacket(uint8_t ipProtocol)
 {
     Ptr<Packet> packet;
     if (ipProtocol == iana::internetprotocolnumbers::TCP)
@@ -91,7 +92,29 @@ BuildDevicePacket(uint16_t llcType, uint8_t ipProtocol)
     packet->AddHeader(ipv4);
 
     LlcSnapHeader llc;
-    llc.SetType(llcType);
+    llc.SetType(iana::ieee802numbers::IPV4);
+    packet->AddHeader(llc);
+    return packet;
+}
+
+/**
+ * Build one padded ARP request with valid hardware and protocol endpoints.
+ *
+ * @return Packet containing LLC/SNAP and a serialized ARP request.
+ */
+Ptr<Packet>
+BuildArpDevicePacket()
+{
+    Ptr<Packet> packet = Create<Packet>(32);
+    ArpHeader arp;
+    arp.SetRequest(Mac48Address("00:00:00:00:00:02"),
+                   Ipv4Address("10.1.0.2"),
+                   Mac48Address::GetBroadcast(),
+                   Ipv4Address("10.1.0.1"));
+    packet->AddHeader(arp);
+
+    LlcSnapHeader llc;
+    llc.SetType(iana::ieee802numbers::ARP);
     packet->AddHeader(llc);
     return packet;
 }
@@ -123,8 +146,7 @@ DevicePacketProtocolValidationTestCase::DoRun()
 
     WifiStatisticsState nonIpv4Statistics(coordinator, 10);
     RegisterEntities(nonIpv4Statistics);
-    const Ptr<Packet> nonIpv4Packet =
-        BuildDevicePacket(iana::ieee802numbers::ARP, iana::internetprotocolnumbers::TCP);
+    const Ptr<Packet> nonIpv4Packet = BuildArpDevicePacket();
     NS_TEST_ASSERT_MSG_EQ(
         RecordDeviceTransmitPacket(nonIpv4Statistics, epochUs + 1000, nonIpv4Packet),
         false,
@@ -138,8 +160,7 @@ DevicePacketProtocolValidationTestCase::DoRun()
 
     WifiStatisticsState udpStatistics(coordinator, 10);
     RegisterEntities(udpStatistics);
-    const Ptr<Packet> udpPacket =
-        BuildDevicePacket(iana::ieee802numbers::IPV4, iana::internetprotocolnumbers::UDP);
+    const Ptr<Packet> udpPacket = BuildIpv4DevicePacket(iana::internetprotocolnumbers::UDP);
     NS_TEST_ASSERT_MSG_EQ(RecordDeviceTransmitPacket(udpStatistics, epochUs + 1000, udpPacket),
                           false,
                           "IPv4/UDP payload was accepted as TCP");
@@ -152,8 +173,7 @@ DevicePacketProtocolValidationTestCase::DoRun()
 
     WifiStatisticsState tcpStatistics(coordinator, 10);
     RegisterEntities(tcpStatistics);
-    const Ptr<Packet> tcpPacket =
-        BuildDevicePacket(iana::ieee802numbers::IPV4, iana::internetprotocolnumbers::TCP);
+    const Ptr<Packet> tcpPacket = BuildIpv4DevicePacket(iana::internetprotocolnumbers::TCP);
     NS_TEST_ASSERT_MSG_EQ(RecordDeviceTransmitPacket(tcpStatistics, epochUs + 1000, tcpPacket),
                           true,
                           "Valid IPv4/TCP payload was rejected");
