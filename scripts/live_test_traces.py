@@ -313,11 +313,15 @@ def _delete_directory_contents_fd(directory_fd):
 class OwnedTemporaryRun:
     """Linux capability owning one exact temporary run directory identity.
 
-    Random mode-0700 directories, sticky default /tmp, retained descriptors,
-    no-follow traversal, and no-replace renames protect against other users and
-    accidental substitution. This is not a security boundary against a
-    malicious concurrent process with the same effective UID after the final
-    identity check before rmdir.
+    Random run and quarantine names provide naming and collision resistance.
+    Mode-0700 directories, sticky default /tmp, retained descriptors, no-follow
+    traversal, and no-replace renames protect other users' paths and reject
+    accidental substitution. They provide no security guarantee against a
+    malicious concurrent process with the same effective UID at any point in
+    the lifecycle. Such a process is trusted from directory creation and
+    acquisition through cleanup; it can race before acquisition captures the
+    baseline identity and after the final identity check before rmdir.
+    Randomness is not same-EUID protection.
     """
 
     __slots__ = (

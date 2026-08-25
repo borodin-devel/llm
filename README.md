@@ -832,13 +832,17 @@ absence. On failure it prints the trace, command, return code, and last 200
 console lines. Each validated task-created temporary directory is removed in a
 `finally` path after success, command failure, timeout, or parse/shape failure;
 unrelated run directories are never removed. Cleanup requires Linux
-`renameat2` with `RENAME_NOREPLACE`. A random mode-0700 run directory, sticky
-`/tmp`, retained parent/child `O_DIRECTORY` and `O_NOFOLLOW` descriptors,
-no-replace moves to a random quarantine entry, and descriptor-relative
-no-follow deletion protect other users' paths and reject accidental
-substitution. This is not a security boundary against a malicious concurrent
-process with the same effective UID after the final identity check; the final
-pathname `rmdir` relies on that explicit trust assumption.
+`renameat2` with `RENAME_NOREPLACE`. Randomly generated run and quarantine
+names provide naming and collision resistance. Mode-0700 run directories,
+sticky `/tmp`, retained parent/child `O_DIRECTORY` and `O_NOFOLLOW`
+descriptors, no-replace moves, and descriptor-relative no-follow deletion
+protect other users' paths and reject accidental substitution. None of these
+measures provides any security guarantee against a malicious concurrent
+process with the same effective UID at any point in the lifecycle. Such a
+process is trusted from temporary-directory creation and acquisition through
+cleanup. In particular, it can race before acquisition captures the baseline
+identity and after the final identity check before pathname `rmdir`; name
+randomness is not same-EUID protection.
 
 ## IEEE 802.11 review
 
