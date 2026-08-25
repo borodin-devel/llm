@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import ctypes
 import json
 import math
 import os
@@ -240,6 +241,44 @@ class LiveTraceError(RuntimeError):
 
 _OWNER_CREATION_TOKEN = object()
 _DIRECTORY_OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_RENAME_NOREPLACE = 1
+_LIBC = ctypes.CDLL(None, use_errno=True)
+_LIBC_RENAMEAT2 = getattr(_LIBC, "renameat2", None)
+if _LIBC_RENAMEAT2 is not None:
+    _LIBC_RENAMEAT2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    _LIBC_RENAMEAT2.restype = ctypes.c_int
+
+
+def _rename_noreplace(source_name, destination_name, parent_fd):
+    """Atomically rename one Linux dir-FD entry without overwriting another."""
+    if type(parent_fd) is not int or parent_fd < 0:
+        raise LiveTraceError(f"invalid parent directory descriptor: {parent_fd!r}")
+    for name in (source_name, destination_name):
+        if type(name) is not str or not name or name in {".", ".."} or "/" in name or "\0" in name:
+            raise LiveTraceError(f"invalid directory entry name for renameat2: {name!r}")
+    if not sys.platform.startswith("linux") or _LIBC_RENAMEAT2 is None:
+        raise LiveTraceError("live trace cleanup requires Linux renameat2(RENAME_NOREPLACE)")
+    ctypes.set_errno(0)
+    result = _LIBC_RENAMEAT2(
+        parent_fd,
+        os.fsencode(source_name),
+        parent_fd,
+        os.fsencode(destination_name),
+        _RENAME_NOREPLACE,
+    )
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(
+            error_number,
+            os.strerror(error_number),
+            f"{source_name} -> {destination_name}",
+        )
 
 
 def _same_identity(first, second):
@@ -272,7 +311,14 @@ def _delete_directory_contents_fd(directory_fd):
 
 
 class OwnedTemporaryRun:
-    """POSIX capability owning one exact temporary run directory identity."""
+    """Linux capability owning one exact temporary run directory identity.
+
+    Random mode-0700 directories, sticky default /tmp, retained descriptors,
+    no-follow traversal, and no-replace renames protect against other users and
+    accidental substitution. This is not a security boundary against a
+    malicious concurrent process with the same effective UID after the final
+    identity check before rmdir.
+    """
 
     __slots__ = (
         "path",
@@ -284,9 +330,20 @@ class OwnedTemporaryRun:
         "_device",
         "_inode",
         "_cleaned",
+        "_test_hooks",
     )
 
-    def __init__(self, path, name, parent_fd, child_fd, parent_identity, identity, token):
+    def __init__(
+        self,
+        path,
+        name,
+        parent_fd,
+        child_fd,
+        parent_identity,
+        identity,
+        test_hooks,
+        token,
+    ):
         if token is not _OWNER_CREATION_TOKEN:
             raise TypeError("OwnedTemporaryRun must be created with create()")
         self.path = path
@@ -298,9 +355,10 @@ class OwnedTemporaryRun:
         self._device = identity.st_dev
         self._inode = identity.st_ino
         self._cleaned = False
+        self._test_hooks = test_hooks
 
     @classmethod
-    def create(cls, trace_name, temporary_parent=Path("/tmp")):
+    def create(cls, trace_name, temporary_parent=Path("/tmp"), *, _test_hooks=None):
         """Create and take ownership of one exact directory identity."""
         safe_name = "".join(
             character if character.isalnum() or character in "-_" else "_"
@@ -314,15 +372,28 @@ class OwnedTemporaryRun:
         parent_fd = os.open(parent, _DIRECTORY_OPEN_FLAGS)
         child_fd = -1
         path = None
+        original_identity = None
+        test_hooks = dict(_test_hooks or {})
         try:
             parent_identity = os.fstat(parent_fd)
             path = Path(tempfile.mkdtemp(prefix=f"llm-trace-live.{safe_name}.", dir=parent))
+            original_identity = os.lstat(path)
+            if (
+                not stat.S_ISDIR(original_identity.st_mode)
+                or stat.S_IMODE(original_identity.st_mode) != 0o700
+            ):
+                raise LiveTraceError(f"{path}: temporary run is not a mode-0700 directory")
             name = path.name
-            entry_identity = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            hook = test_hooks.get("before_child_open")
+            if hook is not None:
+                hook(path, parent_fd, name, original_identity)
+            current_identity = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
             child_fd = os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
             child_identity = os.fstat(child_fd)
-            if not stat.S_ISDIR(entry_identity.st_mode) or not _same_identity(
-                entry_identity, child_identity
+            if (
+                not stat.S_ISDIR(current_identity.st_mode)
+                or not _same_identity(original_identity, current_identity)
+                or not _same_identity(original_identity, child_identity)
             ):
                 raise LiveTraceError(f"{path}: created temporary run identity mismatch")
             return cls(
@@ -332,18 +403,32 @@ class OwnedTemporaryRun:
                 child_fd,
                 parent_identity,
                 child_identity,
+                test_hooks,
                 _OWNER_CREATION_TOKEN,
             )
-        except Exception:
+        except Exception as error:
             if child_fd >= 0:
                 os.close(child_fd)
-            if path is not None:
+            if path is not None and original_identity is not None:
                 try:
-                    os.rmdir(path.name, dir_fd=parent_fd)
+                    current_identity = os.stat(
+                        path.name, dir_fd=parent_fd, follow_symlinks=False
+                    )
+                    if _same_identity(original_identity, current_identity):
+                        os.rmdir(path.name, dir_fd=parent_fd)
                 except OSError:
                     pass
             os.close(parent_fd)
-            raise
+            if isinstance(error, LiveTraceError):
+                raise
+            raise LiveTraceError(
+                f"{path or temporary_parent}: cannot acquire owned run: {error}"
+            ) from error
+
+    def _run_test_hook(self, name, *arguments):
+        hook = self._test_hooks.get(name)
+        if hook is not None:
+            hook(*arguments)
 
     def _close_fds(self):
         for attribute in ("_child_fd", "_parent_fd"):
@@ -363,12 +448,7 @@ class OwnedTemporaryRun:
                 return name
 
     def _restore_quarantine(self, quarantine_name):
-        os.rename(
-            quarantine_name,
-            self._name,
-            src_dir_fd=self._parent_fd,
-            dst_dir_fd=self._parent_fd,
-        )
+        _rename_noreplace(quarantine_name, self._name, self._parent_fd)
 
     def cleanup(self):
         """Quarantine and delete only through retained matching directory FDs."""
@@ -387,13 +467,14 @@ class OwnedTemporaryRun:
         quarantine_name = self._quarantine_name()
         moved = False
         try:
-            os.rename(
-                self._name,
-                quarantine_name,
-                src_dir_fd=self._parent_fd,
-                dst_dir_fd=self._parent_fd,
+            self._run_test_hook(
+                "before_quarantine_rename", self._parent_fd, self._name, quarantine_name
             )
+            _rename_noreplace(self._name, quarantine_name, self._parent_fd)
             moved = True
+            self._run_test_hook(
+                "after_quarantine_rename", self._parent_fd, self._name, quarantine_name
+            )
             quarantine_identity = os.stat(
                 quarantine_name, dir_fd=self._parent_fd, follow_symlinks=False
             )
@@ -409,6 +490,7 @@ class OwnedTemporaryRun:
                 )
 
             _delete_directory_contents_fd(self._child_fd)
+            self._run_test_hook("before_final_remove", self._parent_fd, quarantine_name)
             final_identity = os.stat(
                 quarantine_name, dir_fd=self._parent_fd, follow_symlinks=False
             )
@@ -1929,51 +2011,169 @@ class LiveTraceSelfTest(unittest.TestCase):
             cleanup_run_directory(owner)
             cleanup_run_directory(owner)
 
-    def test_cleanup_uses_private_dirfd_quarantine(self):
+    def test_cleanup_uses_random_dirfd_quarantine(self):
         with tempfile.TemporaryDirectory() as directory:
             owner = OwnedTemporaryRun.create("test", Path(directory))
-            original_rename = os.rename
+            original_rename = _rename_noreplace
             calls = []
 
-            def record_rename(source, destination, **kwargs):
-                calls.append((source, destination, kwargs))
-                return original_rename(source, destination, **kwargs)
+            def record_rename(source, destination, parent_fd):
+                calls.append((source, destination, parent_fd))
+                return original_rename(source, destination, parent_fd)
 
-            with mock.patch.object(os, "rename", side_effect=record_rename):
+            with mock.patch(
+                f"{__name__}._rename_noreplace", side_effect=record_rename
+            ):
                 cleanup_run_directory(owner)
 
             self.assertGreaterEqual(len(calls), 1)
-            source, destination, kwargs = calls[0]
+            source, destination, parent_fd = calls[0]
             self.assertEqual(source, owner.path.name)
             self.assertRegex(destination, r"^\.llm-trace-live-quarantine\.[0-9a-f]{32}$")
-            self.assertIsInstance(kwargs.get("src_dir_fd"), int)
-            self.assertEqual(kwargs.get("src_dir_fd"), kwargs.get("dst_dir_fd"))
+            self.assertIsInstance(parent_fd, int)
 
     def test_cleanup_refuses_substitution_immediately_before_atomic_rename(self):
         with tempfile.TemporaryDirectory() as directory:
             temporary_parent = Path(directory)
-            owner = OwnedTemporaryRun.create("test", temporary_parent)
-            original_rename = os.rename
             parked = temporary_parent / "parked-original"
-            replacement_marker = owner.path / "replacement-marker"
-            race_injected = False
+            replacement_marker = temporary_parent / "replacement-marker-path"
 
-            def substitute_then_rename(source, destination, **kwargs):
-                nonlocal race_injected
-                if not race_injected:
-                    race_injected = True
-                    original_rename(owner.path, parked)
-                    owner.path.mkdir()
-                    replacement_marker.write_text("replacement", encoding="utf-8")
-                return original_rename(source, destination, **kwargs)
+            def substitute(parent_fd, source_name, quarantine_name):
+                self.assertTrue(quarantine_name.startswith(".llm-trace-live-quarantine."))
+                original_path = temporary_parent / source_name
+                original_path.rename(parked)
+                original_path.mkdir()
+                marker = original_path / "replacement-marker"
+                marker.write_text("replacement", encoding="utf-8")
+                replacement_marker.write_text(str(marker), encoding="utf-8")
 
-            with mock.patch.object(os, "rename", side_effect=substitute_then_rename):
-                with self.assertRaises(LiveTraceError):
-                    cleanup_run_directory(owner)
+            hooks = {"before_quarantine_rename": substitute}
+            owner = OwnedTemporaryRun.create("test", temporary_parent, _test_hooks=hooks)
+            with self.assertRaises(LiveTraceError):
+                cleanup_run_directory(owner)
 
-            self.assertTrue(race_injected)
-            self.assertEqual(replacement_marker.read_text(encoding="utf-8"), "replacement")
+            marker = Path(replacement_marker.read_text(encoding="utf-8"))
+            self.assertEqual(marker.read_text(encoding="utf-8"), "replacement")
             self.assertTrue(parked.is_dir())
+
+    def test_cleanup_refuses_raced_quarantine_collision_without_overwrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_parent = Path(directory)
+            collision_path = None
+
+            def create_collision(parent_fd, source_name, quarantine_name):
+                nonlocal collision_path
+                self.assertTrue(source_name.startswith("llm-trace-live.test."))
+                os.mkdir(quarantine_name, dir_fd=parent_fd)
+                collision_path = temporary_parent / quarantine_name
+                (collision_path / "preserve").write_text("collision", encoding="utf-8")
+
+            hooks = {"before_quarantine_rename": create_collision}
+            owner = OwnedTemporaryRun.create("test", temporary_parent, _test_hooks=hooks)
+            (owner.path / "owned").write_text("owned", encoding="utf-8")
+
+            with self.assertRaises(LiveTraceError):
+                cleanup_run_directory(owner)
+
+            self.assertEqual((owner.path / "owned").read_text(encoding="utf-8"), "owned")
+            self.assertIsNotNone(collision_path)
+            self.assertEqual(
+                (collision_path / "preserve").read_text(encoding="utf-8"), "collision"
+            )
+
+    def test_cleanup_preserves_occupied_restore_destination_and_quarantine(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_parent = Path(directory)
+            parked = temporary_parent / "parked-owned"
+            quarantine_path = None
+
+            def occupy_and_substitute(parent_fd, source_name, quarantine_name):
+                nonlocal quarantine_path
+                os.mkdir(source_name, dir_fd=parent_fd)
+                (temporary_parent / source_name / "occupant").write_text(
+                    "original-name occupant", encoding="utf-8"
+                )
+                os.rename(
+                    quarantine_name,
+                    parked.name,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                )
+                os.mkdir(quarantine_name, dir_fd=parent_fd)
+                quarantine_path = temporary_parent / quarantine_name
+                (quarantine_path / "occupant").write_text(
+                    "quarantine occupant", encoding="utf-8"
+                )
+
+            hooks = {"after_quarantine_rename": occupy_and_substitute}
+            owner = OwnedTemporaryRun.create("test", temporary_parent, _test_hooks=hooks)
+            with self.assertRaisesRegex(LiveTraceError, "restoration failed"):
+                cleanup_run_directory(owner)
+
+            self.assertEqual(
+                (owner.path / "occupant").read_text(encoding="utf-8"),
+                "original-name occupant",
+            )
+            self.assertIsNotNone(quarantine_path)
+            self.assertEqual(
+                (quarantine_path / "occupant").read_text(encoding="utf-8"),
+                "quarantine occupant",
+            )
+            self.assertTrue(parked.is_dir())
+
+    def test_create_refuses_replacement_between_lstat_and_child_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_parent = Path(directory)
+            parked = temporary_parent / "parked-created"
+            replacement_path = None
+
+            def replace_before_open(path, parent_fd, name, original_identity):
+                nonlocal replacement_path
+                self.assertEqual((original_identity.st_dev, original_identity.st_ino),
+                                 (os.lstat(path).st_dev, os.lstat(path).st_ino))
+                path.rename(parked)
+                os.mkdir(name, dir_fd=parent_fd)
+                replacement_path = temporary_parent / name
+                (replacement_path / "preserve").write_text("replacement", encoding="utf-8")
+
+            hooks = {"before_child_open": replace_before_open}
+            with self.assertRaises(LiveTraceError):
+                OwnedTemporaryRun.create("test", temporary_parent, _test_hooks=hooks)
+
+            self.assertTrue(parked.is_dir())
+            self.assertIsNotNone(replacement_path)
+            self.assertEqual(
+                (replacement_path / "preserve").read_text(encoding="utf-8"), "replacement"
+            )
+
+    def test_cleanup_rechecks_identity_after_pre_rmdir_substitution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_parent = Path(directory)
+            parked = temporary_parent / "parked-before-rmdir"
+            quarantine_path = None
+
+            def substitute_before_rmdir(parent_fd, quarantine_name):
+                nonlocal quarantine_path
+                os.rename(
+                    quarantine_name,
+                    parked.name,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                )
+                os.mkdir(quarantine_name, dir_fd=parent_fd)
+                quarantine_path = temporary_parent / quarantine_name
+                (quarantine_path / "preserve").write_text("replacement", encoding="utf-8")
+
+            hooks = {"before_final_remove": substitute_before_rmdir}
+            owner = OwnedTemporaryRun.create("test", temporary_parent, _test_hooks=hooks)
+            with self.assertRaises(LiveTraceError):
+                cleanup_run_directory(owner)
+
+            self.assertEqual(
+                (owner.path / "preserve").read_text(encoding="utf-8"), "replacement"
+            )
+            self.assertTrue(parked.is_dir())
+            self.assertFalse(quarantine_path.exists())
 
     def test_cleanup_never_follows_owned_symlink_outside_directory(self):
         with tempfile.TemporaryDirectory() as directory:
