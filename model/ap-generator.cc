@@ -35,7 +35,7 @@ APGenerator::GetTypeId()
                             .AddTraceSource("Tx",
                                             "Downlink packet sent to a station.",
                                             MakeTraceSourceAccessor(&APGenerator::m_txTrace),
-                                            "ns3::APGenerator::AgentSendCallback")
+                                            "ns3::APGenerator::AcceptedSendCallback")
                             .AddTraceSource("AgentSend",
                                             "A complete downlink transmission to a station.",
                                             MakeTraceSourceAccessor(&APGenerator::m_agentSendTrace),
@@ -43,7 +43,7 @@ APGenerator::GetTypeId()
                             .AddTraceSource("AppTxDrop",
                                             "Application payload rejected by the TCP socket.",
                                             MakeTraceSourceAccessor(&APGenerator::m_appTxDropTrace),
-                                            "ns3::APGenerator::AgentSendCallback");
+                                            "ns3::APGenerator::DropCallback");
     return tid;
 }
 
@@ -325,20 +325,11 @@ APGenerator::SendDownlink(const Address& stationAddress,
     AddAppTxTag(packet, transmitTime, inetLocal, inetRemote, agentKey);
 
     const int acceptedBytes = socket->Send(packet);
-    if (acceptedBytes < 0)
+    if (!EmitSendResult(stationAddress, agentKey, payloadBytes, acceptedBytes, transmitTime))
     {
-        m_appTxDropTrace(stationAddress, agentKey, payloadBytes, transmitTime);
         NS_LOG_ERROR("[AP] " << localIp << " Failed to send " << payloadBytes << " bytes to "
                              << remoteIp << " for agent " << agentKey);
         return;
-    }
-
-    if (static_cast<uint32_t>(acceptedBytes) < payloadBytes)
-    {
-        m_appTxDropTrace(stationAddress,
-                         agentKey,
-                         payloadBytes - static_cast<uint32_t>(acceptedBytes),
-                         transmitTime);
     }
 
     const double actualTraceMs =
@@ -353,8 +344,32 @@ APGenerator::SendDownlink(const Address& stationAddress,
 
     const Time endTime = Simulator::Now();
 
-    m_txTrace(stationAddress, agentKey, static_cast<uint32_t>(acceptedBytes), transmitTime);
     m_agentSendTrace(stationAddress, agentKey, payloadBytes, transmitTime, endTime);
+}
+
+bool
+APGenerator::EmitSendResult(const Address& stationAddress,
+                            const std::string& agentKey,
+                            uint32_t requestedBytes,
+                            int acceptedBytes,
+                            Time transmitTime)
+{
+    if (acceptedBytes < 0)
+    {
+        m_appTxDropTrace(stationAddress, agentKey, requestedBytes, transmitTime);
+        return false;
+    }
+
+    const auto acceptedPayloadBytes = static_cast<uint32_t>(acceptedBytes);
+    if (acceptedPayloadBytes < requestedBytes)
+    {
+        m_appTxDropTrace(stationAddress,
+                         agentKey,
+                         requestedBytes - acceptedPayloadBytes,
+                         transmitTime);
+    }
+    m_txTrace(stationAddress, agentKey, acceptedPayloadBytes, transmitTime);
+    return true;
 }
 
 void

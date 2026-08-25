@@ -43,7 +43,7 @@ StaLlmGenerator::GetTypeId()
             .AddTraceSource("TxCustom",
                             "A packet is created and scheduled for transmission.",
                             MakeTraceSourceAccessor(&StaLlmGenerator::m_txTraceCustom),
-                            "ns3::StaLlmGenerator::AgentSendCallback")
+                            "ns3::StaLlmGenerator::AcceptedSendCallback")
             .AddTraceSource("AgentSend",
                             "A complete agent transmission finished (start time, end time).",
                             MakeTraceSourceAccessor(&StaLlmGenerator::m_agentSendTrace),
@@ -51,7 +51,7 @@ StaLlmGenerator::GetTypeId()
             .AddTraceSource("AppTxDrop",
                             "Application payload rejected by the TCP socket.",
                             MakeTraceSourceAccessor(&StaLlmGenerator::m_appTxDropTrace),
-                            "ns3::StaLlmGenerator::AgentSendCallback");
+                            "ns3::StaLlmGenerator::DropCallback");
     return tid;
 }
 
@@ -272,19 +272,11 @@ StaLlmGenerator::SendAgentData(std::string agentKey, uint32_t payloadBytes, doub
     AddAppTxTag(packet, transmitTime, localSocketAddress, remoteSocketAddress, agentKey);
 
     const int acceptedBytes = m_socket->Send(packet);
-    if (acceptedBytes < 0)
+    if (!EmitSendResult(agentKey, payloadBytes, acceptedBytes, transmitTime))
     {
-        m_appTxDropTrace(agentKey, payloadBytes, transmitTime);
         NS_LOG_ERROR("[" << localIp << " / " << agentKey << "] Failed to send " << payloadBytes
                          << " bytes, sent=" << acceptedBytes);
         return;
-    }
-
-    if (static_cast<uint32_t>(acceptedBytes) < payloadBytes)
-    {
-        m_appTxDropTrace(agentKey,
-                         payloadBytes - static_cast<uint32_t>(acceptedBytes),
-                         transmitTime);
     }
 
     const double actualTraceMs =
@@ -300,8 +292,28 @@ StaLlmGenerator::SendAgentData(std::string agentKey, uint32_t payloadBytes, doub
 
     const Time endTime = Simulator::Now();
 
-    m_txTraceCustom(agentKey, static_cast<uint32_t>(acceptedBytes), transmitTime);
     m_agentSendTrace(agentKey, payloadBytes, transmitTime, endTime);
+}
+
+bool
+StaLlmGenerator::EmitSendResult(const std::string& agentKey,
+                                uint32_t requestedBytes,
+                                int acceptedBytes,
+                                Time transmitTime)
+{
+    if (acceptedBytes < 0)
+    {
+        m_appTxDropTrace(agentKey, requestedBytes, transmitTime);
+        return false;
+    }
+
+    const auto acceptedPayloadBytes = static_cast<uint32_t>(acceptedBytes);
+    if (acceptedPayloadBytes < requestedBytes)
+    {
+        m_appTxDropTrace(agentKey, requestedBytes - acceptedPayloadBytes, transmitTime);
+    }
+    m_txTraceCustom(agentKey, acceptedPayloadBytes, transmitTime);
+    return true;
 }
 
 void

@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <vector>
 
+class ExperimentAppTestCase;
+
 namespace ns3
 {
 
@@ -32,6 +34,8 @@ class TrafficSink : public SinkApplication
     ~TrafficSink() override;
 
   private:
+    friend class ::ExperimentAppTestCase;
+
     void DoDispose() override;
     void DoStartApplication() override;
     void DoStopApplication() override;
@@ -42,6 +46,14 @@ class TrafficSink : public SinkApplication
      * @param socket Socket with available data.
      */
     void HandleRead(Ptr<Socket> socket);
+
+    /**
+     * Emit one received-payload trace event.
+     *
+     * @param receivedBytes Received payload bytes.
+     * @param from Remote peer address.
+     */
+    void EmitReceive(uint64_t receivedBytes, const Address& from);
 
     /**
      * Configure one accepted TCP connection.
@@ -59,6 +71,9 @@ class TrafficSink : public SinkApplication
 
     std::vector<Ptr<Socket>> m_acceptedSockets;        ///< Accepted TCP sockets.
     TracedCallback<uint64_t, Address> m_rxTraceCustom; ///< Received-payload trace.
+
+    /** Received application-payload trace callback signature. */
+    using RxCallback = void (*)(uint64_t receivedBytes, Address from);
 };
 
 } // namespace ns3

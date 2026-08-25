@@ -14,6 +14,8 @@
 #include <map>
 #include <vector>
 
+class ExperimentAppTestCase;
+
 namespace ns3
 {
 
@@ -72,6 +74,8 @@ class APGenerator : public Application
     void StartTraffic(uint64_t experimentStartMs);
 
   private:
+    friend class ::ExperimentAppTestCase;
+
     void DoDispose() override;
     void StartApplication() override;
     void StopApplication() override;
@@ -109,6 +113,22 @@ class APGenerator : public Application
                       const std::string& agentKey,
                       uint32_t payloadBytes,
                       double traceTimeMs);
+
+    /**
+     * Emit accepted and rejected byte traces for one socket send result.
+     *
+     * @param stationAddress Destination station address.
+     * @param agentKey Application-level agent identifier.
+     * @param requestedBytes Requested payload size in bytes.
+     * @param acceptedBytes Socket send result in bytes, or a negative failure value.
+     * @param transmitTime Application transmit time.
+     * @return True when the socket accepted zero or more bytes.
+     */
+    bool EmitSendResult(const Address& stationAddress,
+                        const std::string& agentKey,
+                        uint32_t requestedBytes,
+                        int acceptedBytes,
+                        Time transmitTime);
 
     /**
      * Consume received TCP data.
@@ -158,6 +178,18 @@ class APGenerator : public Application
 
     TracedCallback<Address, std::string, uint32_t, Time> m_txTrace;        ///< Accepted sends.
     TracedCallback<Address, std::string, uint32_t, Time> m_appTxDropTrace; ///< Rejected bytes.
+
+    /** Socket-accepted application-send trace callback signature. */
+    using AcceptedSendCallback = void (*)(Address station,
+                                          std::string agentKey,
+                                          uint32_t bytes,
+                                          Time transmitTime);
+
+    /** Rejected application-send trace callback signature. */
+    using DropCallback = void (*)(Address station,
+                                  std::string agentKey,
+                                  uint32_t bytes,
+                                  Time transmitTime);
 
     /** Complete application-send trace callback signature. */
     using AgentSendCallback = void (*)(Address station,

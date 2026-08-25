@@ -165,8 +165,14 @@ TrafficSink::HandleRead(Ptr<Socket> socket)
         }
 
         const uint32_t receivedBytes = packet->GetSize();
-        m_rxTraceCustom(receivedBytes, from);
+        EmitReceive(receivedBytes, from);
     }
+}
+
+void
+TrafficSink::EmitReceive(uint64_t receivedBytes, const Address& from)
+{
+    m_rxTraceCustom(receivedBytes, from);
 }
 
 void
