@@ -396,21 +396,38 @@ ExperimentOverallTestCase::DoRun()
                           false,
                           "Zero-duration utilization is not null");
 
-    const double largestDurationMs = 0x1.0624dd2f1a9fbp+53;
-    NS_TEST_ASSERT_MSG_EQ(ConvertExperimentDurationMsToUs(largestDurationMs),
-                          9223372036854774000LL,
-                          "Largest representable duration was not converted exactly");
+    const long double exclusiveUpperUs = std::ldexp(1.0L, 63);
+    const long double exactBoundaryDurationMs = exclusiveUpperUs / 1000.0L;
+    NS_TEST_ASSERT_MSG_EQ(std::ceil(exactBoundaryDurationMs * 1000.0L),
+                          exclusiveUpperUs,
+                          "Fixture did not round to the exact 2^63 boundary");
+    long double largestLowerDurationMs = std::nextafter(exactBoundaryDurationMs, 0.0L);
+    while (std::ceil(largestLowerDurationMs * 1000.0L) >= exclusiveUpperUs)
+    {
+        largestLowerDurationMs = std::nextafter(largestLowerDurationMs, 0.0L);
+    }
+    bool largestLowerAccepted = true;
+    try
+    {
+        (void)ConvertExperimentDurationMsToUs(largestLowerDurationMs);
+    }
+    catch (const std::exception&)
+    {
+        largestLowerAccepted = false;
+    }
+    NS_TEST_ASSERT_MSG_EQ(largestLowerAccepted,
+                          true,
+                          "Largest lower representable duration was rejected");
     bool overflowRejected = false;
     try
     {
-        (void)ConvertExperimentDurationMsToUs(
-            std::nextafter(largestDurationMs, std::numeric_limits<double>::infinity()));
+        (void)ConvertExperimentDurationMsToUs(exactBoundaryDurationMs);
     }
     catch (const std::overflow_error&)
     {
         overflowRejected = true;
     }
-    NS_TEST_ASSERT_MSG_EQ(overflowRejected, true, "Overflowing duration was not rejected");
+    NS_TEST_ASSERT_MSG_EQ(overflowRejected, true, "Exact 2^63 boundary was not rejected");
     bool nonFiniteRejected = false;
     try
     {

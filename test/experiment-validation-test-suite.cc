@@ -7,7 +7,9 @@
 #include "ns3/ap-generator.h"
 #include "ns3/network-module.h"
 
+#include <cmath>
 #include <functional>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -109,25 +111,26 @@ ExperimentValidationTestCase::DoRun()
     station.phy.uplink.uniqueTaggedPayloadBytes = 60;
     station.phy.uplink.transmissionAttemptCount = 1;
     station.phy.uplink.transmissionAirtimeUs = 10.0L;
-    const long double largeRateProduct = 1e20L;
-    station.phy.uplink.dataRateBpsUs = largeRateProduct;
+    const long double bigRateProduct = std::ldexp(1.0L, std::numeric_limits<long double>::digits);
+    constexpr long double smallRateProduct = 1.0L;
+    station.phy.uplink.dataRateBpsUs = bigRateProduct;
     station.phy.uplink.peersByNodeId[10].taggedPayloadBytes = 70;
     station.phy.uplink.peersByNodeId[10].uniqueTaggedPayloadBytes = 60;
     station.phy.uplink.peersByNodeId[10].transmissionAttemptCount = 1;
     station.phy.uplink.peersByNodeId[10].transmissionAirtimeUs = 10.0L;
-    station.phy.uplink.peersByNodeId[10].dataRateBpsUs = largeRateProduct;
+    station.phy.uplink.peersByNodeId[10].dataRateBpsUs = bigRateProduct;
 
     auto& secondStation = statistics.m_state->unifiedWindows[0][21];
     secondStation.phy.uplink.taggedPayloadBytes = 1;
     secondStation.phy.uplink.uniqueTaggedPayloadBytes = 1;
     secondStation.phy.uplink.transmissionAttemptCount = 1;
     secondStation.phy.uplink.transmissionAirtimeUs = 1.0L;
-    secondStation.phy.uplink.dataRateBpsUs = 8.0L;
+    secondStation.phy.uplink.dataRateBpsUs = smallRateProduct + smallRateProduct;
     secondStation.phy.uplink.peersByNodeId[10].taggedPayloadBytes = 1;
     secondStation.phy.uplink.peersByNodeId[10].uniqueTaggedPayloadBytes = 1;
     secondStation.phy.uplink.peersByNodeId[10].transmissionAttemptCount = 1;
     secondStation.phy.uplink.peersByNodeId[10].transmissionAirtimeUs = 1.0L;
-    secondStation.phy.uplink.peersByNodeId[10].dataRateBpsUs = 8.0L;
+    secondStation.phy.uplink.peersByNodeId[10].dataRateBpsUs = smallRateProduct + smallRateProduct;
 
     auto& accessPoint = statistics.m_state->unifiedWindows[0][10];
     accessPoint.app.uplink.receiveEventCount = 1;
@@ -153,20 +156,20 @@ ExperimentValidationTestCase::DoRun()
     accessPoint.phy.uplink.uniqueTaggedPayloadBytes = 61;
     accessPoint.phy.uplink.transmissionAttemptCount = 2;
     accessPoint.phy.uplink.transmissionAirtimeUs = 11.0L;
-    long double eventOrderRateProduct = largeRateProduct;
-    eventOrderRateProduct += 4.0L;
-    eventOrderRateProduct += 4.0L;
+    long double eventOrderRateProduct = bigRateProduct;
+    eventOrderRateProduct += smallRateProduct;
+    eventOrderRateProduct += smallRateProduct;
     accessPoint.phy.uplink.dataRateBpsUs = eventOrderRateProduct;
     accessPoint.phy.uplink.peersByNodeId[20].taggedPayloadBytes = 70;
     accessPoint.phy.uplink.peersByNodeId[20].uniqueTaggedPayloadBytes = 60;
     accessPoint.phy.uplink.peersByNodeId[20].transmissionAttemptCount = 1;
     accessPoint.phy.uplink.peersByNodeId[20].transmissionAirtimeUs = 10.0L;
-    accessPoint.phy.uplink.peersByNodeId[20].dataRateBpsUs = largeRateProduct;
+    accessPoint.phy.uplink.peersByNodeId[20].dataRateBpsUs = bigRateProduct;
     accessPoint.phy.uplink.peersByNodeId[21].taggedPayloadBytes = 1;
     accessPoint.phy.uplink.peersByNodeId[21].uniqueTaggedPayloadBytes = 1;
     accessPoint.phy.uplink.peersByNodeId[21].transmissionAttemptCount = 1;
     accessPoint.phy.uplink.peersByNodeId[21].transmissionAirtimeUs = 1.0L;
-    accessPoint.phy.uplink.peersByNodeId[21].dataRateBpsUs = 8.0L;
+    accessPoint.phy.uplink.peersByNodeId[21].dataRateBpsUs = smallRateProduct + smallRateProduct;
 
     const UnifiedSummaryRawState base = BuildUnifiedSummaryRawState(*statistics.m_state);
     const auto& parentPhy = base.accessPointWindows.at(0).at(10).phy.uplink;
@@ -238,9 +241,13 @@ ExperimentValidationTestCase::DoRun()
         raw.stationWindows[0][20].phy.uplink.peersByNodeId[10].taggedPayloadBytes = 71;
         raw.stationOverall[20].phy.uplink.peersByNodeId[10].taggedPayloadBytes = 71;
     });
-    Check("phy-peers", [](auto& raw) {
-        raw.stationWindows[0][20].phy.uplink.peersByNodeId[10].dataRateBpsUs += 1e6L;
-        raw.stationOverall[20].phy.uplink.peersByNodeId[10].dataRateBpsUs += 1e6L;
+    const long double materialRatePerturbation =
+        256.0L * std::numeric_limits<long double>::epsilon() * bigRateProduct;
+    Check("phy-peers", [materialRatePerturbation](auto& raw) {
+        raw.stationWindows[0][20].phy.uplink.peersByNodeId[10].dataRateBpsUs +=
+            materialRatePerturbation;
+        raw.stationOverall[20].phy.uplink.peersByNodeId[10].dataRateBpsUs +=
+            materialRatePerturbation;
     });
     Check("parent-child", [](auto& raw) {
         raw.accessPointWindows[0][10].app.uplink.acceptedPayloadBytes = 101;

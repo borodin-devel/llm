@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <stdexcept>
 #include <tuple>
 
@@ -207,18 +206,18 @@ SampleAccumulator::Merge(const SampleAccumulator& other)
 }
 
 int64_t
-ConvertExperimentDurationMsToUs(double durationMs)
+ConvertExperimentDurationMsToUs(long double durationMs)
 {
     if (!std::isfinite(durationMs) || durationMs < 0.0)
     {
         throw std::invalid_argument("Experiment duration must be finite and non-negative");
     }
-    const long double durationUs = static_cast<long double>(durationMs) * 1000.0L;
-    if (durationUs > static_cast<long double>(std::numeric_limits<int64_t>::max()))
+    const long double roundedUs = std::ceil(durationMs * 1000.0L);
+    if (roundedUs >= std::ldexp(1.0L, 63))
     {
         throw std::overflow_error("Experiment duration exceeds the microsecond range");
     }
-    return static_cast<int64_t>(std::ceil(durationUs));
+    return static_cast<int64_t>(roundedUs);
 }
 
 void

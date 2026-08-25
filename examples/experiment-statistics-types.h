@@ -345,7 +345,7 @@ using UnifiedExperimentWindowStore = std::map<uint64_t, UnifiedEntityAccumulator
  * @throws std::invalid_argument if @p durationMs is negative or non-finite.
  * @throws std::overflow_error if the rounded duration cannot fit in @c int64_t.
  */
-int64_t ConvertExperimentDurationMsToUs(double durationMs);
+int64_t ConvertExperimentDurationMsToUs(long double durationMs);
 
 /** Register and resolve stable experiment entity identities. */
 class ExperimentEntityRegistry
