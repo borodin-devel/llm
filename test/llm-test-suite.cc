@@ -30,6 +30,7 @@ LlmTestSuite::LlmTestSuite()
     AddCases(CreateWifiStatisticsTestCases());
     AddCases(CreateScenarioConfigTestCases());
     AddCases(CreateScenarioConfigValidationTestCases());
+    AddCases(CreateScenarioRunPathTestCases());
 }
 
 void

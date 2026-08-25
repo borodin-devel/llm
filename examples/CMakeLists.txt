@@ -6,6 +6,7 @@ build_lib_example(
     scenario-config-validation.cc
     scenario-config-cli.cc
     scenario-config-toml.cc
+    scenario-run-path.cc
     scenario-log.cc
     scenario-topology.cc
     traffic-coordinator.cc

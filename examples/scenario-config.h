@@ -5,6 +5,7 @@
 #include "ns3/type-id.h"
 #include "ns3/wifi-phy-band.h"
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <iosfwd>
@@ -239,6 +240,35 @@ struct ScenarioLaunchConfig
     std::filesystem::path configFile;       ///< Resolved TOML configuration path.
     std::filesystem::path workingDirectory; ///< Working directory captured at launch.
 };
+
+/** Filesystem paths resolved for one scenario run. */
+struct ResolvedRunPaths
+{
+    std::filesystem::path configFile; ///< Resolved TOML configuration path.
+    std::filesystem::path traceFile;  ///< Resolved input trace path.
+    std::filesystem::path runFolder;  ///< Directory that owns run output.
+    std::filesystem::path outputFile; ///< Final statistics output path.
+    bool usesAutomaticRunFolder{false}; ///< Whether the run folder uses a launch timestamp.
+};
+
+/**
+ * Resolve scenario paths against the captured launch working directory.
+ *
+ * @param launch Validated scenario and captured launch paths.
+ * @param launchTime Launch time used for an automatic run folder.
+ * @return Normalized absolute paths for the scenario run.
+ * @throws ScenarioConfigError if the launch time cannot be converted to local time.
+ */
+ResolvedRunPaths ResolveRunPaths(const ScenarioLaunchConfig& launch,
+                                 std::chrono::system_clock::time_point launchTime);
+
+/**
+ * Validate the trace and prepare a run directory without overwriting output.
+ *
+ * @param paths Resolved paths for the scenario run.
+ * @throws ScenarioConfigError if a path is invalid, collides, or cannot be accessed.
+ */
+void PrepareRunDirectory(const ResolvedRunPaths& paths);
 
 /** Result of parsing sample-scenario command-line arguments. */
 struct ScenarioCommandLineResult
