@@ -27,12 +27,12 @@ LlmTestSuite::LlmTestSuite()
     AddCases(CreateAppTxTagTestCases());
     AddCases(CreateTrafficScheduleTestCases());
     AddCases(CreateTrafficCoordinatorTestCases());
-    AddCases(CreateTrafficFlowSummaryTestCases());
     AddCases(CreateCrossLayerSummaryTestCases());
     AddCases(CreateExperimentJsonTestCases());
     AddCases(CreateExperimentWindowTestCases());
     AddCases(CreateExperimentAppTestCases());
     AddCases(CreateExperimentTcpTestCases());
+    AddCases(CreateExperimentDeviceMacTestCases());
     AddCases(CreateWifiStatisticsTestCases());
     AddCases(CreateScenarioConfigTestCases());
     AddCases(CreateScenarioConfigJsonTestCases());

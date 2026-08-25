@@ -11,14 +11,14 @@ build_lib_example(
     scenario-log.cc
     scenario-topology.cc
     traffic-coordinator.cc
-    traffic-flow-monitor.cc
-    traffic-flow-summary.cc
     experiment-json.cc
     transmission-summary-json.cc
     cross-layer-summary-json.cc
     experiment-statistics-window.cc
     experiment-statistics-app.cc
     experiment-statistics-tcp.cc
+    experiment-statistics-device.cc
+    experiment-statistics-mac.cc
     wifi-statistics.cc
     wifi-statistics-json.cc
     wifi-statistics-owner.cc

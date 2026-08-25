@@ -5,12 +5,14 @@
 #include "wifi-statistics.h"
 
 #include "ns3/abort.h"
+#include "ns3/mac48-address.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <tuple>
@@ -20,6 +22,44 @@ namespace ns3
 {
 
 class TrafficCoordinator;
+class WifiNetDevice;
+
+/** Parsed IPv4/TCP payload observation from a Wi-Fi device trace. */
+struct ParsedDeviceTcpPayload
+{
+    std::string sourceIpv4;         ///< Source IPv4 address.
+    uint16_t sourcePort;            ///< Source TCP port.
+    std::string destinationIpv4;    ///< Destination IPv4 address.
+    uint16_t destinationPort;       ///< Destination TCP port.
+    uint32_t estimatedPayloadBytes; ///< Estimated TCP payload size in bytes.
+};
+
+/** Key identifying one parsed device TCP payload flow. */
+struct DeviceFlowKey
+{
+    std::string sourceIpv4;         ///< Source IPv4 address.
+    uint16_t sourcePort;            ///< Source TCP port.
+    std::string destinationIpv4;    ///< Destination IPv4 address.
+    uint16_t destinationPort;       ///< Destination TCP port.
+    uint32_t estimatedPayloadBytes; ///< Estimated TCP payload size in bytes.
+
+    /**
+     * Compare flow identities for deterministic map ordering.
+     *
+     * @param other Flow identity to compare.
+     * @return True when this flow sorts before @p other.
+     */
+    bool operator<(const DeviceFlowKey& other) const;
+};
+
+/** Sender-side state retained for one device transmit observation. */
+struct DeviceTransmitObservation
+{
+    int64_t absoluteTimeUs;        ///< Absolute transmit time in microseconds.
+    uint64_t windowIndex;          ///< Causal transmit window index.
+    uint32_t senderNodeId;         ///< Registered sender node identifier.
+    ExperimentDirection direction; ///< Traffic direction at the sender.
+};
 
 /** MAC and PHY observations for one fixed time window. */
 struct MacWindowStats
@@ -157,7 +197,117 @@ struct WifiStatisticsState
     std::map<TcpConnectionKey, TcpConnectionState>
         tcpConnectionStates;            ///< Current CWND step state by TCP connection.
     bool tcpStatisticsFinalized{false}; ///< Whether TCP states were flushed through experiment end.
+    std::map<DeviceFlowKey, std::vector<DeviceTransmitObservation>>
+        deviceTransmitsByFlow; ///< Ordered device transmit observations by flow.
+    std::map<DeviceFlowKey, std::vector<int64_t>>
+        deviceReceivesByFlow; ///< Ordered device receive timestamps by flow.
+    std::map<Mac48Address, uint32_t> nodeIdsByMacAddress; ///< Registered node IDs by MAC address.
+    bool deviceStatisticsFinalized{false}; ///< Whether device matches were accumulated.
+    bool deviceTracesConnected{false};     ///< Whether global device traces were connected.
 };
+
+/**
+ * Resolve an event to one configured statistics window.
+ *
+ * @param statistics Scenario statistics state.
+ * @param absoluteTimeUs Absolute event time in microseconds.
+ * @param bounds Resolved window bounds.
+ * @return True when the event lies inside the experiment interval.
+ */
+bool ResolveStatisticsEventWindow(const WifiStatisticsState& statistics,
+                                  int64_t absoluteTimeUs,
+                                  ExperimentWindowBounds& bounds);
+
+/**
+ * Record one parsed device transmit observation.
+ *
+ * @param statistics Scenario statistics state.
+ * @param absoluteTimeUs Absolute transmit time in microseconds.
+ * @param payload Parsed TCP payload observation.
+ */
+void RecordParsedDeviceTransmit(WifiStatisticsState& statistics,
+                                int64_t absoluteTimeUs,
+                                const ParsedDeviceTcpPayload& payload);
+
+/**
+ * Record one parsed device receive observation.
+ *
+ * @param statistics Scenario statistics state.
+ * @param absoluteTimeUs Absolute receive time in microseconds.
+ * @param payload Parsed TCP payload observation.
+ */
+void RecordParsedDeviceReceive(WifiStatisticsState& statistics,
+                               int64_t absoluteTimeUs,
+                               const ParsedDeviceTcpPayload& payload);
+
+/**
+ * Finalize positive ordered device transmit/receive matches.
+ *
+ * @param statistics Scenario statistics state.
+ */
+void FinalizeDeviceStatistics(WifiStatisticsState& statistics);
+
+/**
+ * Build the transitional transmission summary from central device state.
+ *
+ * @param statistics Scenario statistics state.
+ * @return Per-sender transmission measurements.
+ */
+TransmissionSummary BuildTransmissionSummary(WifiStatisticsState& statistics);
+
+/**
+ * Record one MAC transmit drop in configured and legacy windows.
+ *
+ * @param statistics Scenario statistics state.
+ * @param nodeId Local transmitter node identifier.
+ * @param absoluteTimeUs Absolute event time in microseconds.
+ * @param packetBytes Complete dropped packet bytes.
+ */
+void RecordMacTransmitDrop(WifiStatisticsState& statistics,
+                           uint32_t nodeId,
+                           int64_t absoluteTimeUs,
+                           uint32_t packetBytes);
+
+/**
+ * Record one MAC MPDU drop in configured and legacy windows.
+ *
+ * @param statistics Scenario statistics state.
+ * @param nodeId Local transmitter node identifier.
+ * @param absoluteTimeUs Absolute event time in microseconds.
+ * @param reasonCode Numeric Wi-Fi MAC drop reason.
+ * @param mpduBytes Complete dropped MPDU bytes.
+ * @param peerNodeId Remote peer node identifier when resolved.
+ */
+void RecordMacMpduDrop(WifiStatisticsState& statistics,
+                       uint32_t nodeId,
+                       int64_t absoluteTimeUs,
+                       int reasonCode,
+                       uint32_t mpduBytes,
+                       std::optional<uint32_t> peerNodeId = std::nullopt);
+
+/**
+ * Record one MAC data failure in configured and legacy windows.
+ *
+ * @param statistics Scenario statistics state.
+ * @param nodeId Local transmitter node identifier.
+ * @param absoluteTimeUs Absolute event time in microseconds.
+ * @param finalFailure Whether this is a final data failure.
+ * @param peerNodeId Remote peer node identifier when resolved.
+ */
+void RecordMacDataFailure(WifiStatisticsState& statistics,
+                          uint32_t nodeId,
+                          int64_t absoluteTimeUs,
+                          bool finalFailure,
+                          std::optional<uint32_t> peerNodeId = std::nullopt);
+
+/**
+ * Connect per-device MAC drop and failure traces.
+ *
+ * @param statistics Scenario statistics state.
+ * @param nodeId Owning node identifier.
+ * @param device Wi-Fi device whose traces are connected.
+ */
+void ConnectMacTraces(WifiStatisticsState& statistics, uint32_t nodeId, Ptr<WifiNetDevice> device);
 
 /**
  * Attribute one MAC payload to a fixed statistics window.

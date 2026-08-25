@@ -171,50 +171,6 @@ RecordPhyStats(WifiStatisticsState& statistics,
 }
 
 static void
-MacTxDropTrace(WifiStatisticsState* statistics, uint32_t nodeId, Ptr<const Packet> packet)
-{
-    if (auto* stats = GetNodeSecondStats(*statistics, nodeId, Simulator::Now().GetMicroSeconds()))
-    {
-        ++stats->macTxDrops;
-        stats->macTxDropBytes += packet->GetSize();
-    }
-}
-
-static void
-MacDroppedMpduTrace(WifiStatisticsState* statistics,
-                    uint32_t nodeId,
-                    WifiMacDropReason reason,
-                    Ptr<const WifiMpdu> mpdu)
-{
-    if (auto* stats = GetNodeSecondStats(*statistics, nodeId, Simulator::Now().GetMicroSeconds()))
-    {
-        ++stats->macMpduDrops;
-        stats->macMpduDropBytes += mpdu ? mpdu->GetSize() : 0;
-        ++stats->macMpduDropsByReason[static_cast<int>(reason)];
-    }
-}
-
-static void
-MacTxDataFailedTrace(WifiStatisticsState* statistics, uint32_t nodeId, Mac48Address remote)
-{
-    (void)remote;
-    if (auto* stats = GetNodeSecondStats(*statistics, nodeId, Simulator::Now().GetMicroSeconds()))
-    {
-        ++stats->macDataFailures;
-    }
-}
-
-static void
-MacTxFinalDataFailedTrace(WifiStatisticsState* statistics, uint32_t nodeId, Mac48Address remote)
-{
-    (void)remote;
-    if (auto* stats = GetNodeSecondStats(*statistics, nodeId, Simulator::Now().GetMicroSeconds()))
-    {
-        ++stats->macFinalDataFailures;
-    }
-}
-
-static void
 PhyTxBeginTrace(WifiStatisticsState* statistics,
                 uint32_t nodeId,
                 Ptr<const Packet> packet,
@@ -484,20 +440,7 @@ RegisterWifiObservability(WifiStatisticsState* statistics,
     wifi->GetPhy()->GetState()->TraceConnectWithoutContext(
         "State",
         MakeBoundCallback(&PhyStateTrace, statistics, nodeId));
-    wifi->GetMac()->TraceConnectWithoutContext(
-        "MacTxDrop",
-        MakeBoundCallback(&MacTxDropTrace, statistics, nodeId));
-    wifi->GetMac()->TraceConnectWithoutContext(
-        "DroppedMpdu",
-        MakeBoundCallback(&MacDroppedMpduTrace, statistics, nodeId));
-
-    Ptr<WifiRemoteStationManager> manager = wifi->GetRemoteStationManager();
-    manager->TraceConnectWithoutContext(
-        "MacTxDataFailed",
-        MakeBoundCallback(&MacTxDataFailedTrace, statistics, nodeId));
-    manager->TraceConnectWithoutContext(
-        "MacTxFinalDataFailed",
-        MakeBoundCallback(&MacTxFinalDataFailedTrace, statistics, nodeId));
+    ConnectMacTraces(*statistics, nodeId, wifi);
 }
 
 void

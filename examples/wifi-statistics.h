@@ -157,6 +157,9 @@ class WifiStatistics
      */
     void ConnectTrafficSink(Ptr<TrafficSink> sink, uint32_t nodeId, ExperimentDirection direction);
 
+    /** Connect all Wi-Fi device transmit and receive traces exactly once. */
+    void ConnectDeviceTraces();
+
     /** Flush current TCP congestion-window states through the experiment end. */
     void FinalizeTcpStatistics();
 
@@ -179,6 +182,13 @@ class WifiStatistics
      * @return Typed per-node cross-layer measurements.
      */
     CrossLayerSummary BuildCrossLayerSummary() const;
+
+    /**
+     * Build the transitional device transmission summary.
+     *
+     * @return Typed per-sender transmission measurements.
+     */
+    TransmissionSummary BuildTransmissionSummary();
 
     /**
      * Serialize the complete experiment output to JSON.

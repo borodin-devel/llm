@@ -136,6 +136,41 @@ struct AppDirectionAccumulator
     std::map<uint32_t, AppPeerAccumulator> peersByNodeId; ///< Peer totals ordered by node ID.
 };
 
+/** Device transmission observations for one entity and direction. */
+struct DeviceTransmissionAccumulator
+{
+    uint64_t estimatedTransmittedTcpPayloadBytes{0}; ///< Estimated transmitted TCP payload bytes.
+    uint64_t estimatedMatchedTcpPayloadBytes{0}; ///< Estimated positively matched payload bytes.
+    uint64_t matchedPacketCount{0};              ///< Positive-duration matched packet count.
+    SampleAccumulator transmissionDurationUs;    ///< Positive transmission durations in us.
+};
+
+/** MAC payload observations for one peer. */
+struct MacPeerAccumulator
+{
+    uint64_t estimatedTransmitEventCount{0}; ///< Estimated TCP payload transmit-event count.
+    uint64_t estimatedTransmittedTcpPayloadBytes{0}; ///< Estimated transmitted TCP payload bytes.
+    uint64_t estimatedReceiveEventCount{0};          ///< Estimated TCP payload receive-event count.
+    uint64_t estimatedReceivedTcpPayloadBytes{0};    ///< Estimated received TCP payload bytes.
+};
+
+/** MAC observations for one entity and direction. */
+struct MacDirectionAccumulator
+{
+    uint64_t estimatedTransmitEventCount{0}; ///< Estimated TCP payload transmit-event count.
+    uint64_t estimatedTransmittedTcpPayloadBytes{0}; ///< Estimated transmitted TCP payload bytes.
+    uint64_t estimatedReceiveEventCount{0};          ///< Estimated TCP payload receive-event count.
+    uint64_t estimatedReceivedTcpPayloadBytes{0};    ///< Estimated received TCP payload bytes.
+    uint64_t transmitDropCount{0};                   ///< MAC transmit-drop event count.
+    uint64_t transmitDropPacketBytes{0};             ///< Complete packets rejected by MAC transmit.
+    uint64_t mpduDropCount{0};                       ///< Dropped MPDU count.
+    uint64_t mpduDropBytes{0};                       ///< Complete dropped MPDU bytes.
+    uint64_t dataFailureCount{0};                    ///< MAC data transmission failure count.
+    uint64_t finalDataFailureCount{0};               ///< MAC final data transmission failure count.
+    std::map<int, uint64_t> mpduDropsByReason;       ///< MPDU drops ordered by numeric reason.
+    std::map<uint32_t, MacPeerAccumulator> peersByNodeId; ///< Payload totals by peer node.
+};
+
 /** Stable identity of one owner-local TCP connection. */
 struct TcpConnectionKey
 {
@@ -172,6 +207,9 @@ struct TcpConnectionState
 struct LocalEntityWindowAccumulator
 {
     DirectionPair<AppDirectionAccumulator> app; ///< Application observations by direction.
+    DirectionPair<DeviceTransmissionAccumulator>
+        deviceTransmission;                     ///< Device transmission observations by direction.
+    DirectionPair<MacDirectionAccumulator> mac; ///< MAC observations by direction.
     std::map<std::pair<ExperimentDirection, uint32_t>, TcpWindowAccumulator>
         tcpConnections; ///< TCP observations by direction and peer node.
 };

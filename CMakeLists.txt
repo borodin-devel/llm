@@ -44,6 +44,7 @@ set(test_sources
     test/experiment-window-test-suite.cc
     test/experiment-app-test-suite.cc
     test/experiment-tcp-test-suite.cc
+    test/experiment-device-mac-test-suite.cc
     examples/scenario-log.cc
     examples/scenario-config.cc
     examples/scenario-config-json.cc
@@ -53,20 +54,19 @@ set(test_sources
     examples/scenario-run-path.cc
     examples/scenario-topology.cc
     examples/traffic-coordinator.cc
-    examples/traffic-flow-monitor.cc
-    examples/traffic-flow-summary.cc
     examples/experiment-json.cc
     examples/transmission-summary-json.cc
     examples/cross-layer-summary-json.cc
     examples/experiment-statistics-window.cc
     examples/experiment-statistics-app.cc
     examples/experiment-statistics-tcp.cc
+    examples/experiment-statistics-device.cc
+    examples/experiment-statistics-mac.cc
     examples/wifi-statistics.cc
     examples/wifi-statistics-json.cc
     examples/wifi-statistics-owner.cc
     examples/wifi-statistics-summary.cc
     test/wifi-statistics-test-suite.cc
-    test/traffic-flow-summary-test-suite.cc
     test/cross-layer-summary-test-suite.cc
 )
 

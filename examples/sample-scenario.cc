@@ -8,7 +8,6 @@
 #include "scenario-log.h"
 #include "scenario-topology.h"
 #include "traffic-coordinator.h"
-#include "traffic-flow-monitor.h"
 #include "wifi-statistics.h"
 
 #include "ns3/contention-aware-agent-distribution.h"
@@ -122,7 +121,6 @@ main(int argc, char* argv[])
     const double traceDurationMs = parsedTrace.experimentDurationMs;
     TrafficCoordinator trafficCoordinator(traceDurationMs, maximumDurationMs);
     WifiStatistics wifiStatistics(trafficCoordinator, config.statistics.windowMs);
-    TrafficFlowMonitor trafficFlowMonitor(trafficCoordinator, wifiStatistics);
 
     ContentionAwareDistributionConfig distributionConfig;
     distributionConfig.nAp = config.topology.bssCount;
@@ -196,7 +194,7 @@ main(int argc, char* argv[])
     std::cout << "Waiting for " << trafficCoordinator.GetExpectedGeneratorCount()
               << " traffic generators to complete TCP setup..." << std::endl;
 
-    trafficFlowMonitor.ConnectDeviceTraces();
+    wifiStatistics.ConnectDeviceTraces();
 
     const auto wallClockStart = std::chrono::steady_clock::now();
 
@@ -211,8 +209,7 @@ main(int argc, char* argv[])
 
     try
     {
-        const TransmissionSummary transmissionSummary =
-            trafficFlowMonitor.BuildTransmissionSummary();
+        const TransmissionSummary transmissionSummary = wifiStatistics.BuildTransmissionSummary();
         const CrossLayerSummary crossLayerSummary = wifiStatistics.BuildCrossLayerSummary();
         wifiStatistics.WriteExperimentJson(resolvedPaths.outputFile.string(),
                                            transmissionSummary,
