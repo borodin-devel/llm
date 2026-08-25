@@ -22,6 +22,7 @@ ParsedResult ParseJson(std::istream& input);
  *
  * @param jsonPath Path to the JSON input file.
  * @return Parsed agent operations and complete trace duration.
+ * @throws std::runtime_error if the file cannot be opened.
  */
 ParsedResult ParseJsonFile(const std::string& jsonPath);
 

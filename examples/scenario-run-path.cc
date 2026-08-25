@@ -1,8 +1,10 @@
 #include "scenario-config.h"
 
+#include <algorithm>
 #include <array>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <system_error>
 
@@ -94,6 +96,33 @@ RequireDirectory(const std::filesystem::path& path)
     }
 }
 
+bool
+HasRarSignature(const std::filesystem::path& path)
+{
+    constexpr std::array<unsigned char, 7> rar4Signature{'R', 'a', 'r', '!', 0x1a, 0x07, 0x00};
+    constexpr std::array<unsigned char, 8>
+        rar5Signature{'R', 'a', 'r', '!', 0x1a, 0x07, 0x01, 0x00};
+
+    std::ifstream input(path, std::ios::binary);
+    if (!input.is_open())
+    {
+        throw ScenarioConfigError("cannot inspect trace signature: '" + path.string() + "'");
+    }
+
+    std::array<unsigned char, rar5Signature.size()> prefix{};
+    input.read(reinterpret_cast<char*>(prefix.data()), prefix.size());
+    const auto bytesRead = static_cast<std::size_t>(input.gcount());
+    if (input.bad())
+    {
+        throw ScenarioConfigError("cannot read trace signature: '" + path.string() + "'");
+    }
+
+    return (bytesRead >= rar4Signature.size() &&
+            std::equal(rar4Signature.begin(), rar4Signature.end(), prefix.begin())) ||
+           (bytesRead >= rar5Signature.size() &&
+            std::equal(rar5Signature.begin(), rar5Signature.end(), prefix.begin()));
+}
+
 } // namespace
 
 ResolvedRunPaths
@@ -132,6 +161,11 @@ PrepareRunDirectory(const ResolvedRunPaths& paths)
     {
         throw ScenarioConfigError("trace path is not a regular file: '" + paths.traceFile.string() +
                                   "'");
+    }
+    if (HasRarSignature(paths.traceFile))
+    {
+        throw ScenarioConfigError("trace path is a RAR archive, not JSON: '" +
+                                  paths.traceFile.string() + "'");
     }
 
     if (paths.usesAutomaticRunFolder)

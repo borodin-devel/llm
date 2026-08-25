@@ -126,6 +126,7 @@ class WifiStatistics
      * Serialize all collected statistics to JSON.
      *
      * @param outputPath Destination JSON path.
+     * @throws std::runtime_error if the output cannot be exclusively created or fully written.
      */
     void WriteJson(const std::string& outputPath) const;
 

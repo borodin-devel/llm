@@ -5,11 +5,10 @@
 #include "ns3/json.hpp"
 
 #include <algorithm>
-#include <cstdlib>
 #include <fstream>
-#include <iostream>
 #include <map>
 #include <numeric>
+#include <stdexcept>
 
 using json = nlohmann::json;
 
@@ -101,10 +100,9 @@ ParseJsonFile(const std::string& jsonPath)
     NS_LOG_INFO("[Parse] Loading JSON: " << jsonPath);
 
     std::ifstream input(jsonPath);
-    if (!input)
+    if (!input.is_open())
     {
-        std::cerr << "Cannot open file: " << jsonPath << std::endl;
-        std::exit(1);
+        throw std::runtime_error("cannot open trace file: '" + jsonPath + "'");
     }
     return ParseJson(input);
 }

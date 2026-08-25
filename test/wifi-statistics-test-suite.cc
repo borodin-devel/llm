@@ -7,7 +7,12 @@
 #include "ns3/json.hpp"
 
 #include <array>
+#include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <stdexcept>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -332,9 +337,50 @@ class WifiStatisticsJsonTestCase : public TestCase
     void DoRun() override;
 };
 
+/**
+ * @ingroup tests
+ *
+ * Verify writer failures are reported without replacing existing output.
+ */
+class WifiStatisticsJsonFailureTestCase : public TestCase
+{
+  public:
+    WifiStatisticsJsonFailureTestCase();
+
+  private:
+    void DoRun() override;
+    void CheckWriteFailure(const WifiStatisticsState& statistics,
+                           const std::filesystem::path& outputPath,
+                           std::string_view description);
+};
+
 WifiStatisticsJsonTestCase::WifiStatisticsJsonTestCase()
     : TestCase("serialize sparse Wi-Fi statistics JSON")
 {
+}
+
+WifiStatisticsJsonFailureTestCase::WifiStatisticsJsonFailureTestCase()
+    : TestCase("report Wi-Fi statistics JSON output failures without clobbering")
+{
+}
+
+void
+WifiStatisticsJsonFailureTestCase::CheckWriteFailure(const WifiStatisticsState& statistics,
+                                                     const std::filesystem::path& outputPath,
+                                                     std::string_view description)
+{
+    try
+    {
+        WriteWifiStatisticsJson(statistics, outputPath.string());
+        NS_TEST_ASSERT_MSG_EQ(true, false, "Writer failure was ignored: " << description);
+    }
+    catch (const std::runtime_error& error)
+    {
+        NS_TEST_ASSERT_MSG_NE(std::string(error.what()).find(outputPath.string()),
+                              std::string::npos,
+                              "Writer error lacks output path for " << description << ": "
+                                                                    << error.what());
+    }
 }
 
 void
@@ -397,6 +443,40 @@ WifiStatisticsJsonTestCase::DoRun()
                           "Summary validation failed");
 }
 
+void
+WifiStatisticsJsonFailureTestCase::DoRun()
+{
+    TrafficCoordinator coordinator(25.0, 25.0);
+    WifiStatisticsState statistics(coordinator, 25);
+
+    const std::filesystem::path collisionPath =
+        CreateTempDirFilename("llm-wifi-statistics-existing.json");
+    constexpr std::string_view sentinel{"existing statistics must survive\n"};
+    {
+        std::ofstream output(collisionPath);
+        output << sentinel;
+    }
+
+    CheckWriteFailure(statistics, collisionPath, "existing output collision");
+
+    std::ifstream collisionInput(collisionPath);
+    const std::string preserved((std::istreambuf_iterator<char>(collisionInput)),
+                                std::istreambuf_iterator<char>());
+    NS_TEST_ASSERT_MSG_EQ(preserved,
+                          sentinel,
+                          "Existing output content was replaced by the JSON writer");
+
+    const std::filesystem::path missingParentPath =
+        std::filesystem::path(CreateTempDirFilename("missing-output-parent")) / "output.json";
+    NS_TEST_ASSERT_MSG_EQ(std::filesystem::exists(missingParentPath.parent_path()),
+                          false,
+                          "Missing-parent fixture unexpectedly exists");
+    CheckWriteFailure(statistics, missingParentPath, "missing output parent");
+    NS_TEST_ASSERT_MSG_EQ(std::filesystem::exists(missingParentPath),
+                          false,
+                          "Failed writer created an output file");
+}
+
 } // namespace
 
 std::vector<TestCase*>
@@ -406,5 +486,6 @@ CreateWifiStatisticsTestCases()
             new ScenarioLoggingTestCase,
             new PhyRateAccumulatorTestCase,
             new WifiStatisticsAttributionTestCase,
-            new WifiStatisticsJsonTestCase};
+            new WifiStatisticsJsonTestCase,
+            new WifiStatisticsJsonFailureTestCase};
 }

@@ -161,6 +161,7 @@ bool RecordMacPayloadInWindow(WifiStatisticsState& statistics,
  *
  * @param statistics Scenario statistics state.
  * @param outputPath Destination JSON path.
+ * @throws std::runtime_error if the output cannot be exclusively created or fully written.
  */
 void WriteWifiStatisticsJson(const WifiStatisticsState& statistics, const std::string& outputPath);
 

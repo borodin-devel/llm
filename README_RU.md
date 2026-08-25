@@ -688,8 +688,8 @@ compiled defaults < TOML values < CLI overrides
 | `contention_distribution_level` | `--logging-contention-distribution-level` | `info` |
 
 Каждое поле уровня логирования принимает `off`, `error`, `warn`, `info`,
-`debug`, `function`, `logic` или `all`. Значение `off` оставляет компонент
-выключенным.
+`debug`, `function`, `logic` или `all`. Значение `off` не вызывает включение
+логирования и поэтому сохраняет состояние, уже включенное через `NS_LOG`.
 
 ### Правила путей и результатов
 

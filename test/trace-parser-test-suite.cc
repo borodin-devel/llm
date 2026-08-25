@@ -4,6 +4,7 @@
 #include "ns3/trace-parser.h"
 
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,20 @@ class TraceStreamParserTestCase : public TestCase
     void DoRun() override;
 };
 
+/**
+ * @ingroup tests
+ *
+ * Verify trace-file open failures are reported to the caller.
+ */
+class TraceFileOpenFailureTestCase : public TestCase
+{
+  public:
+    TraceFileOpenFailureTestCase();
+
+  private:
+    void DoRun() override;
+};
+
 TraceParserTestCase::TraceParserTestCase()
     : TestCase("parse agent traces and retain the complete duration")
 {
@@ -70,6 +85,11 @@ TraceStreamParserTestCase::TraceStreamParserTestCase()
 {
 }
 
+TraceFileOpenFailureTestCase::TraceFileOpenFailureTestCase()
+    : TestCase("throw trace file open failures with the input path")
+{
+}
+
 void
 TraceStreamParserTestCase::DoRun()
 {
@@ -93,10 +113,29 @@ TraceStreamParserTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ_TOL(parsed.experimentDurationMs, 20.0, 1e-9, "Unexpected trace duration");
 }
 
+void
+TraceFileOpenFailureTestCase::DoRun()
+{
+    const std::string missingPath = CreateTempDirFilename("missing/trace.json");
+    try
+    {
+        ParseJsonFile(missingPath);
+        NS_TEST_ASSERT_MSG_EQ(true, false, "Missing trace file was accepted");
+    }
+    catch (const std::runtime_error& error)
+    {
+        NS_TEST_ASSERT_MSG_NE(std::string(error.what()).find(missingPath),
+                              std::string::npos,
+                              "Trace open error lacks input path: " << error.what());
+    }
+}
+
 } // namespace
 
 std::vector<TestCase*>
 CreateTraceParserTestCases()
 {
-    return {new TraceParserTestCase, new TraceStreamParserTestCase};
+    return {new TraceParserTestCase,
+            new TraceStreamParserTestCase,
+            new TraceFileOpenFailureTestCase};
 }

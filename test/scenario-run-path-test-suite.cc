@@ -1,6 +1,7 @@
 #include "../examples/scenario-config.h"
 #include "llm-test-suite.h"
 
+#include <array>
 #include <chrono>
 #include <ctime>
 #include <filesystem>
@@ -84,6 +85,15 @@ WriteFile(const std::filesystem::path& path)
     std::filesystem::create_directories(path.parent_path());
     std::ofstream output(path);
     output << "{}\n";
+}
+
+template <std::size_t Size>
+void
+WriteBytes(const std::filesystem::path& path, const std::array<unsigned char, Size>& bytes)
+{
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path, std::ios::binary);
+    output.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 
 /**
@@ -278,6 +288,32 @@ ScenarioRunDirectoryTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(std::filesystem::exists(directoryTracePaths.runFolder),
                           false,
                           "Run folder was created before directory trace rejection");
+
+    constexpr std::array<unsigned char, 7> rar4Signature{'R', 'a', 'r', '!', 0x1a, 0x07, 0x00};
+    const auto rar4Trace = root / "rar4-signature.json";
+    WriteBytes(rar4Trace, rar4Signature);
+    ResolvedRunPaths rar4Paths;
+    rar4Paths.traceFile = rar4Trace;
+    rar4Paths.runFolder = root / "rar4-explicit-results";
+    rar4Paths.outputFile = rar4Paths.runFolder / "output.json";
+    CheckFailure(rar4Paths, rar4Trace.string(), "RAR4 trace signature");
+    NS_TEST_ASSERT_MSG_EQ(std::filesystem::exists(rar4Paths.runFolder),
+                          false,
+                          "Explicit run folder was created before RAR4 rejection");
+
+    constexpr std::array<unsigned char, 8>
+        rar5Signature{'R', 'a', 'r', '!', 0x1a, 0x07, 0x01, 0x00};
+    const auto rar5Trace = root / "rar5-signature.json";
+    WriteBytes(rar5Trace, rar5Signature);
+    ResolvedRunPaths rar5Paths;
+    rar5Paths.traceFile = rar5Trace;
+    rar5Paths.runFolder = root / "rar5-run/26-08-25_14-03-09";
+    rar5Paths.outputFile = rar5Paths.runFolder / "output.json";
+    rar5Paths.usesAutomaticRunFolder = true;
+    CheckFailure(rar5Paths, rar5Trace.string(), "RAR5 trace signature");
+    NS_TEST_ASSERT_MSG_EQ(std::filesystem::exists(rar5Paths.runFolder.parent_path()),
+                          false,
+                          "Automatic run parent was created before RAR5 rejection");
 
     const auto blockingFile = root / "blocking-file";
     WriteFile(blockingFile);

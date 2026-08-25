@@ -199,7 +199,17 @@ main(int argc, char* argv[])
     NS_ABORT_MSG_IF(trafficCoordinator.GetExperimentStartUs() < 0,
                     "Simulation ended before the global traffic barrier opened");
 
-    wifiStatistics.WriteJson(resolvedPaths.outputFile.string());
+    try
+    {
+        wifiStatistics.WriteJson(resolvedPaths.outputFile.string());
+    }
+    catch (const std::exception& error)
+    {
+        Simulator::Destroy();
+        std::cerr << "error: cannot write statistics output '" << resolvedPaths.outputFile.string()
+                  << "': " << error.what() << std::endl;
+        return 1;
+    }
     trafficFlowMonitor.PrintTransmissionTimePerSender();
     wifiStatistics.PrintCrossLayerReport();
 

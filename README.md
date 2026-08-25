@@ -680,7 +680,8 @@ defaults are applied before Internet-stack and socket creation.
 | `contention_distribution_level` | `--logging-contention-distribution-level` | `info` |
 
 Every log field accepts `off`, `error`, `warn`, `info`, `debug`, `function`,
-`logic`, or `all`. `off` leaves that component disabled.
+`logic`, or `all`. `off` makes no enable call, so it preserves logging already
+enabled through `NS_LOG`.
 
 ### Path and output rules
 

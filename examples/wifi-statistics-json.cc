@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iomanip>
 #include <map>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -250,11 +251,11 @@ MacSummaryEqual(const MacSummaryStats& lhs, const MacSummaryStats& rhs)
 void
 WriteWifiStatisticsJson(const WifiStatisticsState& statistics, const std::string& outputPath)
 {
-    std::ofstream out(outputPath);
-    if (!out)
+    std::ofstream out(outputPath, std::ios::out | std::ios::noreplace);
+    if (!out.is_open())
     {
-        NS_LOG_ERROR("Cannot open PHY statistics output: " << outputPath);
-        return;
+        throw std::runtime_error("cannot exclusively create PHY statistics output: '" + outputPath +
+                                 "'");
     }
 
     const int64_t statsDurationUs = static_cast<int64_t>(
@@ -453,7 +454,20 @@ WriteWifiStatisticsJson(const WifiStatisticsState& statistics, const std::string
         << "  }\n"
         << "}\n";
 
+    if (!out)
+    {
+        throw std::runtime_error("failed to write PHY statistics output: '" + outputPath + "'");
+    }
+    out.flush();
+    if (!out)
+    {
+        throw std::runtime_error("failed to flush PHY statistics output: '" + outputPath + "'");
+    }
     out.close();
+    if (out.fail())
+    {
+        throw std::runtime_error("failed to close PHY statistics output: '" + outputPath + "'");
+    }
 
     NS_LOG_INFO("PHY per-node statistics written to "
                 << outputPath << " (" << emittedWindowCount << " non-empty / " << windowCount
