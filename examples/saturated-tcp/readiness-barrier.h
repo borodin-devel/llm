@@ -1,0 +1,134 @@
+#ifndef SATURATED_TCP_READINESS_BARRIER_H
+#define SATURATED_TCP_READINESS_BARRIER_H
+
+#include "ns3/callback.h"
+#include "ns3/event-id.h"
+#include "ns3/ptr.h"
+
+#include <cstdint>
+#include <vector>
+
+namespace ns3
+{
+
+class Application;
+
+/**
+ * Coordinate saturated TCP readiness and one exact measurement second.
+ *
+ * Each sender receives a registration-specific readiness callback. Once all
+ * callbacks have fired, the barrier starts statistics and senders together at
+ * the first whole-second boundary strictly after complete readiness.
+ */
+class SaturatedReadinessBarrier
+{
+  public:
+    /** Callback accepting an absolute simulation timestamp in nanoseconds. */
+    using StatisticsCallback = Callback<void, int64_t>;
+
+    /**
+     * Construct an empty readiness barrier.
+     *
+     * @param startStatistics Callback that resets and starts statistics.
+     * @param finalizeStatistics Callback that finalizes statistics.
+     */
+    SaturatedReadinessBarrier(StatisticsCallback startStatistics,
+                              StatisticsCallback finalizeStatistics);
+
+    /** Cancel any pending readiness, epoch, or finalization events. */
+    ~SaturatedReadinessBarrier();
+
+    /**
+     * Readiness barriers cannot be copied because scheduled events retain their owner.
+     *
+     * @param other Barrier that cannot be copied.
+     */
+    SaturatedReadinessBarrier(const SaturatedReadinessBarrier& other) = delete;
+
+    /**
+     * Readiness barriers cannot be copy-assigned because scheduled events retain their owner.
+     *
+     * @param other Barrier that cannot be assigned.
+     * @return This barrier is never returned because assignment is deleted.
+     */
+    SaturatedReadinessBarrier& operator=(const SaturatedReadinessBarrier& other) = delete;
+
+    /**
+     * Register one readiness-gated sender.
+     *
+     * @param application Sender application whose stop time follows the common epoch.
+     * @param startTraffic Callback that opens this sender's payload gate.
+     * @param stopTraffic Callback that closes this sender at the measurement endpoint.
+     * @return One-shot callback through which this sender reports readiness.
+     */
+    Callback<void> RegisterSender(Ptr<Application> application,
+                                  Callback<void> startTraffic,
+                                  Callback<void> stopTraffic);
+
+    /**
+     * Register a non-sender application whose stop time follows the common epoch.
+     *
+     * @param application Application to coordinate.
+     */
+    void RegisterApplication(Ptr<Application> application);
+
+    /** Lock registration, reject an empty barrier, and arm the 30-second safety timeout. */
+    void FinalizeRegistration();
+
+    /** @return Number of registered senders. */
+    uint32_t GetRegisteredSenderCount() const;
+
+    /** @return Number of senders that reported readiness. */
+    uint32_t GetReadySenderCount() const;
+
+    /** @return Number of coordinated sender and non-sender applications. */
+    uint32_t GetRegisteredApplicationCount() const;
+
+    /** @return Common measurement epoch in nanoseconds, or -1 before complete readiness. */
+    int64_t GetExperimentStartNs() const;
+
+    /** @return True after exact-endpoint statistics finalization. */
+    bool IsMeasurementComplete() const;
+
+  private:
+    /** State and actions for one sender readiness registration. */
+    struct SenderRegistration
+    {
+        Ptr<Application> application; ///< Sender application retained by the barrier.
+        Callback<void> startTraffic;  ///< Payload-gate callback invoked at the common epoch.
+        Callback<void> stopTraffic;   ///< Sender cleanup callback invoked at the endpoint.
+        bool ready{false};            ///< Whether this registration reported readiness.
+    };
+
+    /**
+     * Record one registration-specific readiness report.
+     *
+     * @param index Sender registration index.
+     */
+    void NotifyReady(uint32_t index);
+
+    /** Start statistics and every sender at the selected epoch. */
+    void OpenBarrier();
+
+    /** Stop senders, finalize statistics, and stop the simulator. */
+    void FinalizeMeasurement();
+
+    /** Fail because the fixed readiness safety deadline expired. */
+    void ReadinessTimeout();
+
+    std::vector<SenderRegistration> m_senders;    ///< Ordered sender registrations.
+    std::vector<Ptr<Application>> m_applications; ///< All applications stopped at the endpoint.
+    StatisticsCallback m_startStatistics;         ///< Statistics epoch-start action.
+    StatisticsCallback m_finalizeStatistics;      ///< Statistics exact-endpoint action.
+    EventId m_safetyEvent;                        ///< Fixed readiness safety timeout.
+    EventId m_openEvent;                          ///< Scheduled common-epoch event.
+    EventId m_finalizeEvent;                      ///< Scheduled measurement-end event.
+    uint32_t m_readySenderCount{0};               ///< Number of distinct ready registrations.
+    int64_t m_experimentStartNs{-1};              ///< Selected common epoch in nanoseconds.
+    bool m_registrationFinalized{false};          ///< Whether registration is locked.
+    bool m_measurementComplete{false};            ///< Whether finalization completed.
+};
+
+} // namespace ns3
+
+#endif // SATURATED_TCP_READINESS_BARRIER_H

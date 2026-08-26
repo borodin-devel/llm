@@ -67,6 +67,7 @@ set(test_sources
     test/saturated-tcp/access-wait-test-suite.cc
     test/saturated-tcp/sta-phy-metrics-test-suite.cc
     test/saturated-tcp/benchmark-output-test-suite.cc
+    test/saturated-tcp/traffic-test-suite.cc
     test/runtime/scenario-logging-test-suite.cc
     test/runtime/scenario-topology-test-suite.cc
     test/runtime/traffic-coordinator-test-suite.cc
@@ -98,6 +99,9 @@ set(test_sources
     examples/saturated-tcp/sta-phy-metrics.cc
     examples/saturated-tcp/benchmark-statistics.cc
     examples/saturated-tcp/output.cc
+    examples/saturated-tcp/saturated-tcp-sender.cc
+    examples/saturated-tcp/readiness-barrier.cc
+    examples/saturated-tcp/traffic.cc
     examples/runtime/log.cc
     examples/runtime/topology.cc
     examples/runtime/traffic-coordinator.cc
