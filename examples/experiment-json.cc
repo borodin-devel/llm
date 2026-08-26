@@ -1,4 +1,4 @@
-#include "experiment-output-internal.h"
+#include "statistics/json/writer.h"
 #include "experiment-statistics.h"
 #include "scenario-config-internal.h"
 #include "scenario-log.h"

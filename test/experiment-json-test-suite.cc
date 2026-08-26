@@ -1,6 +1,6 @@
-#include "../examples/experiment-output-internal.h"
 #include "../examples/experiment-statistics.h"
 #include "../examples/scenario-config.h"
+#include "../examples/statistics/json/writer.h"
 #include "../examples/traffic-coordinator.h"
 #include "llm-test-suite.h"
 
@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iterator>
 #include <ostream>
+#include <sstream>
 #include <stdexcept>
 #include <streambuf>
 #include <string>
@@ -63,6 +64,38 @@ class ExperimentJsonWriteStateTestCase : public TestCase
     ExperimentJsonWriteStateTestCase();
 
   private:
+    void DoRun() override;
+};
+
+/**
+ * @ingroup tests
+ *
+ * Verify JsonWriter produces the required indented JSON representation.
+ */
+class JsonWriterFormattingTestCase : public TestCase
+{
+  public:
+    /** Construct the JSON writer formatting test case. */
+    JsonWriterFormattingTestCase();
+
+  private:
+    /** Execute the JSON writer formatting test. */
+    void DoRun() override;
+};
+
+/**
+ * @ingroup tests
+ *
+ * Verify JsonWriter rejects invalid operation sequences.
+ */
+class JsonWriterStateTestCase : public TestCase
+{
+  public:
+    /** Construct the JSON writer state test case. */
+    JsonWriterStateTestCase();
+
+  private:
+    /** Execute the JSON writer state test. */
     void DoRun() override;
 };
 
@@ -147,10 +180,170 @@ ExperimentJsonWriteStateTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(output.fail(), true, "Rejected hierarchy body write was not observable");
 }
 
+JsonWriterFormattingTestCase::JsonWriterFormattingTestCase()
+    : TestCase("format nested JSON through streaming writer operations")
+{
+}
+
+void
+JsonWriterFormattingTestCase::DoRun()
+{
+    std::ostringstream output;
+    JsonWriter writer(output);
+    writer.BeginObject();
+    writer.Key("name");
+    writer.Value("quoted \"value\"");
+    writer.Key("items");
+    writer.BeginArray();
+    writer.Value(7);
+    writer.Null();
+    writer.BeginObject();
+    writer.Key("enabled");
+    writer.Value(true);
+    writer.EndObject();
+    writer.EndArray();
+    writer.Key("empty");
+    writer.BeginArray();
+    writer.EndArray();
+    writer.EndObject();
+    writer.Finish();
+
+    constexpr std::string_view expected = R"({
+  "name": "quoted \"value\"",
+  "items": [
+    7,
+    null,
+    {
+      "enabled": true
+    }
+  ],
+  "empty": []
+}
+)";
+    NS_TEST_ASSERT_MSG_EQ(output.str(), expected, "JSON writer format differs from the contract");
+}
+
+JsonWriterStateTestCase::JsonWriterStateTestCase()
+    : TestCase("reject invalid streaming JSON writer state transitions")
+{
+}
+
+void
+JsonWriterStateTestCase::DoRun()
+{
+    {
+        std::ostringstream output;
+        JsonWriter writer(output);
+        try
+        {
+            writer.Key("outside");
+            NS_TEST_ASSERT_MSG_EQ(true, false, "Key outside an object was accepted");
+        }
+        catch (const std::logic_error&)
+        {
+        }
+    }
+    {
+        std::ostringstream output;
+        JsonWriter writer(output);
+        writer.BeginObject();
+        try
+        {
+            writer.Value(1);
+            NS_TEST_ASSERT_MSG_EQ(true, false, "Object value without a key was accepted");
+        }
+        catch (const std::logic_error&)
+        {
+        }
+    }
+    {
+        std::ostringstream output;
+        JsonWriter writer(output);
+        writer.BeginObject();
+        writer.Key("pending");
+        try
+        {
+            writer.EndObject();
+            NS_TEST_ASSERT_MSG_EQ(true, false, "Object with a pending key was closed");
+        }
+        catch (const std::logic_error&)
+        {
+        }
+    }
+    {
+        std::ostringstream output;
+        JsonWriter writer(output);
+        writer.BeginArray();
+        try
+        {
+            writer.EndObject();
+            NS_TEST_ASSERT_MSG_EQ(true, false, "Wrong container kind was closed");
+        }
+        catch (const std::logic_error&)
+        {
+        }
+    }
+    {
+        std::ostringstream output;
+        JsonWriter writer(output);
+        try
+        {
+            writer.Finish();
+            NS_TEST_ASSERT_MSG_EQ(true, false, "Finish without a root value was accepted");
+        }
+        catch (const std::logic_error&)
+        {
+        }
+    }
+    {
+        std::ostringstream output;
+        JsonWriter writer(output);
+        writer.BeginArray();
+        try
+        {
+            writer.Finish();
+            NS_TEST_ASSERT_MSG_EQ(true, false, "Finish with an open root array was accepted");
+        }
+        catch (const std::logic_error&)
+        {
+        }
+    }
+    {
+        std::ostringstream output;
+        JsonWriter writer(output);
+        writer.Value(1);
+        try
+        {
+            writer.Null();
+            NS_TEST_ASSERT_MSG_EQ(true, false, "A second root value was accepted");
+        }
+        catch (const std::logic_error&)
+        {
+        }
+    }
+    {
+        std::ostringstream output;
+        JsonWriter writer(output);
+        writer.Null();
+        writer.Finish();
+        try
+        {
+            writer.Finish();
+            NS_TEST_ASSERT_MSG_EQ(true, false, "A second Finish call was accepted");
+        }
+        catch (const std::logic_error&)
+        {
+        }
+    }
+}
+
 } // namespace
 
 std::vector<TestCase*>
 CreateExperimentJsonTestCases()
 {
-    return {new ExperimentJsonIoTestCase, new ExperimentJsonWriteStateTestCase};
+    return {new ExperimentJsonIoTestCase,
+            new ExperimentJsonWriteStateTestCase,
+            new JsonWriterFormattingTestCase,
+            new JsonWriterStateTestCase};
 }

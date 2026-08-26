@@ -1,4 +1,4 @@
-#include "../examples/experiment-output-internal.h"
+#include "../examples/statistics/json/writer.h"
 #include "../examples/experiment-window-output.h"
 #include "../examples/scenario-config.h"
 #include "llm-test-suite.h"

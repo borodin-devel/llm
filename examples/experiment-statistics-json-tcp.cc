@@ -1,4 +1,4 @@
-#include "experiment-output-internal.h"
+#include "statistics/json/writer.h"
 
 #include <ostream>
 
