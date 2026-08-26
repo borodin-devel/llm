@@ -147,6 +147,7 @@ class SaturatedTcpStatistics
     {
         Ptr<QosTxop> source;                          ///< Subscribed QoS TXOP.
         Callback<void, Time, Time, uint8_t> callback; ///< Exact connected callback.
+        bool connected{false};                        ///< Whether the callback was connected.
     };
 
     /** One exact station PHY trace subscription. */
@@ -154,7 +155,8 @@ class SaturatedTcpStatistics
     {
         Ptr<WifiPhy> source; ///< Subscribed station PHY.
         Callback<void, WifiConstPsduMap, WifiTxVector, double>
-            callback; ///< Exact connected callback.
+            callback;          ///< Exact connected callback.
+        bool connected{false}; ///< Whether the callback was connected.
     };
 
     /** Every trace subscription owned for one connected station. */
@@ -163,8 +165,31 @@ class SaturatedTcpStatistics
         Ptr<AccessTrackingStaWifiMac> mac; ///< Subscribed benchmark station MAC.
         Callback<void, uint8_t, uint8_t>
             accessRequestedCallback;                 ///< Exact access-request callback.
+        bool accessRequestedConnected{false};        ///< Whether the MAC callback was connected.
         std::vector<TxopTraceConnection> txopTraces; ///< Exact per-AC TXOP subscriptions.
         std::vector<PhyTraceConnection> phyTraces;   ///< Exact per-PHY subscriptions.
+    };
+
+    /** Disconnect locally owned subscriptions unless durable ownership is transferred. */
+    class StationTraceConnectionGuard
+    {
+      public:
+        /**
+         * Guard one local station subscription record.
+         *
+         * @param connections Local connection record.
+         */
+        explicit StationTraceConnectionGuard(StationTraceConnections& connections);
+
+        /** Disconnect every locally owned connected callback unless disarmed. */
+        ~StationTraceConnectionGuard();
+
+        /** Transfer responsibility to durable owner state. */
+        void Disarm() noexcept;
+
+      private:
+        StationTraceConnections& m_connections; ///< Locally owned subscription record.
+        bool m_armed{true};                     ///< Whether destruction must disconnect.
     };
 
     /**
@@ -222,6 +247,8 @@ class SaturatedTcpStatistics
     std::map<uint32_t, Ptr<WifiNetDevice>> m_stationDevices; ///< Connected STA devices by node ID.
     std::map<uint32_t, StationTraceConnections>
         m_traceConnections; ///< Exact subscriptions by station node ID.
+    std::function<void()>
+        m_subscriptionOwnershipHook; ///< Injected post-connection ownership-transfer seam.
     std::unique_ptr<StationPhyMetricRecorder> m_phyRecorder; ///< Task 5 raw PPDU recorder.
     std::unique_ptr<StationPhyMetricRecorder>
         m_overallPhyRecorder; ///< Independent one-window Task 5 overall recorder.

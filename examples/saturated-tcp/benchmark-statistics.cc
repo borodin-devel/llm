@@ -152,6 +152,26 @@ SaturatedTcpStatistics::~SaturatedTcpStatistics()
     DisconnectAllTraceConnections();
 }
 
+SaturatedTcpStatistics::StationTraceConnectionGuard::StationTraceConnectionGuard(
+    StationTraceConnections& connections)
+    : m_connections(connections)
+{
+}
+
+SaturatedTcpStatistics::StationTraceConnectionGuard::~StationTraceConnectionGuard()
+{
+    if (m_armed)
+    {
+        SaturatedTcpStatistics::DisconnectTraceConnections(m_connections);
+    }
+}
+
+void
+SaturatedTcpStatistics::StationTraceConnectionGuard::Disarm() noexcept
+{
+    m_armed = false;
+}
+
 void
 SaturatedTcpStatistics::RegisterAccessPoint(uint32_t accessPointId,
                                             uint32_t nodeId,
@@ -215,81 +235,101 @@ SaturatedTcpStatistics::ConnectStation(Ptr<WifiNetDevice> device)
     connections.mac = mac;
     connections.accessRequestedCallback =
         MakeCallback(&SaturatedTcpStatistics::NotifyAccessRequested, this).Bind(nodeId);
+    StationTraceConnectionGuard connectionGuard(connections);
+    if (!mac->TraceConnectWithoutContext("AccessRequested", connections.accessRequestedCallback))
+    {
+        throw std::invalid_argument("station AccessRequested trace could not be connected");
+    }
+    connections.accessRequestedConnected = true;
+    for (const auto ac : {AC_BE, AC_BK, AC_VI, AC_VO})
+    {
+        const auto txop = mac->GetQosTxop(ac);
+        if (!txop)
+        {
+            throw std::invalid_argument("station statistics require every QoS TXOP");
+        }
+        connections.txopTraces.push_back(
+            {txop,
+             MakeCallback(&SaturatedTcpStatistics::NotifyTxopGranted, this)
+                 .Bind(nodeId, static_cast<uint8_t>(ac)),
+             false});
+        auto& connection = connections.txopTraces.back();
+        if (!txop->TraceConnectWithoutContext("TxopTrace", connection.callback))
+        {
+            throw std::invalid_argument("station TXOP trace could not be connected");
+        }
+        connection.connected = true;
+    }
+    if (device->GetNPhys() == 0)
+    {
+        throw std::invalid_argument("station statistics require at least one station PHY");
+    }
+    for (const auto& phy : device->GetPhys())
+    {
+        if (!phy)
+        {
+            throw std::invalid_argument("station statistics cannot connect a null station PHY");
+        }
+        connections.phyTraces.push_back(
+            {phy,
+             MakeCallback(&SaturatedTcpStatistics::NotifyPhyTxPsduBegin, this)
+                 .Bind(nodeId, phy->GetPhyBand()),
+             false});
+        auto& connection = connections.phyTraces.back();
+        if (!phy->TraceConnectWithoutContext("PhyTxPsduBegin", connection.callback))
+        {
+            throw std::invalid_argument("station PhyTxPsduBegin trace could not be connected");
+        }
+        connection.connected = true;
+    }
+
+    if (m_subscriptionOwnershipHook)
+    {
+        m_subscriptionOwnershipHook();
+    }
+
+    const auto [deviceIterator, deviceInserted] = m_stationDevices.emplace(nodeId, device);
+    if (!deviceInserted)
+    {
+        throw std::logic_error("station device ownership insertion failed");
+    }
     try
     {
-        if (!mac->TraceConnectWithoutContext("AccessRequested",
-                                             connections.accessRequestedCallback))
+        const auto [connectionIterator, connectionInserted] =
+            m_traceConnections.emplace(nodeId, connections);
+        static_cast<void>(connectionIterator);
+        if (!connectionInserted)
         {
-            throw std::invalid_argument("station AccessRequested trace could not be connected");
-        }
-        for (const auto ac : {AC_BE, AC_BK, AC_VI, AC_VO})
-        {
-            const auto txop = mac->GetQosTxop(ac);
-            if (!txop)
-            {
-                throw std::invalid_argument("station statistics require every QoS TXOP");
-            }
-            TxopTraceConnection connection{
-                txop,
-                MakeCallback(&SaturatedTcpStatistics::NotifyTxopGranted, this)
-                    .Bind(nodeId, static_cast<uint8_t>(ac)),
-            };
-            if (!txop->TraceConnectWithoutContext("TxopTrace", connection.callback))
-            {
-                throw std::invalid_argument("station TXOP trace could not be connected");
-            }
-            connections.txopTraces.push_back(std::move(connection));
-        }
-        if (device->GetNPhys() == 0)
-        {
-            throw std::invalid_argument("station statistics require at least one station PHY");
-        }
-        for (const auto& phy : device->GetPhys())
-        {
-            if (!phy)
-            {
-                throw std::invalid_argument("station statistics cannot connect a null station PHY");
-            }
-            PhyTraceConnection connection{
-                phy,
-                MakeCallback(&SaturatedTcpStatistics::NotifyPhyTxPsduBegin, this)
-                    .Bind(nodeId, phy->GetPhyBand()),
-            };
-            if (!phy->TraceConnectWithoutContext("PhyTxPsduBegin", connection.callback))
-            {
-                throw std::invalid_argument("station PhyTxPsduBegin trace could not be connected");
-            }
-            connections.phyTraces.push_back(std::move(connection));
+            throw std::logic_error("station trace ownership insertion failed");
         }
     }
     catch (...)
     {
-        DisconnectTraceConnections(connections);
+        m_stationDevices.erase(deviceIterator);
         throw;
     }
-
-    m_stationDevices.emplace(nodeId, device);
-    m_traceConnections.emplace(nodeId, std::move(connections));
+    connectionGuard.Disarm();
 }
 
 void
 SaturatedTcpStatistics::DisconnectTraceConnections(StationTraceConnections& connections) noexcept
 {
-    if (connections.mac && !connections.accessRequestedCallback.IsNull())
+    if (connections.mac && connections.accessRequestedConnected &&
+        !connections.accessRequestedCallback.IsNull())
     {
         connections.mac->TraceDisconnectWithoutContext("AccessRequested",
                                                        connections.accessRequestedCallback);
     }
     for (auto& connection : connections.txopTraces)
     {
-        if (connection.source)
+        if (connection.source && connection.connected)
         {
             connection.source->TraceDisconnectWithoutContext("TxopTrace", connection.callback);
         }
     }
     for (auto& connection : connections.phyTraces)
     {
-        if (connection.source)
+        if (connection.source && connection.connected)
         {
             connection.source->TraceDisconnectWithoutContext("PhyTxPsduBegin", connection.callback);
         }
@@ -298,6 +338,7 @@ SaturatedTcpStatistics::DisconnectTraceConnections(StationTraceConnections& conn
     connections.phyTraces.clear();
     connections.mac = nullptr;
     connections.accessRequestedCallback = {};
+    connections.accessRequestedConnected = false;
 }
 
 void

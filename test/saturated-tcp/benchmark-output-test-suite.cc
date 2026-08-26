@@ -714,6 +714,53 @@ SaturatedTcpBenchmarkLifecycleTestCase::DoRun()
         repairedDevice->Dispose();
     }
 
+    auto insertionNode = CreateObject<Node>();
+    auto insertionFailureDevice =
+        MakeStationDevice(insertionNode, Mac48Address("00:00:00:00:00:07"));
+    auto insertionReplacementDevice =
+        MakeStationDevice(insertionNode, Mac48Address("00:00:00:00:00:08"));
+    alignas(SaturatedTcpStatistics) std::array<std::byte, sizeof(SaturatedTcpStatistics)>
+        insertionOwnerStorage{};
+    auto* insertionFailureOwner =
+        std::construct_at(reinterpret_cast<SaturatedTcpStatistics*>(insertionOwnerStorage.data()),
+                          10);
+    insertionFailureOwner->RegisterAccessPoint(0, 920, "AP0", "10.11.0.1");
+    insertionFailureOwner->RegisterStation(0, 0, insertionNode->GetId(), "AP0/STA0", "10.11.0.2");
+    insertionFailureOwner->m_subscriptionOwnershipHook = [] { throw std::bad_alloc(); };
+    try
+    {
+        insertionFailureOwner->ConnectStation(insertionFailureDevice);
+        NS_TEST_ASSERT_MSG_EQ(true, false, "Injected ownership-insertion failure did not escape");
+    }
+    catch (const std::bad_alloc&)
+    {
+    }
+    std::destroy_at(insertionFailureOwner);
+
+    auto* insertionReplacementOwner =
+        std::construct_at(reinterpret_cast<SaturatedTcpStatistics*>(insertionOwnerStorage.data()),
+                          10);
+    insertionReplacementOwner->RegisterAccessPoint(0, 920, "AP0", "10.11.0.1");
+    insertionReplacementOwner->RegisterStation(0,
+                                               0,
+                                               insertionNode->GetId(),
+                                               "AP0/STA0",
+                                               "10.11.0.2");
+    insertionReplacementOwner->ConnectStation(insertionReplacementDevice);
+    insertionReplacementOwner->Start(0);
+    const auto insertionFailureMac =
+        DynamicCast<BenchmarkStatsStaWifiMacProbe>(insertionFailureDevice->GetMac());
+    insertionFailureMac->InvokeNotifyRequestAccess(insertionFailureMac->GetQosTxop(AC_BE), 0);
+    insertionReplacementOwner->Finalize(1'000'000'000);
+    NS_TEST_ASSERT_MSG_EQ(
+        insertionReplacementOwner->m_phyRecorder->BuildOverallAccumulator(insertionNode->GetId())
+            .contentionNs,
+        0,
+        "Insertion failure leaked a fully connected callback into the replacement owner");
+    std::destroy_at(insertionReplacementOwner);
+    insertionFailureDevice->Dispose();
+    insertionReplacementDevice->Dispose();
+
     accessPointDevice->Dispose();
     stationDevice->Dispose();
     partialDevice->Dispose();
