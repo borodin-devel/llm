@@ -433,6 +433,9 @@ SaturatedTcpConfigValidationTestCase::DoRun()
     CheckFailure([](auto& c) { c.tcp.receiveBufferBytes = c.tcp.segmentSizeBytes - 1; },
                  "tcp.segment_size_bytes");
     CheckFailure([](auto& c) { c.tcp.wiredRate = "fast"; }, "tcp.wired_rate");
+    CheckFailure([](auto& c) { c.tcp.wiredRate = "."; }, "tcp.wired_rate");
+    CheckFailure([](auto& c) { c.tcp.wiredRate = " "; }, "tcp.wired_rate");
+    CheckFailure([](auto& c) { c.tcp.wiredRate = "Gbps"; }, "tcp.wired_rate");
     CheckFailure([](auto& c) { c.tcp.wiredRate = "0Gbps"; }, "tcp.wired_rate");
     CheckFailure([](auto& c) { c.tcp.wiredRate = "1e3Gbps"; }, "tcp.wired_rate");
     CheckFailure([](auto& c) { c.tcp.wiredDelay = "soon"; }, "tcp.wired_delay");

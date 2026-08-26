@@ -1,6 +1,5 @@
 #include "config.h"
 
-#include "ns3/data-rate.h"
 #include "ns3/nstime.h"
 #include "ns3/tcp-congestion-ops.h"
 #include "ns3/type-id.h"
@@ -10,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -80,12 +80,83 @@ IsKnownLogLevel(std::string_view level)
     return false;
 }
 
+/**
+ * Parse an ns-3 data-rate spelling without invoking the unsafe stream extractor.
+ *
+ * This mirrors the private DataRate::DoParse grammar while requiring numeric
+ * extraction to succeed before assigning the initialized result.
+ *
+ * @param text Data-rate spelling to parse.
+ * @param rate Parsed bit rate destination.
+ * @return Whether parsing succeeded.
+ */
+bool
+ParseDataRate(std::string_view text, uint64_t* rate)
+{
+    const auto suffixStart = text.find_first_not_of("0123456789. ");
+    if (suffixStart == std::string_view::npos)
+    {
+        std::istringstream input{std::string(text)};
+        input >> *rate;
+        return !input.fail();
+    }
+
+    static constexpr std::array<std::pair<std::string_view, long double>, 26> units{{
+        {"bps", 1.0L},
+        {"b/s", 1.0L},
+        {"Bps", 8.0L},
+        {"B/s", 8.0L},
+        {"kbps", 1000.0L},
+        {"kb/s", 1000.0L},
+        {"Kbps", 1000.0L},
+        {"Kb/s", 1000.0L},
+        {"kBps", 8000.0L},
+        {"kB/s", 8000.0L},
+        {"KBps", 8000.0L},
+        {"KB/s", 8000.0L},
+        {"Kib/s", 1024.0L},
+        {"KiB/s", 8192.0L},
+        {"Mbps", 1000000.0L},
+        {"Mb/s", 1000000.0L},
+        {"MBps", 8000000.0L},
+        {"MB/s", 8000000.0L},
+        {"Mib/s", 1048576.0L},
+        {"MiB/s", 8388608.0L},
+        {"Gbps", 1000000000.0L},
+        {"Gb/s", 1000000000.0L},
+        {"GBps", 8000000000.0L},
+        {"GB/s", 8000000000.0L},
+        {"Gib/s", 1073741824.0L},
+        {"GiB/s", 8589934592.0L},
+    }};
+    const auto suffix = text.substr(suffixStart);
+    for (const auto& [name, multiplier] : units)
+    {
+        if (suffix != name)
+        {
+            continue;
+        }
+
+        std::istringstream input{std::string(text.substr(0, suffixStart))};
+        double quantity{};
+        input >> quantity;
+        const long double bitsPerSecond = static_cast<long double>(quantity) * multiplier;
+        if (input.fail() || !std::isfinite(quantity) || bitsPerSecond < 0.0L ||
+            bitsPerSecond > static_cast<long double>(std::numeric_limits<uint64_t>::max()))
+        {
+            return false;
+        }
+        *rate = static_cast<uint64_t>(bitsPerSecond);
+        return true;
+    }
+    return false;
+}
+
 bool
 IsPositiveDataRate(std::string_view text)
 {
-    DataRateValue value;
-    return value.DeserializeFromString(std::string(text), MakeDataRateChecker()) &&
-           value.Get().GetBitRate() > 0;
+    uint64_t rate = 0;
+    return ParseDataRate(text, &rate) && rate > 0;
 }
 
 bool
