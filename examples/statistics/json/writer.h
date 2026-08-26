@@ -1,7 +1,7 @@
 #ifndef STATISTICS_JSON_WRITER_H
 #define STATISTICS_JSON_WRITER_H
 
-#include "../../experiment-window-output.h"
+#include "../output-types.h"
 
 #include "ns3/json.hpp"
 

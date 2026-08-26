@@ -1,4 +1,4 @@
-#include "experiment-statistics-types.h"
+#include "types.h"
 
 #include <algorithm>
 #include <cmath>

@@ -1,8 +1,8 @@
 #ifndef EXPERIMENT_STATISTICS_H
 #define EXPERIMENT_STATISTICS_H
 
-#include "experiment-statistics-types.h"
-#include "experiment-window-output.h"
+#include "output-types.h"
+#include "types.h"
 
 #include "ns3/address.h"
 #include "ns3/ipv4-address.h"

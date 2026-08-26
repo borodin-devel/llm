@@ -1,5 +1,5 @@
-#include "../examples/experiment-statistics-types.h"
-#include "llm-test-suite.h"
+#include "../../examples/statistics/types.h"
+#include "../llm-test-suite.h"
 
 #include <cstdint>
 #include <stdexcept>

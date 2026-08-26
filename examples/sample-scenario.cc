@@ -4,11 +4,11 @@
 // Usage: ./sample-scenario --config <config.toml> [--section-field <value> ...]
 //
 
-#include "experiment-statistics.h"
 #include "config/scenario-config.h"
 #include "runtime/log.h"
 #include "runtime/topology.h"
 #include "runtime/traffic-coordinator.h"
+#include "statistics/experiment-statistics.h"
 
 #include "ns3/contention-aware-agent-distribution.h"
 #include "ns3/core-module.h"

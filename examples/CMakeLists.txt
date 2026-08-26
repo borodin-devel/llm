@@ -11,22 +11,24 @@ build_lib_example(
     runtime/log.cc
     runtime/topology.cc
     runtime/traffic-coordinator.cc
-    experiment-json.cc
-    experiment-statistics-owner.cc
-    experiment-statistics-window.cc
-    experiment-statistics-app.cc
-    experiment-statistics-tcp.cc
-    experiment-statistics-device.cc
-    experiment-statistics-mac.cc
-    experiment-statistics-phy.cc
-    experiment-statistics-summary.cc
-    experiment-statistics-validation.cc
-    experiment-statistics-json.cc
-    experiment-statistics-json-general.cc
-    experiment-statistics-json-app.cc
-    experiment-statistics-json-tcp.cc
-    experiment-statistics-json-mac.cc
-    experiment-statistics-json-phy.cc
-    experiment-statistics-json-entity.cc
+    # Statistics core
+    statistics/experiment-statistics.cc
+    statistics/window.cc
+    statistics/app.cc
+    statistics/tcp.cc
+    statistics/device.cc
+    statistics/mac.cc
+    statistics/phy.cc
+    statistics/summary.cc
+    statistics/validation.cc
+    # Statistics JSON
+    statistics/json/writer.cc
+    statistics/json/hierarchy.cc
+    statistics/json/general.cc
+    statistics/json/app.cc
+    statistics/json/tcp.cc
+    statistics/json/mac.cc
+    statistics/json/phy.cc
+    statistics/json/entity.cc
   LIBRARIES_TO_LINK ${libllm}
 )

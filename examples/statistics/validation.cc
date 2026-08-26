@@ -1,4 +1,4 @@
-#include "experiment-statistics-internal.h"
+#include "internal.h"
 
 #include <algorithm>
 #include <cmath>

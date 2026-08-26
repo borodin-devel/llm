@@ -1,7 +1,7 @@
 #ifndef EXPERIMENT_WINDOW_OUTPUT_H
 #define EXPERIMENT_WINDOW_OUTPUT_H
 
-#include "experiment-statistics-types.h"
+#include "types.h"
 
 #include <cstdint>
 #include <optional>

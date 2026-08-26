@@ -1,7 +1,8 @@
-#include "experiment-statistics.h"
-#include "config/internal.h"
-#include "runtime/log.h"
-#include "statistics/json/writer.h"
+#include "writer.h"
+
+#include "../../config/internal.h"
+#include "../../runtime/log.h"
+#include "../experiment-statistics.h"
 
 #include <fstream>
 #include <ostream>

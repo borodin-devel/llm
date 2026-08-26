@@ -1,8 +1,8 @@
 #ifndef EXPERIMENT_STATISTICS_INTERNAL_H
 #define EXPERIMENT_STATISTICS_INTERNAL_H
 
-#include "experiment-statistics-types.h"
 #include "experiment-statistics.h"
+#include "types.h"
 
 #include "ns3/abort.h"
 #include "ns3/mac48-address.h"

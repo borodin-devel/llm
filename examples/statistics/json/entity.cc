@@ -1,4 +1,4 @@
-#include "statistics/json/writer.h"
+#include "writer.h"
 
 namespace ns3
 {

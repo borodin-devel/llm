@@ -63,15 +63,16 @@ set(test_sources
     test/runtime/scenario-logging-test-suite.cc
     test/runtime/scenario-topology-test-suite.cc
     test/runtime/traffic-coordinator-test-suite.cc
-    test/experiment-json-test-suite.cc
-    test/experiment-hierarchy-json-test-suite.cc
-    test/experiment-window-test-suite.cc
-    test/experiment-app-test-suite.cc
-    test/experiment-tcp-test-suite.cc
-    test/experiment-device-mac-test-suite.cc
-    test/experiment-phy-test-suite.cc
-    test/experiment-summary-test-suite.cc
-    test/experiment-validation-test-suite.cc
+    # Statistics
+    test/statistics/experiment-json-test-suite.cc
+    test/statistics/experiment-hierarchy-json-test-suite.cc
+    test/statistics/experiment-window-test-suite.cc
+    test/statistics/experiment-app-test-suite.cc
+    test/statistics/experiment-tcp-test-suite.cc
+    test/statistics/experiment-device-mac-test-suite.cc
+    test/statistics/experiment-phy-test-suite.cc
+    test/statistics/experiment-summary-test-suite.cc
+    test/statistics/experiment-validation-test-suite.cc
     examples/config/scenario-config.cc
     examples/config/json.cc
     examples/config/validation.cc
@@ -81,23 +82,25 @@ set(test_sources
     examples/runtime/log.cc
     examples/runtime/topology.cc
     examples/runtime/traffic-coordinator.cc
-    examples/experiment-json.cc
-    examples/experiment-statistics-owner.cc
-    examples/experiment-statistics-window.cc
-    examples/experiment-statistics-app.cc
-    examples/experiment-statistics-tcp.cc
-    examples/experiment-statistics-device.cc
-    examples/experiment-statistics-mac.cc
-    examples/experiment-statistics-phy.cc
-    examples/experiment-statistics-summary.cc
-    examples/experiment-statistics-validation.cc
-    examples/experiment-statistics-json.cc
-    examples/experiment-statistics-json-general.cc
-    examples/experiment-statistics-json-app.cc
-    examples/experiment-statistics-json-tcp.cc
-    examples/experiment-statistics-json-mac.cc
-    examples/experiment-statistics-json-phy.cc
-    examples/experiment-statistics-json-entity.cc
+    # Statistics core
+    examples/statistics/experiment-statistics.cc
+    examples/statistics/window.cc
+    examples/statistics/app.cc
+    examples/statistics/tcp.cc
+    examples/statistics/device.cc
+    examples/statistics/mac.cc
+    examples/statistics/phy.cc
+    examples/statistics/summary.cc
+    examples/statistics/validation.cc
+    # Statistics JSON
+    examples/statistics/json/writer.cc
+    examples/statistics/json/hierarchy.cc
+    examples/statistics/json/general.cc
+    examples/statistics/json/app.cc
+    examples/statistics/json/tcp.cc
+    examples/statistics/json/mac.cc
+    examples/statistics/json/phy.cc
+    examples/statistics/json/entity.cc
 )
 
 build_lib(

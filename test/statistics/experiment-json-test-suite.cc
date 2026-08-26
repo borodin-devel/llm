@@ -1,8 +1,8 @@
-#include "../examples/experiment-statistics.h"
-#include "../examples/config/scenario-config.h"
-#include "../examples/statistics/json/writer.h"
-#include "../examples/runtime/traffic-coordinator.h"
-#include "llm-test-suite.h"
+#include "../../examples/config/scenario-config.h"
+#include "../../examples/runtime/traffic-coordinator.h"
+#include "../../examples/statistics/experiment-statistics.h"
+#include "../../examples/statistics/json/writer.h"
+#include "../llm-test-suite.h"
 
 #include "ns3/json.hpp"
 

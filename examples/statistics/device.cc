@@ -1,7 +1,7 @@
-#include "experiment-statistics-internal.h"
+#include "../runtime/log.h"
+#include "../runtime/traffic-coordinator.h"
 #include "experiment-statistics.h"
-#include "runtime/log.h"
-#include "runtime/traffic-coordinator.h"
+#include "internal.h"
 
 #include "ns3/config.h"
 #include "ns3/iana-ieee802-numbers.h"

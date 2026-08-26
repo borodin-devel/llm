@@ -1,7 +1,7 @@
-#include "../examples/experiment-statistics-internal.h"
-#include "../examples/experiment-statistics.h"
-#include "../examples/runtime/traffic-coordinator.h"
-#include "llm-test-suite.h"
+#include "../../examples/runtime/traffic-coordinator.h"
+#include "../../examples/statistics/experiment-statistics.h"
+#include "../../examples/statistics/internal.h"
+#include "../llm-test-suite.h"
 
 #include "ns3/ap-generator.h"
 #include "ns3/network-module.h"
