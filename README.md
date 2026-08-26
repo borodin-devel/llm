@@ -29,13 +29,13 @@ calibration benchmark that does not replay traces.
 - [Application-to-PHY attribution](#application-to-phy-attribution)
 - [Output metrics](#output-metrics)
 - [Saturated TCP Wi-Fi benchmark](#saturated-tcp-wi-fi-benchmark)
-- [IEEE 802.11 review](#ieee-80211-review)
+- [IEEE 802.11 review: trace-replay `llm-scenario`](#ieee-80211-review-trace-replay-llm-scenario)
 - [Build and run](#build-and-run)
 - [Large trace tools](#large-trace-tools)
 - [Testing and debugging](#testing-and-debugging)
 - [Project structure](#project-structure)
 - [Glossary](#glossary)
-- [Known limitations](#known-limitations)
+- [Scenario-specific known limitations](#scenario-specific-known-limitations)
 
 ## Goals and non-goals
 
@@ -1146,9 +1146,16 @@ For direct Microsoft Excel opening, the CSV contract is semicolon delimiters,
 UTF-8 with BOM, CRLF line endings, decimal dots, and standard double-quote
 escaping.
 
-## IEEE 802.11 review
+## IEEE 802.11 review: trace-replay `llm-scenario`
 
-### What is correctly modeled/configured
+This review applies only to the trace-replay `llm-scenario`. The saturated TCP
+benchmark has its own topology and limitations documented above: it fixes
+channel 42 and 80 MHz, sets AP BSS colors 1/2/3, and offers `isolated` or the
+explicit `ap_only_cochannel` visibility policy. The channel-zero,
+`isolate_bss_channels`, and no-explicit-coloring statements below do not apply
+to `saturated-tcp-scenario`.
+
+### What `llm-scenario` correctly models/configures
 
 | Area | Review |
 |---|---|
@@ -1164,40 +1171,43 @@ escaping.
 Channel number zero does not mean IEEE channel 0. In ns-3 it means
 "unspecified"; after the standard, band, and width are known, ns-3 selects the
 first valid channel. For example, a concrete 20 MHz 5 GHz deployment would
-usually name a regulatory channel such as 36, while this scenario deliberately
-uses the ns-3 default.
+usually name a regulatory channel such as 36, while `llm-scenario`
+deliberately uses the ns-3 default.
 
-### Important modeling choices and deviations
+### Important `llm-scenario` modeling choices and deviations
 
 1. **Not a conformance test.** ns-3 implements substantial 802.11 behavior but
-   is an abstract discrete-event model. Passing this scenario does not prove
+   is an abstract discrete-event model. Passing `llm-scenario` does not prove
    compliance of hardware or firmware.
-2. **Default inter-BSS isolation.** The default independent
+2. **Default `llm-scenario` inter-BSS isolation.** Its default independent
    `YansWifiChannel` objects are a stronger isolation assumption than merely
-   assigning different IEEE channels. Set `isolate_bss_channels = false` to
-   use one shared modeled channel, while retaining the Yans abstraction.
+   assigning different IEEE channels. Set
+   `topology.isolate_bss_channels = false` to use one shared modeled channel,
+   while retaining the Yans abstraction.
 3. **No regulatory domain.** Country code, DFS, transmit limits, and channel
-   availability are not configured.
+   availability are not configured by `llm-scenario`.
 4. **No explicit OFDMA scheduler.** The AP does not aggregate an ns-3
    multi-user scheduler, so HE multi-user/OFDMA operation is not enabled by
-   this scenario.
-5. **No explicit MU-MIMO, beamforming, BSS coloring, OBSS-PD spatial reuse,
-   TWT, or security configuration.** Selecting 802.11ax does not automatically
-   exercise all amendment features.
-6. **Yans PHY abstraction.** Default Yans PHY is packet-level, not
-   frequency-selective, and uses analytical reception/error models. It does
-   not model walls, detailed campus geometry, or interference from non-Wi-Fi
-   technologies.
+   `llm-scenario`.
+5. **Features not explicitly configured by `llm-scenario`.** It does not
+   configure MU-MIMO, beamforming, BSS coloring, OBSS-PD spatial reuse, TWT,
+   or security. Selecting 802.11ax does not automatically exercise all
+   amendment features.
+6. **Yans PHY abstraction.** The default Yans PHY used by `llm-scenario` is
+   packet-level, not frequency-selective, and uses analytical reception/error
+   models. It does not model walls, detailed campus geometry, or interference
+   from non-Wi-Fi technologies.
 7. **Rate control is model-dependent.** MinstrelHt supports HE groups in the
    current source tree, but ns-3 documentation lists known MinstrelHt and
-   802.11ax modeling issues. Results are sensitive to ns-3 version.
+   802.11ax modeling issues. `llm-scenario` results are sensitive to ns-3
+   version.
 8. **Processing delays are not an 802.11 mechanism here.** Trace duration
-   controls when downlink data is released; ns-3 Wi-Fi processing delay is not
-   being derived from the standard.
+   controls when `llm-scenario` releases downlink data; ns-3 Wi-Fi processing
+   delay is not being derived from the standard.
 
-The configuration is therefore suitable for controlled **802.11ax-mode
-network experiments with isolated or shared-channel BSSs**, but should not be
-described as full IEEE 802.11ax compliance.
+The `llm-scenario` configuration is therefore suitable for controlled
+**802.11ax-mode trace-replay experiments with isolated or shared-channel
+BSSs**, but should not be described as full IEEE 802.11ax compliance.
 
 Official references:
 
@@ -1610,27 +1620,54 @@ tests live in packages below them.
 | Airtime | Modeled PPDU transmission duration, allocated by tagged bytes |
 | Sparse window | A configured-width bucket emitted only when tagged traffic exists |
 
-## Known limitations
+## Scenario-specific known limitations
 
-- The C++ parser loads the entire JSON document into memory. Use sliced JSON,
-  not multi-gigabyte source documents.
-- Only operations with both byte directions positive are replayed.
-- The trace's LLM/token/model metadata is not used in network behavior.
-- BSSs use physically isolated channel objects by default. Shared-channel
-  mode models common-medium interaction but remains unsuitable for detailed
-  OBSS spatial-reuse studies.
-- The scenario does not model a detailed building/campus radio environment.
-- It does not explicitly configure OFDMA, MU-MIMO, beamforming, TWT,
-  BSS coloring, OBSS-PD, authentication, or encryption.
+The following lists are deliberately scoped by executable. Trace-replay
+limitations must not be inferred for the saturated benchmark, and benchmark
+assumptions must not be inferred for `llm-scenario`.
+
+### Trace-replay `llm-scenario`
+
+- The `llm-scenario` C++ parser loads the entire JSON document into memory.
+  Use sliced JSON, not multi-gigabyte source documents.
+- `llm-scenario` replays only operations with both byte directions positive.
+- Trace LLM/token/model metadata is not used by `llm-scenario` network
+  behavior.
+- `llm-scenario` BSSs use physically isolated channel objects by default.
+  Its optional shared-channel mode models common-medium interaction but
+  remains unsuitable for detailed OBSS spatial-reuse studies.
+- `llm-scenario` does not model a detailed building/campus radio environment.
+- `llm-scenario` does not explicitly configure OFDMA, MU-MIMO, beamforming,
+  TWT, BSS coloring, OBSS-PD, authentication, or encryption.
 - PHY payload measurements include retransmissions; use
   `phy_stats.*.unique_tagged_payload_bytes` when deduplicated payload is
-  required.
-- The device-level `packet size - 60` flow diagnostic is approximate.
-- TX/RX timestamp matching uses a tuple and observation order; it is a
-  diagnostic, not a formal end-to-end flow monitor.
-- Trace application duration and Wi-Fi/TCP delay are different quantities.
-- Results can change across ns-3 versions because Wi-Fi and rate-control
-  models continue to evolve.
+  required from `llm-scenario` output.
+- The `llm-scenario` device-level `packet size - 60` flow diagnostic is
+  approximate.
+- `llm-scenario` TX/RX timestamp matching uses a tuple and observation order;
+  it is a diagnostic, not a formal end-to-end flow monitor.
+- Trace application duration and `llm-scenario` Wi-Fi/TCP delay are different
+  quantities.
+- `llm-scenario` results can change across ns-3 versions because Wi-Fi and
+  rate-control models continue to evolve.
 
-For the definitive model behavior, read the implementation and the official
-ns-3 Wi-Fi model documentation linked above.
+### Saturated TCP benchmark
+
+- `saturated-tcp-scenario` is a controlled calibration topology, not a
+  general Wi-Fi configurator: it fixes three BSSs, channel 42, 80 MHz,
+  20 dBm, MinstrelHt, and 2x2 radios.
+- Only SU is supported. The `mu` value is rejected because this ns-3 version
+  lacks scheduled DL MU-MIMO and its available scheduled UL multi-user path is
+  OFDMA rather than MU-MIMO.
+- `ap_only_cochannel` is an explicit programmatic visibility assumption: only
+  AP/AP signals cross BSS boundaries, while every cross-BSS link involving a
+  STA is blocked. It is not a physical propagation claim.
+- Benchmark metrics and CSV fields derive only from qualifying
+  station-transmitted PPDUs. AP transmissions and application-layer byte rates
+  do not enter those formulas.
+- The benchmark uses packet-level Yans PHY with native deterministic
+  LogDistance loss and no fading or building model. MinstrelHt results remain
+  sensitive to the ns-3 version.
+
+For definitive behavior, read the implementation for the selected executable
+and the official ns-3 Wi-Fi model documentation linked above.
