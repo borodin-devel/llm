@@ -54,7 +54,14 @@ WriteIdentityJson(JsonWriter& writer, const ExperimentEntityIdentity& identity)
     if (identity.kind == ExperimentEntityKind::STATION)
     {
         writer.Key("station_index");
-        writer.Value(identity.stationIndex);
+        if (identity.stationIndex)
+        {
+            writer.Value(*identity.stationIndex);
+        }
+        else
+        {
+            writer.Null();
+        }
     }
     writer.Key("node_id");
     writer.Value(identity.nodeId);

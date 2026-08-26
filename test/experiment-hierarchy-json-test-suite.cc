@@ -113,7 +113,9 @@ MakeLiteralSummary()
     summary.validation = {true, false, true, false, true, false, true, false};
     summary.accessPointInventory = {
         {ExperimentEntityKind::ACCESS_POINT, 0, std::nullopt, 7, "AP-\"zero", "10.1.0.1"}};
-    summary.stationInventory = {{ExperimentEntityKind::STATION, 0, 0, 8, "STA-\\zero", "10.1.0.2"}};
+    summary.stationInventory = {
+        {ExperimentEntityKind::STATION, 0, 0, 8, "STA-\\zero", "10.1.0.2"},
+        {ExperimentEntityKind::STATION, 0, std::nullopt, 9, "STA-one", "10.1.0.3"}};
     return summary;
 }
 
@@ -465,6 +467,19 @@ ExperimentHierarchyJsonTestCase::DoRun()
                                                     "node_label",
                                                     "ipv4"},
                     "STA inventory");
+    NS_TEST_ASSERT_MSG_EQ(inventory.at("stations").at(0).at("station_index"),
+                          0,
+                          "Populated station index changed");
+    AssertExactKeys(inventory.at("stations").at(1),
+                    std::array<std::string_view, 5>{"access_point_id",
+                                                    "station_index",
+                                                    "node_id",
+                                                    "node_label",
+                                                    "ipv4"},
+                    "null-index STA inventory");
+    NS_TEST_ASSERT_MSG_EQ(inventory.at("stations").at(1).at("station_index").is_null(),
+                          true,
+                          "Null station index changed");
     NS_TEST_ASSERT_MSG_EQ(document.contains("resolved_paths"), false, "Resolved paths leaked");
     RejectOldKeys(document);
 }
