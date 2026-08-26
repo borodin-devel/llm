@@ -1,5 +1,7 @@
 #include "log.h"
 
+#include "ns3/core-module.h"
+
 namespace ns3::llm_example
 {
 
