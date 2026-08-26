@@ -64,6 +64,7 @@ set(test_sources
     test/config/scenario-run-path-test-suite.cc
     test/saturated-tcp/config-test-suite.cc
     test/saturated-tcp/propagation-test-suite.cc
+    test/saturated-tcp/access-wait-test-suite.cc
     test/runtime/scenario-logging-test-suite.cc
     test/runtime/scenario-topology-test-suite.cc
     test/runtime/traffic-coordinator-test-suite.cc
@@ -90,6 +91,8 @@ set(test_sources
     examples/saturated-tcp/config-json.cc
     examples/saturated-tcp/bss-link-filter.cc
     examples/saturated-tcp/rssi-placement.cc
+    examples/saturated-tcp/access-tracking-sta-wifi-mac.cc
+    examples/saturated-tcp/access-wait-tracker.cc
     examples/runtime/log.cc
     examples/runtime/topology.cc
     examples/runtime/traffic-coordinator.cc

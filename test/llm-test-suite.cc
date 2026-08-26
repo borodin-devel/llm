@@ -44,6 +44,7 @@ LlmTestSuite::LlmTestSuite()
     AddCases(CreateScenarioTopologyTestCases());
     AddCases(CreateSaturatedTcpConfigTestCases());
     AddCases(CreateSaturatedTcpPropagationTestCases());
+    AddCases(CreateSaturatedTcpAccessWaitTestCases());
 }
 
 void
