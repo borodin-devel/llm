@@ -1,0 +1,42 @@
+[general]
+output_name = "output.json"
+# run_folder may be supplied by the matrix runner
+
+[script]
+repetitions = 1
+
+[simulation]
+rng_seed = 12345
+rng_run = 1
+
+[benchmark]
+sta_count_per_bss = 5
+rssi_range = "high"
+interference_mode = "isolated"
+traffic_mode = "ul"
+mimo_mode = "su"
+
+[wifi]
+band = "5GHz"
+channel_number = 42
+bandwidth_mhz = 80
+primary_20_index = 0
+tx_power_dbm = 20.0
+rate_manager = "ns3::MinstrelHtWifiManager"
+antennas = 2
+max_tx_spatial_streams = 2
+max_rx_spatial_streams = 2
+
+[tcp]
+congestion_control = "ns3::TcpHighSpeed"
+segment_size_bytes = 1460
+send_buffer_bytes = 33554432
+receive_buffer_bytes = 33554432
+wired_rate = "10Gbps"
+wired_delay = "0.1ms"
+
+[statistics]
+window_ms = 10
+
+[logging]
+scenario_level = "info"
