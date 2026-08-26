@@ -1,3 +1,4 @@
+#include "../../examples/saturated-tcp/config-internal.h"
 #include "../../examples/saturated-tcp/config.h"
 #include "../../examples/statistics/json/writer.h"
 #include "../llm-test-suite.h"
@@ -249,6 +250,35 @@ SaturatedTcpConfigParsingTestCase::DoRun()
                  "benchmark.rssi_range");
     CheckFailure({"--config", configPath.string(), "--benchmark-mimo-mode", "mu"},
                  "DL MU-MIMO is not supported");
+    CheckFailure({"--config", configPath.string(), "--tcp-wired-rate", "1.1Kbps"},
+                 "10000000000 bps");
+    CheckFailure({"--config", configPath.string(), "--tcp-wired-rate", "9Gbps"}, "10000000000 bps");
+    CheckFailure({"--config", configPath.string(), "--tcp-wired-delay", "1y"}, "100000 ns");
+    CheckFailure({"--config", configPath.string(), "--tcp-wired-delay", "0.2ms"}, "100000 ns");
+    const auto semanticEquivalent = ParseConfig(
+        {"--config", configPath.string(), "--tcp-wired-rate=10000Mbps", "--tcp-wired-delay=100us"});
+    NS_TEST_ASSERT_MSG_EQ(semanticEquivalent.tcp.wiredRate,
+                          "10000Mbps",
+                          "Semantic rate equivalent was not retained");
+    NS_TEST_ASSERT_MSG_EQ(semanticEquivalent.tcp.wiredDelay,
+                          "100us",
+                          "Semantic delay equivalent was not retained");
+
+    const auto tomlRatePath = WriteConfigFixture(CreateTempDirFilename("saturated-wired-rate.toml"),
+                                                 "[tcp]\nwired_rate = \"1.1Kbps\"\n");
+    CheckFailure({"--config", tomlRatePath.string()}, "10000000000 bps");
+    const auto tomlDelayPath =
+        WriteConfigFixture(CreateTempDirFilename("saturated-wired-delay.toml"),
+                           "[tcp]\nwired_delay = \"1y\"\n");
+    CheckFailure({"--config", tomlDelayPath.string()}, "100000 ns");
+    const auto tomlPlausibleRatePath =
+        WriteConfigFixture(CreateTempDirFilename("saturated-plausible-rate.toml"),
+                           "[tcp]\nwired_rate = \"9Gbps\"\n");
+    CheckFailure({"--config", tomlPlausibleRatePath.string()}, "10000000000 bps");
+    const auto tomlPlausibleDelayPath =
+        WriteConfigFixture(CreateTempDirFilename("saturated-plausible-delay.toml"),
+                           "[tcp]\nwired_delay = \"0.2ms\"\n");
+    CheckFailure({"--config", tomlPlausibleDelayPath.string()}, "100000 ns");
 
     const auto overriddenInvalidPath =
         WriteConfigFixture(CreateTempDirFilename("saturated-overridden-invalid.toml"),
@@ -315,13 +345,11 @@ class SaturatedTcpConfigValidationTestCase : public TestCase
                       std::string_view expected);
 
     /**
-     * Require one valid ns-3 quantity mutation to pass.
+     * Require one data-rate spelling to pass the quantity parser.
      *
-     * @param mutate Mutation applied to an otherwise valid configuration.
-     * @param description Quantity spelling used in diagnostics.
+     * @param spelling Data-rate spelling.
      */
-    void CheckValid(const std::function<void(SaturatedTcpConfig&)>& mutate,
-                    std::string_view description);
+    void CheckValidDataRateGrammar(std::string_view spelling);
 };
 
 SaturatedTcpConfigValidationTestCase::SaturatedTcpConfigValidationTestCase()
@@ -330,23 +358,11 @@ SaturatedTcpConfigValidationTestCase::SaturatedTcpConfigValidationTestCase()
 }
 
 void
-SaturatedTcpConfigValidationTestCase::CheckValid(
-    const std::function<void(SaturatedTcpConfig&)>& mutate,
-    std::string_view description)
+SaturatedTcpConfigValidationTestCase::CheckValidDataRateGrammar(std::string_view spelling)
 {
-    SaturatedTcpConfig config;
-    mutate(config);
-    try
-    {
-        ValidateSaturatedTcpConfig(config);
-    }
-    catch (const SaturatedTcpConfigError& error)
-    {
-        NS_TEST_ASSERT_MSG_EQ(true,
-                              false,
-                              "Valid ns-3 quantity rejected for " << description << ": "
-                                                                  << error.what());
-    }
+    NS_TEST_ASSERT_MSG_EQ(ParseSaturatedTcpDataRate(spelling).has_value(),
+                          true,
+                          "Valid ns-3 data-rate grammar was rejected: " << spelling);
 }
 
 void
@@ -391,6 +407,11 @@ SaturatedTcpConfigValidationTestCase::DoRun()
         config.simulation.rngSeed = seed;
         ValidateSaturatedTcpConfig(config);
     }
+
+    SaturatedTcpConfig equivalentBackhaul;
+    equivalentBackhaul.tcp.wiredRate = "10000Mbps";
+    equivalentBackhaul.tcp.wiredDelay = "100us";
+    ValidateSaturatedTcpConfig(equivalentBackhaul);
 
     CheckFailure([](auto& c) { c.script.repetitions = 0; }, "script.repetitions");
     CheckFailure([](auto& c) { c.simulation.rngSeed = 0; }, "simulation.rng_seed");
@@ -443,24 +464,35 @@ SaturatedTcpConfigValidationTestCase::DoRun()
     CheckFailure([](auto& c) { c.tcp.wiredRate = "1.5bps"; }, "tcp.wired_rate");
     CheckFailure([](auto& c) { c.tcp.wiredRate = "1.5"; }, "tcp.wired_rate");
     CheckFailure([](auto& c) { c.tcp.wiredRate = "0.1Kib/s"; }, "tcp.wired_rate");
+    CheckFailure([](auto& c) { c.tcp.wiredRate = "1.1Kbps"; }, "10000000000 bps");
+    CheckFailure([](auto& c) { c.tcp.wiredRate = "9Gbps"; }, "10000000000 bps");
     CheckFailure([](auto& c) { c.tcp.wiredDelay = "soon"; }, "tcp.wired_delay");
     CheckFailure([](auto& c) { c.tcp.wiredDelay = "0ms"; }, "tcp.wired_delay");
     CheckFailure([](auto& c) { c.tcp.wiredDelay = "1 ms"; }, "tcp.wired_delay");
-    CheckValid([](auto& c) { c.tcp.wiredRate = "1Gib/s"; }, "1Gib/s");
-    CheckValid([](auto& c) { c.tcp.wiredRate = "1GiB/s"; }, "1GiB/s");
-    CheckValid([](auto& c) { c.tcp.wiredRate = "1.1Kbps"; }, "1.1Kbps");
-    CheckValid([](auto& c) { c.tcp.wiredRate = "1.5Kbps"; }, "1.5Kbps");
-    CheckValid([](auto& c) { c.tcp.wiredRate = "0.001Mbps"; }, "0.001Mbps");
-    CheckValid([](auto& c) { c.tcp.wiredRate = "0.125Kib/s"; }, "0.125Kib/s");
+    CheckFailure([](auto& c) { c.tcp.wiredDelay = "1y"; }, "100000 ns");
+    CheckFailure([](auto& c) { c.tcp.wiredDelay = "0.2ms"; }, "100000 ns");
+    CheckValidDataRateGrammar("1Gib/s");
+    CheckValidDataRateGrammar("1GiB/s");
+    CheckValidDataRateGrammar("1.1Kbps");
+    CheckValidDataRateGrammar("1.5Kbps");
+    CheckValidDataRateGrammar("0.001Mbps");
+    CheckValidDataRateGrammar("0.125Kib/s");
+    NS_TEST_ASSERT_MSG_EQ(ParseSaturatedTcpDataRate("1.1Kbps").value_or(0),
+                          1100,
+                          "Decimal data-rate parser returned the wrong semantic rate");
     for (const std::string_view suffix :
          {"bps",   "b/s",   "Bps",  "B/s",   "kbps",  "kb/s", "Kbps",  "Kb/s", "kBps",
           "kB/s",  "KBps",  "KB/s", "Kib/s", "KiB/s", "Mbps", "Mb/s",  "MBps", "MB/s",
           "Mib/s", "MiB/s", "Gbps", "Gb/s",  "GBps",  "GB/s", "Gib/s", "GiB/s"})
     {
-        CheckValid([suffix](auto& c) { c.tcp.wiredRate = "1" + std::string(suffix); }, suffix);
+        CheckValidDataRateGrammar("1" + std::string(suffix));
     }
-    CheckValid([](auto& c) { c.tcp.wiredDelay = "+0.1ms"; }, "+0.1ms");
-    CheckValid([](auto& c) { c.tcp.wiredDelay = "1y"; }, "1y");
+    NS_TEST_ASSERT_MSG_EQ(ParseSaturatedTcpDurationNs("+0.1ms").value_or(0),
+                          100000,
+                          "Signed duration grammar returned the wrong nanoseconds");
+    NS_TEST_ASSERT_MSG_EQ(ParseSaturatedTcpDurationNs("1y").value_or(0),
+                          31'536'000'000'000'000LL,
+                          "Year duration grammar returned the wrong nanoseconds");
     CheckFailure([](auto& c) { c.statistics.windowMs = 0; }, "statistics.window_ms");
     CheckFailure([](auto& c) { c.statistics.windowMs = 3; }, "divide 1000");
     CheckFailure([](auto& c) { c.statistics.windowMs = 1001; }, "divide 1000");

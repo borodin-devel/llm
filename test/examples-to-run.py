@@ -21,26 +21,11 @@ cpp_examples = [
         "--benchmark-traffic-mode ul "
         "--benchmark-mimo-mode su "
         "--statistics-window-ms 10 "
-        "&& python3 -c \"import json,pathlib; p=pathlib.Path('saturated-tcp-smoke-output.json'); "
-        "d=json.loads(p.read_text()); "
-        "assert tuple(d)==('schema_version','measurement_semantics','statistics_window_ms',"
-        "'windows','overall','validation','experiment_metadata'); "
-        "assert d.get('schema_version')==1 and d.get('statistics_window_ms')==10 and "
-        "len(d.get('windows'))==100; "
-        "i=d.get('experiment_metadata').get('entity_inventory'); "
-        "assert len(i.get('access_points'))==3 and len(i.get('stations'))==3; "
-        "o=d.get('overall'); "
-        "assert len(o.get('access_points'))==3 and len(o.get('stations'))==3; "
-        "assert all(all(e.get('phy_stats').get(k) is not None for k in "
-        "('average_theoretical_phy_rate_mbps','average_practical_phy_rate_mbps',"
-        "'channel_efficiency','contention_fraction')) for group in "
-        "('access_points','stations') for e in o.get(group)); "
-        "b=d.get('experiment_metadata').get('configuration').get('benchmark'); "
-        "assert b.get('sta_count_per_bss')==1 and b.get('rssi_range')=='high' and "
-        "b.get('interference_mode')=='isolated' and b.get('traffic_mode')=='ul' and "
-        "b.get('mimo_mode')=='su'; "
-        "v=d.get('validation'); assert len(v)==8 and all(v.values()); "
-        "p.unlink(); assert not p.exists()\"",
+        "&& PYTHONDONTWRITEBYTECODE=1 python3 "
+        "../../contrib/llm/test/saturated-tcp/smoke_json.py "
+        "saturated-tcp-smoke-output.json "
+        "&& PYTHONDONTWRITEBYTECODE=1 python3 "
+        "../../contrib/llm/test/saturated-tcp/smoke_json_test.py",
         "True",
         "False",
     ),

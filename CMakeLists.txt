@@ -140,6 +140,7 @@ build_lib(
     ${libbuildings}
     ${libvirtual-net-device}
     ${libapplications}
+    ${libpoint-to-point}
     ${libwifi}
     ${libconfig-store}
   PRIVATE_HEADER_FILES

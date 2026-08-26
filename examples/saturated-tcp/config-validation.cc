@@ -1,4 +1,4 @@
-#include "config.h"
+#include "config-internal.h"
 
 #include "ns3/nstime.h"
 #include "ns3/tcp-congestion-ops.h"
@@ -24,6 +24,8 @@ namespace
 {
 
 constexpr uint32_t kMaximumRngSeed = 4294944442U;
+constexpr uint64_t kRequiredWiredRateBps = 10'000'000'000ULL;
+constexpr int64_t kRequiredWiredDelayNs = 100'000;
 
 template <typename T>
 std::string
@@ -229,13 +231,6 @@ ParseDataRate(std::string_view text, uint64_t* rate)
 }
 
 bool
-IsPositiveDataRate(std::string_view text)
-{
-    uint64_t rate = 0;
-    return ParseDataRate(text, &rate) && rate > 0;
-}
-
-bool
 IsPositiveDuration(std::string_view text)
 {
     if (text.empty() || text.find_first_of(" \t\r\n\f\v") != std::string_view::npos)
@@ -362,6 +357,32 @@ ValidateTypeIds(const SaturatedTcpConfig& config)
 
 } // namespace
 
+std::optional<uint64_t>
+ParseSaturatedTcpDataRate(std::string_view text)
+{
+    uint64_t rate = 0;
+    if (!ParseDataRate(text, &rate))
+    {
+        return std::nullopt;
+    }
+    return rate;
+}
+
+std::optional<int64_t>
+ParseSaturatedTcpDurationNs(std::string_view text)
+{
+    if (!IsPositiveDuration(text))
+    {
+        return std::nullopt;
+    }
+    TimeValue value;
+    if (!value.DeserializeFromString(std::string(text), MakeTimeChecker()))
+    {
+        return std::nullopt;
+    }
+    return value.Get().GetNanoSeconds();
+}
+
 void
 ValidateSaturatedTcpConfig(const SaturatedTcpConfig& config)
 {
@@ -470,15 +491,17 @@ ValidateSaturatedTcpConfig(const SaturatedTcpConfig& config)
             "--tcp-segment-size-bytes",
             "value no greater than send_buffer_bytes or receive_buffer_bytes",
             config.tcp.segmentSizeBytes);
-    Require(IsPositiveDataRate(config.tcp.wiredRate),
+    const auto wiredRate = ParseSaturatedTcpDataRate(config.tcp.wiredRate);
+    Require(wiredRate && *wiredRate == kRequiredWiredRateBps,
             "tcp.wired_rate",
             "--tcp-wired-rate",
-            "positive finite ns-3 data-rate string",
+            "data rate equal to exactly 10000000000 bps (10Gbps)",
             config.tcp.wiredRate);
-    Require(IsPositiveDuration(config.tcp.wiredDelay),
+    const auto wiredDelayNs = ParseSaturatedTcpDurationNs(config.tcp.wiredDelay);
+    Require(wiredDelayNs && *wiredDelayNs == kRequiredWiredDelayNs,
             "tcp.wired_delay",
             "--tcp-wired-delay",
-            "positive finite ns-3 duration string",
+            "duration equal to exactly 100000 ns (0.1ms)",
             config.tcp.wiredDelay);
 
     Require(config.statistics.windowMs > 0 && 1000 % config.statistics.windowMs == 0,

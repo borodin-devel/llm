@@ -6,8 +6,10 @@
 #include "ns3/json.hpp"
 #include "ns3/toml.hpp"
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -69,6 +71,22 @@ std::string_view GetSaturatedTcpConfigValueTypeName(SaturatedConfigValueType val
  * @throws SaturatedTcpConfigError if parsing or schema application fails.
  */
 SaturatedTcpConfig LoadSaturatedTcpTomlConfig(const std::filesystem::path& path);
+
+/**
+ * Parse one ns-3 data-rate spelling into its semantic bit rate.
+ *
+ * @param text Data-rate spelling.
+ * @return Parsed bits per second, or no value for invalid grammar or range.
+ */
+std::optional<uint64_t> ParseSaturatedTcpDataRate(std::string_view text);
+
+/**
+ * Parse one ns-3 duration spelling into semantic nanoseconds.
+ *
+ * @param text Duration spelling.
+ * @return Parsed nanoseconds, or no value for invalid grammar or range.
+ */
+std::optional<int64_t> ParseSaturatedTcpDurationNs(std::string_view text);
 
 } // namespace ns3
 
