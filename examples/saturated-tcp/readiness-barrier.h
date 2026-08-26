@@ -12,6 +12,7 @@ namespace ns3
 {
 
 class Application;
+class SaturatedTcpSender;
 
 /**
  * Coordinate saturated TCP readiness and one exact measurement second.
@@ -56,19 +57,19 @@ class SaturatedReadinessBarrier
     /**
      * Register one readiness-gated sender.
      *
-     * @param application Sender application whose stop time follows the common epoch.
+     * @param sender Sender application whose stop time follows the common epoch.
      * @param startTraffic Callback that opens this sender's payload gate.
      * @param stopTraffic Callback that closes this sender at the measurement endpoint.
      * @return One-shot callback through which this sender reports readiness.
      */
-    Callback<void> RegisterSender(Ptr<Application> application,
+    Callback<void> RegisterSender(Ptr<SaturatedTcpSender> sender,
                                   Callback<void> startTraffic,
                                   Callback<void> stopTraffic);
 
     /**
-     * Register a non-sender application whose stop time follows the common epoch.
+     * Register a packet sink whose stop time and endpoint cleanup follow the common epoch.
      *
-     * @param application Application to coordinate.
+     * @param application Packet-sink application to coordinate.
      */
     void RegisterApplication(Ptr<Application> application);
 
@@ -94,10 +95,17 @@ class SaturatedReadinessBarrier
     /** State and actions for one sender readiness registration. */
     struct SenderRegistration
     {
-        Ptr<Application> application; ///< Sender application retained by the barrier.
-        Callback<void> startTraffic;  ///< Payload-gate callback invoked at the common epoch.
-        Callback<void> stopTraffic;   ///< Sender cleanup callback invoked at the endpoint.
-        bool ready{false};            ///< Whether this registration reported readiness.
+        Ptr<SaturatedTcpSender> sender; ///< Sender retained until its ready callback is cleared.
+        Callback<void> startTraffic;    ///< Payload-gate callback invoked at the common epoch.
+        Callback<void> stopTraffic;     ///< Sender cleanup callback invoked at the endpoint.
+        bool ready{false};              ///< Whether this registration reported readiness.
+    };
+
+    /** State and endpoint action for one coordinated application. */
+    struct ApplicationRegistration
+    {
+        Ptr<Application> application;   ///< Application retained through measurement finalization.
+        Callback<void> stopApplication; ///< Executable endpoint cleanup, or null for a sender.
     };
 
     /**
@@ -116,17 +124,18 @@ class SaturatedReadinessBarrier
     /** Fail because the fixed readiness safety deadline expired. */
     void ReadinessTimeout();
 
-    std::vector<SenderRegistration> m_senders;    ///< Ordered sender registrations.
-    std::vector<Ptr<Application>> m_applications; ///< All applications stopped at the endpoint.
-    StatisticsCallback m_startStatistics;         ///< Statistics epoch-start action.
-    StatisticsCallback m_finalizeStatistics;      ///< Statistics exact-endpoint action.
-    EventId m_safetyEvent;                        ///< Fixed readiness safety timeout.
-    EventId m_openEvent;                          ///< Scheduled common-epoch event.
-    EventId m_finalizeEvent;                      ///< Scheduled measurement-end event.
-    uint32_t m_readySenderCount{0};               ///< Number of distinct ready registrations.
-    int64_t m_experimentStartNs{-1};              ///< Selected common epoch in nanoseconds.
-    bool m_registrationFinalized{false};          ///< Whether registration is locked.
-    bool m_measurementComplete{false};            ///< Whether finalization completed.
+    std::vector<SenderRegistration> m_senders; ///< Ordered sender registrations.
+    std::vector<ApplicationRegistration>
+        m_applications;                      ///< All applications stopped at the endpoint.
+    StatisticsCallback m_startStatistics;    ///< Statistics epoch-start action.
+    StatisticsCallback m_finalizeStatistics; ///< Statistics exact-endpoint action.
+    EventId m_safetyEvent;                   ///< Fixed readiness safety timeout.
+    EventId m_openEvent;                     ///< Scheduled common-epoch event.
+    EventId m_finalizeEvent;                 ///< Scheduled measurement-end event.
+    uint32_t m_readySenderCount{0};          ///< Number of distinct ready registrations.
+    int64_t m_experimentStartNs{-1};         ///< Selected common epoch in nanoseconds.
+    bool m_registrationFinalized{false};     ///< Whether registration is locked.
+    bool m_measurementComplete{false};       ///< Whether finalization completed.
 };
 
 } // namespace ns3

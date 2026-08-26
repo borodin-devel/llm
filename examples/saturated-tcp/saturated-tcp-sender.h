@@ -38,7 +38,10 @@ class SaturatedTcpSender : public SourceApplication
     /**
      * Set the callback invoked exactly once after TCP connection success.
      *
-     * @param callback Readiness callback. It must be non-null at application start.
+     * Passing a null callback safely clears a previous registration at any
+     * lifecycle state. A non-null callback must be set before application start.
+     *
+     * @param callback Readiness callback, or null to clear it.
      */
     void SetReadyCallback(Callback<void> callback);
 

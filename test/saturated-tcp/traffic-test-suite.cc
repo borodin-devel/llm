@@ -12,14 +12,20 @@
 #include "ns3/packet-sink.h"
 #include "ns3/point-to-point-helper.h"
 #include "ns3/simulator.h"
+#include "ns3/socket.h"
 #include "ns3/string.h"
+#include "ns3/tcp-socket-base.h"
+#include "ns3/tcp-socket-factory.h"
+#include "ns3/tcp-socket.h"
 #include "ns3/uinteger.h"
 
 #include <array>
 #include <cerrno>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>
@@ -425,6 +431,247 @@ SaturatedTcpSenderConnectionFailureTestCase::DoRun()
 #endif
 }
 
+/**
+ * @ingroup tests
+ *
+ * Verify that the barrier closes real packet-sink endpoints before statistics finalization.
+ */
+class SaturatedTcpSinkEndpointCleanupTestCase : public TestCase
+{
+  public:
+    /** Construct the real sink endpoint-cleanup test. */
+    SaturatedTcpSinkEndpointCleanupTestCase();
+
+  private:
+    /**
+     * Record statistics start.
+     *
+     * @param epochNs Common measurement epoch in nanoseconds.
+     */
+    void StartStatistics(int64_t epochNs);
+    /**
+     * Inspect sender and sink state from the statistics-finalize callback.
+     *
+     * @param endNs Exact measurement endpoint in nanoseconds.
+     */
+    void FinalizeStatistics(int64_t endNs);
+    /** Stop the real sender while recording endpoint callback order. */
+    void StopSenderAtEndpoint();
+    /** Retain and trace the real listening and accepted sink sockets. */
+    void CaptureSinkSockets();
+    /**
+     * Record a real sink TCP state transition.
+     *
+     * @param listening Whether the transition belongs to the listening socket.
+     * @param oldState Previous TCP state.
+     * @param newState New TCP state.
+     */
+    void NotifySinkState(bool listening,
+                         TcpSocket::TcpStates_t oldState,
+                         TcpSocket::TcpStates_t newState);
+    /**
+     * Record a post-end connection and offer payload to the supposedly closed sink.
+     *
+     * @param socket Probe client socket.
+     */
+    void ProbeConnectionSucceeded(Ptr<Socket> socket);
+    /**
+     * Record rejection of a post-end connection.
+     *
+     * @param socket Probe client socket.
+     */
+    void ProbeConnectionFailed(Ptr<Socket> socket);
+    void DoRun() override;
+
+    SenderFixture m_fixture;         ///< Real sender and packet-sink fixture.
+    Ptr<Socket> m_listeningSocket;   ///< Sink listening socket retained before endpoint.
+    Ptr<Socket> m_acceptedSocket;    ///< Sink accepted socket retained before endpoint.
+    Ptr<Socket> m_probeSocket;       ///< Post-end client connection probe.
+    int64_t m_statisticsStartNs{-1}; ///< Observed statistics start timestamp.
+    int64_t m_statisticsEndNs{-1};   ///< Observed statistics finalize timestamp.
+    int64_t m_senderStopNs{-1};      ///< Observed sender cleanup timestamp.
+    uint64_t m_bytesAtEndpoint{0};   ///< Sink total when statistics finalize.
+    uint64_t m_bytesAfterProbe{0};   ///< Sink total after post-end probe traffic.
+    bool m_listeningClosed{false};   ///< Whether listener entered CLOSED at the endpoint.
+    bool m_acceptedClosing{false};   ///< Whether accepted socket left ESTABLISHED at endpoint.
+    bool m_probeConnected{false};    ///< Whether the post-end probe connected.
+    bool m_probeFailed{false};       ///< Whether the post-end probe was rejected.
+    std::vector<std::string> m_endpointOrder; ///< Sender, sink, and statistics endpoint order.
+};
+
+SaturatedTcpSinkEndpointCleanupTestCase::SaturatedTcpSinkEndpointCleanupTestCase()
+    : TestCase("close saturated packet-sink endpoints before statistics finalization")
+{
+}
+
+void
+SaturatedTcpSinkEndpointCleanupTestCase::StartStatistics(int64_t epochNs)
+{
+    m_statisticsStartNs = Simulator::Now().GetNanoSeconds();
+    NS_TEST_ASSERT_MSG_EQ(m_statisticsStartNs,
+                          epochNs,
+                          "Statistics start argument diverged from event time");
+}
+
+void
+SaturatedTcpSinkEndpointCleanupTestCase::FinalizeStatistics(int64_t endNs)
+{
+    m_statisticsEndNs = Simulator::Now().GetNanoSeconds();
+    m_bytesAtEndpoint = m_fixture.sink->GetTotalRx();
+    m_endpointOrder.push_back("statistics-finalize");
+    NS_TEST_ASSERT_MSG_EQ(m_statisticsEndNs,
+                          endNs,
+                          "Statistics finalize argument diverged from event time");
+}
+
+void
+SaturatedTcpSinkEndpointCleanupTestCase::StopSenderAtEndpoint()
+{
+    m_senderStopNs = Simulator::Now().GetNanoSeconds();
+    m_endpointOrder.push_back("sender-stop");
+    m_fixture.sender->StopTraffic();
+}
+
+void
+SaturatedTcpSinkEndpointCleanupTestCase::CaptureSinkSockets()
+{
+    m_listeningSocket = m_fixture.sink->GetListeningSocket();
+    const auto acceptedSockets = m_fixture.sink->GetAcceptedSockets();
+    if (!acceptedSockets.empty())
+    {
+        m_acceptedSocket = acceptedSockets.front();
+    }
+    if (auto tcp = DynamicCast<TcpSocketBase>(m_listeningSocket))
+    {
+        tcp->TraceConnectWithoutContext(
+            "State",
+            MakeCallback(&SaturatedTcpSinkEndpointCleanupTestCase::NotifySinkState, this)
+                .Bind(true));
+    }
+    if (auto tcp = DynamicCast<TcpSocketBase>(m_acceptedSocket))
+    {
+        tcp->TraceConnectWithoutContext(
+            "State",
+            MakeCallback(&SaturatedTcpSinkEndpointCleanupTestCase::NotifySinkState, this)
+                .Bind(false));
+    }
+}
+
+void
+SaturatedTcpSinkEndpointCleanupTestCase::NotifySinkState(bool listening,
+                                                         TcpSocket::TcpStates_t oldState,
+                                                         TcpSocket::TcpStates_t newState)
+{
+    if (Simulator::Now() != Seconds(2))
+    {
+        return;
+    }
+    if (listening)
+    {
+        m_listeningClosed = oldState == TcpSocket::LISTEN && newState == TcpSocket::CLOSED;
+        if (m_listeningClosed)
+        {
+            m_endpointOrder.push_back("sink-stop");
+        }
+    }
+    else
+    {
+        m_acceptedClosing =
+            oldState == TcpSocket::ESTABLISHED && newState != TcpSocket::ESTABLISHED;
+    }
+}
+
+void
+SaturatedTcpSinkEndpointCleanupTestCase::ProbeConnectionSucceeded(Ptr<Socket> socket)
+{
+    m_probeConnected = true;
+    socket->Send(Create<Packet>(512));
+}
+
+void
+SaturatedTcpSinkEndpointCleanupTestCase::ProbeConnectionFailed(Ptr<Socket> socket)
+{
+    static_cast<void>(socket);
+    m_probeFailed = true;
+}
+
+void
+SaturatedTcpSinkEndpointCleanupTestCase::DoRun()
+{
+    Simulator::Destroy();
+    m_fixture = BuildSenderFixture(true, Callback<void>());
+    m_fixture.sink->SetStopTime(TimeStep(0));
+
+    SaturatedReadinessBarrier barrier(
+        MakeCallback(&SaturatedTcpSinkEndpointCleanupTestCase::StartStatistics, this),
+        MakeCallback(&SaturatedTcpSinkEndpointCleanupTestCase::FinalizeStatistics, this));
+    const auto ready = barrier.RegisterSender(
+        m_fixture.sender,
+        MakeCallback(&SaturatedTcpSender::StartTraffic, m_fixture.sender),
+        MakeCallback(&SaturatedTcpSinkEndpointCleanupTestCase::StopSenderAtEndpoint, this));
+    m_fixture.sender->SetReadyCallback(ready);
+    barrier.RegisterApplication(m_fixture.sink);
+    barrier.FinalizeRegistration();
+
+    Simulator::Schedule(MilliSeconds(1500),
+                        &SaturatedTcpSinkEndpointCleanupTestCase::CaptureSinkSockets,
+                        this);
+    Simulator::Run();
+
+    m_probeSocket = Socket::CreateSocket(m_fixture.nodes.Get(0), TcpSocketFactory::GetTypeId());
+    m_probeSocket->SetAttribute("ConnTimeout", TimeValue(MilliSeconds(10)));
+    m_probeSocket->SetAttribute("ConnCount", UintegerValue(1));
+    m_probeSocket->SetConnectCallback(
+        MakeCallback(&SaturatedTcpSinkEndpointCleanupTestCase::ProbeConnectionSucceeded, this),
+        MakeCallback(&SaturatedTcpSinkEndpointCleanupTestCase::ProbeConnectionFailed, this));
+    NS_TEST_ASSERT_MSG_EQ(
+        m_probeSocket->Bind(InetSocketAddress(m_fixture.interfaces.GetAddress(0), 11001)),
+        0,
+        "Could not bind post-end TCP probe");
+    NS_TEST_ASSERT_MSG_EQ(
+        m_probeSocket->Connect(InetSocketAddress(m_fixture.interfaces.GetAddress(1), 21000)),
+        0,
+        "Could not start post-end TCP probe");
+    Simulator::Stop(MilliSeconds(100));
+    Simulator::Run();
+    m_bytesAfterProbe = m_fixture.sink->GetTotalRx();
+
+    NS_TEST_ASSERT_MSG_EQ(m_statisticsStartNs,
+                          Seconds(1).GetNanoSeconds(),
+                          "Barrier selected the wrong sink-test epoch");
+    NS_TEST_ASSERT_MSG_EQ(m_statisticsEndNs,
+                          Seconds(2).GetNanoSeconds(),
+                          "Barrier finalized sink test at the wrong endpoint");
+    NS_TEST_ASSERT_MSG_EQ(m_listeningSocket != nullptr,
+                          true,
+                          "Packet sink had no listening socket before endpoint");
+    NS_TEST_ASSERT_MSG_EQ(m_acceptedSocket != nullptr,
+                          true,
+                          "Packet sink had no accepted socket before endpoint");
+    NS_TEST_ASSERT_MSG_EQ(m_senderStopNs,
+                          Seconds(2).GetNanoSeconds(),
+                          "Sender cleanup did not precede statistics finalization at endpoint");
+    NS_TEST_ASSERT_MSG_EQ(m_listeningClosed,
+                          true,
+                          "Listening sink socket was not closed at endpoint");
+    NS_TEST_ASSERT_MSG_EQ(m_acceptedClosing,
+                          true,
+                          "Accepted sink socket was not closed at endpoint");
+    NS_TEST_ASSERT_MSG_EQ(m_probeConnected,
+                          false,
+                          "A post-end TCP connection reached the closed sink listener");
+    NS_TEST_ASSERT_MSG_EQ(m_probeFailed, true, "Closed sink listener did not reject a connection");
+    NS_TEST_ASSERT_MSG_EQ(m_bytesAfterProbe,
+                          m_bytesAtEndpoint,
+                          "Packet sink received payload after the measurement endpoint");
+    NS_TEST_ASSERT_MSG_EQ(
+        m_endpointOrder ==
+            std::vector<std::string>({"sender-stop", "sink-stop", "statistics-finalize"}),
+        true,
+        "Endpoint cleanup order diverged from sender, sink, statistics");
+    Simulator::Destroy();
+}
+
 /** Recorder for deterministic barrier start, stop, and statistics callbacks. */
 class BarrierRecorder
 {
@@ -530,17 +777,18 @@ SaturatedReadinessBarrierEpochTestCase::DoRun()
         MakeCallback(&BarrierRecorder::StartStatistics, &recorder),
         MakeCallback(&BarrierRecorder::FinalizeStatistics, &recorder));
 
-    std::array<Ptr<Application>, 3> senderApplications;
+    std::array<Ptr<SaturatedTcpSender>, 3> senderApplications;
     std::array<Callback<void>, 3> readinessCallbacks;
     for (uint32_t index = 0; index < senderApplications.size(); ++index)
     {
-        senderApplications[index] = CreateObject<Application>();
+        senderApplications[index] = CreateObject<SaturatedTcpSender>();
         readinessCallbacks[index] = barrier.RegisterSender(
             senderApplications[index],
             MakeCallback(&BarrierRecorder::StartSender, &recorder).Bind(index),
             MakeCallback(&BarrierRecorder::StopSender, &recorder).Bind(index));
+        senderApplications[index]->SetReadyCallback(readinessCallbacks[index]);
     }
-    auto sinkApplication = CreateObject<Application>();
+    auto sinkApplication = CreateObject<PacketSink>();
     barrier.RegisterApplication(sinkApplication);
     barrier.FinalizeRegistration();
 
@@ -602,6 +850,124 @@ SaturatedReadinessBarrierEpochTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(recorder.order.back(),
                           "statistics-finalize",
                           "Statistics finalized before sender cleanup");
+    Simulator::Destroy();
+}
+
+/**
+ * @ingroup tests
+ *
+ * Verify that destroying a barrier clears late sender readiness callbacks.
+ */
+class SaturatedReadinessBarrierLifetimeTestCase : public TestCase
+{
+  public:
+    /** Construct the barrier callback-lifetime regression. */
+    SaturatedReadinessBarrierLifetimeTestCase();
+
+  private:
+    /** Replace the active barrier with a different owner at the identical address. */
+    void ReplaceBarrier();
+    /** Record an unexpected replacement-sender start. */
+    void StartReplacementSender();
+    /** Record an unexpected replacement-sender stop. */
+    void StopReplacementSender();
+    /**
+     * Ignore a statistics callback timestamp.
+     *
+     * @param timestampNs Absolute callback timestamp in nanoseconds.
+     */
+    void IgnoreStatistics(int64_t timestampNs);
+    void DoRun() override;
+
+    alignas(SaturatedReadinessBarrier) std::array<
+        std::byte,
+        sizeof(SaturatedReadinessBarrier)> m_barrierStorage{}; ///< Reused storage for exact-address
+                                                               ///< ownership testing.
+    SaturatedReadinessBarrier* m_barrier{nullptr};             ///< Current owner in reused storage.
+    SenderFixture m_fixture;                                   ///< Delayed real TCP sender fixture.
+    Ptr<SaturatedTcpSender> m_replacementSender; ///< Sender owned by the replacement barrier.
+    uint32_t m_replacementStartCount{0};         ///< Replacement start callback count.
+    uint32_t m_replacementStopCount{0};          ///< Replacement stop callback count.
+    bool m_addressReused{false};                 ///< Whether replacement used the exact address.
+};
+
+SaturatedReadinessBarrierLifetimeTestCase::SaturatedReadinessBarrierLifetimeTestCase()
+    : TestCase("clear late TCP readiness callback before barrier address reuse")
+{
+}
+
+void
+SaturatedReadinessBarrierLifetimeTestCase::ReplaceBarrier()
+{
+    const auto oldAddress = m_barrier;
+    std::destroy_at(m_barrier);
+    m_barrier = std::construct_at(
+        reinterpret_cast<SaturatedReadinessBarrier*>(m_barrierStorage.data()),
+        MakeCallback(&SaturatedReadinessBarrierLifetimeTestCase::IgnoreStatistics, this),
+        MakeCallback(&SaturatedReadinessBarrierLifetimeTestCase::IgnoreStatistics, this));
+    m_addressReused = oldAddress == m_barrier;
+
+    m_replacementSender = CreateObject<SaturatedTcpSender>();
+    const auto ready = m_barrier->RegisterSender(
+        m_replacementSender,
+        MakeCallback(&SaturatedReadinessBarrierLifetimeTestCase::StartReplacementSender, this),
+        MakeCallback(&SaturatedReadinessBarrierLifetimeTestCase::StopReplacementSender, this));
+    m_replacementSender->SetReadyCallback(ready);
+    m_barrier->FinalizeRegistration();
+}
+
+void
+SaturatedReadinessBarrierLifetimeTestCase::StartReplacementSender()
+{
+    ++m_replacementStartCount;
+}
+
+void
+SaturatedReadinessBarrierLifetimeTestCase::StopReplacementSender()
+{
+    ++m_replacementStopCount;
+}
+
+void
+SaturatedReadinessBarrierLifetimeTestCase::IgnoreStatistics(int64_t timestampNs)
+{
+    static_cast<void>(timestampNs);
+}
+
+void
+SaturatedReadinessBarrierLifetimeTestCase::DoRun()
+{
+    Simulator::Destroy();
+    m_fixture = BuildSenderFixture(true, Callback<void>());
+    m_barrier = std::construct_at(
+        reinterpret_cast<SaturatedReadinessBarrier*>(m_barrierStorage.data()),
+        MakeCallback(&SaturatedReadinessBarrierLifetimeTestCase::IgnoreStatistics, this),
+        MakeCallback(&SaturatedReadinessBarrierLifetimeTestCase::IgnoreStatistics, this));
+    const auto ready = m_barrier->RegisterSender(m_fixture.sender,
+                                                 MakeCallback(&IgnoreReady),
+                                                 MakeCallback(&IgnoreReady));
+    m_fixture.sender->SetReadyCallback(ready);
+    m_barrier->FinalizeRegistration();
+
+    Simulator::Schedule(NanoSeconds(100),
+                        &SaturatedReadinessBarrierLifetimeTestCase::ReplaceBarrier,
+                        this);
+    Simulator::Stop(MilliSeconds(20));
+    Simulator::Run();
+
+    NS_TEST_ASSERT_MSG_EQ(m_addressReused, true, "Barrier replacement did not reuse its address");
+    NS_TEST_ASSERT_MSG_EQ(m_barrier->GetReadySenderCount(),
+                          0,
+                          "Late TCP success reached the replacement barrier owner");
+    NS_TEST_ASSERT_MSG_EQ(m_replacementStartCount,
+                          0,
+                          "Replacement barrier started from stale readiness");
+    NS_TEST_ASSERT_MSG_EQ(m_replacementStopCount,
+                          0,
+                          "Replacement barrier stopped from stale readiness");
+
+    std::destroy_at(m_barrier);
+    m_barrier = nullptr;
     Simulator::Destroy();
 }
 
@@ -673,12 +1039,16 @@ SaturatedReadinessBarrierDuplicateTestCase::DoRun()
         SaturatedReadinessBarrier barrier(
             MakeCallback(&BarrierRecorder::StartStatistics, &recorder),
             MakeCallback(&BarrierRecorder::FinalizeStatistics, &recorder));
-        const auto first = barrier.RegisterSender(CreateObject<Application>(),
+        auto firstSender = CreateObject<SaturatedTcpSender>();
+        const auto first = barrier.RegisterSender(firstSender,
                                                   MakeCallback(&IgnoreReady),
                                                   MakeCallback(&IgnoreReady));
-        barrier.RegisterSender(CreateObject<Application>(),
-                               MakeCallback(&IgnoreReady),
-                               MakeCallback(&IgnoreReady));
+        firstSender->SetReadyCallback(first);
+        auto secondSender = CreateObject<SaturatedTcpSender>();
+        const auto second = barrier.RegisterSender(secondSender,
+                                                   MakeCallback(&IgnoreReady),
+                                                   MakeCallback(&IgnoreReady));
+        secondSender->SetReadyCallback(second);
         barrier.FinalizeRegistration();
         Simulator::Schedule(Seconds(1), first);
         Simulator::Schedule(MilliSeconds(1100), first);
@@ -721,9 +1091,10 @@ SaturatedReadinessBarrierTimeoutTestCase::DoRun()
         SaturatedReadinessBarrier barrier(
             MakeCallback(&BarrierRecorder::StartStatistics, &recorder),
             MakeCallback(&BarrierRecorder::FinalizeStatistics, &recorder));
-        barrier.RegisterSender(CreateObject<Application>(),
-                               MakeCallback(&IgnoreReady),
-                               MakeCallback(&IgnoreReady));
+        auto sender = CreateObject<SaturatedTcpSender>();
+        const auto ready =
+            barrier.RegisterSender(sender, MakeCallback(&IgnoreReady), MakeCallback(&IgnoreReady));
+        sender->SetReadyCallback(ready);
         barrier.FinalizeRegistration();
         Simulator::Run();
     });
@@ -936,7 +1307,9 @@ CreateSaturatedTcpTrafficTestCases()
             new SaturatedTcpSenderBeforeReadyTestCase,
             new SaturatedTcpSenderDuplicateStartTestCase,
             new SaturatedTcpSenderConnectionFailureTestCase,
+            new SaturatedTcpSinkEndpointCleanupTestCase,
             new SaturatedReadinessBarrierEpochTestCase,
+            new SaturatedReadinessBarrierLifetimeTestCase,
             new SaturatedReadinessBarrierEmptyTestCase,
             new SaturatedReadinessBarrierDuplicateTestCase,
             new SaturatedReadinessBarrierTimeoutTestCase,

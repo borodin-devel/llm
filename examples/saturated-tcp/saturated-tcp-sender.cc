@@ -43,6 +43,11 @@ SaturatedTcpSender::~SaturatedTcpSender() = default;
 void
 SaturatedTcpSender::SetReadyCallback(Callback<void> callback)
 {
+    if (callback.IsNull())
+    {
+        m_readyCallback = Callback<void>();
+        return;
+    }
     NS_ABORT_MSG_IF(m_applicationStarted,
                     "cannot replace saturated TCP readiness callback after application start");
     m_readyCallback = std::move(callback);
@@ -161,7 +166,10 @@ SaturatedTcpSender::ConnectionSucceeded(Ptr<Socket> socket)
 
     Address local;
     socket->GetSockName(local);
-    m_readyCallback();
+    if (!m_readyCallback.IsNull())
+    {
+        m_readyCallback();
+    }
     m_connectionSuccess(socket, local, m_peer);
 }
 
