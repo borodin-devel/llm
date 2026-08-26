@@ -1,7 +1,7 @@
 #include "agent-distribution.h"
 
+#include "../logging/llm-log.h"
 #include "contention-aware-distribution-internal.h"
-#include "llm-log.h"
 
 #include "ns3/inet-socket-address.h"
 

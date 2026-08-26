@@ -1,6 +1,6 @@
 #include "trace-parser.h"
 
-#include "llm-log.h"
+#include "../logging/llm-log.h"
 
 #include "ns3/json.hpp"
 

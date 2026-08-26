@@ -1,39 +1,61 @@
 
 set(source_files
-    model/app-tx-tag.cc
-    model/agent-distribution.cc
-    model/contention-aware-agent-distribution.cc
-    model/contention-aware-bss-assignment.cc
-    model/contention-aware-sta-assignment.cc
-    model/llm-log.cc
-    model/trace-parser.cc
-    model/traffic-sink.cc
-    model/traffic-schedule.cc
-    model/ap-generator.cc
-    model/sta-llm-generator.cc
+    # Model applications
+    model/applications/ap-generator.cc
+    model/applications/app-tx-tag.cc
+    model/applications/sta-llm-generator.cc
+    model/applications/traffic-sink.cc
+    model/applications/traffic-schedule.cc
+    # Model distribution
+    model/distribution/agent-distribution.cc
+    model/distribution/contention-aware-agent-distribution.cc
+    model/distribution/contention-aware-bss-assignment.cc
+    model/distribution/contention-aware-sta-assignment.cc
+    # Model logging
+    model/logging/llm-log.cc
+    # Model traces
+    model/traces/trace-parser.cc
 )
 
 set(header_files
     lib/json.hpp
     # toml++ v3.4.0, MIT, https://github.com/marzer/tomlplusplus
     lib/toml.hpp
-    model/agent-data.h
-    model/app-tx-tag.h
-    model/traffic-sink.h
-    model/traffic-schedule.h
-    model/agent-distribution.h
-    model/contention-aware-agent-distribution.h
-    model/ap-generator.h
-    model/sta-llm-generator.h
-    model/trace-parser.h
+    # Model applications
+    model/applications/ap-generator.h
+    model/applications/app-tx-tag.h
+    model/applications/sta-llm-generator.h
+    model/applications/traffic-sink.h
+    model/applications/traffic-schedule.h
+    # Model distribution
+    model/distribution/agent-data.h
+    model/distribution/agent-distribution.h
+    model/distribution/contention-aware-agent-distribution.h
+    # Model traces
+    model/traces/trace-parser.h
+)
+
+file(REMOVE
+    "${CMAKE_HEADER_OUTPUT_DIRECTORY}/agent-data.h"
+    "${CMAKE_HEADER_OUTPUT_DIRECTORY}/agent-distribution.h"
+    "${CMAKE_HEADER_OUTPUT_DIRECTORY}/ap-generator.h"
+    "${CMAKE_HEADER_OUTPUT_DIRECTORY}/app-tx-tag.h"
+    "${CMAKE_HEADER_OUTPUT_DIRECTORY}/contention-aware-agent-distribution.h"
+    "${CMAKE_HEADER_OUTPUT_DIRECTORY}/sta-llm-generator.h"
+    "${CMAKE_HEADER_OUTPUT_DIRECTORY}/trace-parser.h"
+    "${CMAKE_HEADER_OUTPUT_DIRECTORY}/traffic-schedule.h"
+    "${CMAKE_HEADER_OUTPUT_DIRECTORY}/traffic-sink.h"
 )
 
 set(test_sources
     test/llm-test-suite.cc
-    test/trace-parser-test-suite.cc
-    test/agent-distribution-test-suite.cc
-    test/app-tx-tag-test-suite.cc
-    test/traffic-schedule-test-suite.cc
+    # Model applications
+    test/model/applications/app-tx-tag-test-suite.cc
+    test/model/applications/traffic-schedule-test-suite.cc
+    # Model distribution
+    test/model/distribution/agent-distribution-test-suite.cc
+    # Model traces
+    test/model/traces/trace-parser-test-suite.cc
     test/traffic-coordinator-test-suite.cc
     test/scenario-config-test-suite.cc
     test/scenario-config-json-test-suite.cc
@@ -91,7 +113,7 @@ build_lib(
     ${libwifi}
     ${libconfig-store}
   PRIVATE_HEADER_FILES
-    model/contention-aware-distribution-internal.h
-    model/llm-log.h
+    model/distribution/contention-aware-distribution-internal.h
+    model/logging/llm-log.h
   TEST_SOURCES ${test_sources}
 )

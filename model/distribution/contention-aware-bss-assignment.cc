@@ -1,5 +1,5 @@
+#include "../logging/llm-log.h"
 #include "contention-aware-distribution-internal.h"
-#include "llm-log.h"
 
 #include <algorithm>
 #include <limits>

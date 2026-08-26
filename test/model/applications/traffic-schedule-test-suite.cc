@@ -1,4 +1,4 @@
-#include "llm-test-suite.h"
+#include "../../llm-test-suite.h"
 
 #include "ns3/ap-generator.h"
 #include "ns3/inet-socket-address.h"

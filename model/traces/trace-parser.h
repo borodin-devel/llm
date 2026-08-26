@@ -1,7 +1,7 @@
 #ifndef TRACE_PARSER_H
 #define TRACE_PARSER_H
 
-#include "agent-data.h"
+#include "ns3/agent-data.h"
 
 #include <istream>
 #include <string>

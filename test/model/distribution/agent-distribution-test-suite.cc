@@ -1,4 +1,4 @@
-#include "llm-test-suite.h"
+#include "../../llm-test-suite.h"
 
 #include "ns3/agent-distribution.h"
 #include "ns3/contention-aware-agent-distribution.h"

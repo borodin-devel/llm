@@ -2,8 +2,9 @@
 #define AGENT_DISTRIBUTION_H
 
 #include "agent-data.h"
-#include "app-tx-tag.h"
-#include "trace-parser.h"
+
+#include "ns3/app-tx-tag.h"
+#include "ns3/trace-parser.h"
 
 namespace ns3
 {
