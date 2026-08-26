@@ -175,6 +175,13 @@ struct PhyDirectionOutput
 /** PHY category statistics including local channel state. */
 struct PhyCategoryOutput
 {
+    std::optional<double>
+        averageTheoreticalPhyRateMbps; ///< Average theoretical PHY rate in Mbps, if defined.
+    std::optional<double>
+        averagePracticalPhyRateMbps; ///< Average practical PHY rate in Mbps, if defined.
+    std::optional<double>
+        channelEfficiency; ///< Practical-to-theoretical PHY rate fraction, if defined.
+    std::optional<double> contentionFraction;        ///< Contention loss fraction, if defined.
     uint64_t busyTimeUs{0};                          ///< Local PHY busy duration.
     std::optional<double> channelUtilizationPercent; ///< Local channel utilization.
     PhyDirectionOutput uplink;                       ///< Uplink PHY statistics.

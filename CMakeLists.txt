@@ -96,6 +96,7 @@ set(test_sources
     examples/statistics/validation.cc
     # Statistics JSON
     examples/statistics/json/writer.cc
+    examples/statistics/json/document.cc
     examples/statistics/json/hierarchy.cc
     examples/statistics/json/general.cc
     examples/statistics/json/app.cc

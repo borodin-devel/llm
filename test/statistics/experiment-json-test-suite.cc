@@ -99,6 +99,20 @@ class JsonWriterStateTestCase : public TestCase
     void DoRun() override;
 };
 
+/**
+ * @ingroup tests
+ *
+ * Verify generic document callbacks occupy the scenario schema positions.
+ */
+class ExperimentJsonSectionsTestCase : public TestCase
+{
+  public:
+    ExperimentJsonSectionsTestCase();
+
+  private:
+    void DoRun() override;
+};
+
 ExperimentJsonIoTestCase::ExperimentJsonIoTestCase()
     : TestCase("write experiment JSON exclusively and report IO paths")
 {
@@ -176,7 +190,7 @@ ExperimentJsonWriteStateTestCase::DoRun()
 {
     RejectingStreamBuffer buffer;
     std::ostream output(&buffer);
-    WriteExperimentHierarchyJson(output, {}, {});
+    WriteExperimentHierarchyJson(output, {}, ScenarioConfig{});
     NS_TEST_ASSERT_MSG_EQ(output.fail(), true, "Rejected hierarchy body write was not observable");
 }
 
@@ -337,6 +351,60 @@ JsonWriterStateTestCase::DoRun()
     }
 }
 
+ExperimentJsonSectionsTestCase::ExperimentJsonSectionsTestCase()
+    : TestCase("write and validate generic experiment JSON sections")
+{
+}
+
+void
+ExperimentJsonSectionsTestCase::DoRun()
+{
+    uint32_t semanticsCallCount = 0;
+    uint32_t configurationCallCount = 0;
+    ExperimentJsonSections sections{
+        [&semanticsCallCount](JsonWriter& writer) {
+            ++semanticsCallCount;
+            writer.Value("literal semantics");
+        },
+        [&configurationCallCount](JsonWriter& writer) {
+            ++configurationCallCount;
+            writer.Value("literal configuration");
+        },
+    };
+    std::ostringstream output;
+    WriteExperimentHierarchyJson(output, {}, sections);
+    const auto document = nlohmann::json::parse(output.str());
+    NS_TEST_ASSERT_MSG_EQ(document.at("measurement_semantics"),
+                          "literal semantics",
+                          "Measurement-semantics callback wrote at the wrong position");
+    NS_TEST_ASSERT_MSG_EQ(document.at("experiment_metadata").at("configuration"),
+                          "literal configuration",
+                          "Configuration callback wrote at the wrong position");
+    NS_TEST_ASSERT_MSG_EQ(semanticsCallCount, 1, "Measurement callback count changed");
+    NS_TEST_ASSERT_MSG_EQ(configurationCallCount, 1, "Configuration callback count changed");
+
+    for (const auto missingSemantics : {true, false})
+    {
+        ExperimentJsonSections incomplete{
+            missingSemantics ? std::function<void(JsonWriter&)>{}
+                             : sections.writeMeasurementSemantics,
+            missingSemantics ? sections.writeConfiguration : std::function<void(JsonWriter&)>{},
+        };
+        std::ostringstream rejectedOutput;
+        try
+        {
+            WriteExperimentHierarchyJson(rejectedOutput, {}, incomplete);
+            NS_TEST_ASSERT_MSG_EQ(true, false, "Missing document callback was accepted");
+        }
+        catch (const std::invalid_argument&)
+        {
+        }
+        NS_TEST_ASSERT_MSG_EQ(rejectedOutput.str().empty(),
+                              true,
+                              "Document output began before callback validation");
+    }
+}
+
 } // namespace
 
 std::vector<TestCase*>
@@ -345,5 +413,6 @@ CreateExperimentJsonTestCases()
     return {new ExperimentJsonIoTestCase,
             new ExperimentJsonWriteStateTestCase,
             new JsonWriterFormattingTestCase,
-            new JsonWriterStateTestCase};
+            new JsonWriterStateTestCase,
+            new ExperimentJsonSectionsTestCase};
 }

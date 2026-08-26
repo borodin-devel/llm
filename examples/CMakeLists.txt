@@ -23,6 +23,7 @@ build_lib_example(
     statistics/validation.cc
     # Statistics JSON
     statistics/json/writer.cc
+    statistics/json/document.cc
     statistics/json/hierarchy.cc
     statistics/json/general.cc
     statistics/json/app.cc

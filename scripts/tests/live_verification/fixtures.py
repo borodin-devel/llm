@@ -82,6 +82,10 @@ def entity(access_point_id=0, station_index=None, node_id=1, ipv4="10.1.0.1"):
         "tcp_stats": {"uplink": copy.deepcopy(tcp), "downlink": copy.deepcopy(tcp)},
         "mac_stats": {"uplink": copy.deepcopy(mac), "downlink": copy.deepcopy(mac)},
         "phy_stats": {
+            "average_theoretical_phy_rate_mbps": 960.8,
+            "average_practical_phy_rate_mbps": 720.6,
+            "channel_efficiency": 0.75,
+            "contention_fraction": 0.2,
             "busy_time_us": 0,
             "channel_utilization_percent": 0.0,
             "uplink": copy.deepcopy(phy_direction),

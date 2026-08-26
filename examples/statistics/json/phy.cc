@@ -97,6 +97,42 @@ void
 WritePhyCategoryJson(JsonWriter& writer, const PhyCategoryOutput& category)
 {
     writer.BeginObject();
+    writer.Key("average_theoretical_phy_rate_mbps");
+    if (category.averageTheoreticalPhyRateMbps)
+    {
+        writer.Value(*category.averageTheoreticalPhyRateMbps);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("average_practical_phy_rate_mbps");
+    if (category.averagePracticalPhyRateMbps)
+    {
+        writer.Value(*category.averagePracticalPhyRateMbps);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("channel_efficiency");
+    if (category.channelEfficiency)
+    {
+        writer.Value(*category.channelEfficiency);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("contention_fraction");
+    if (category.contentionFraction)
+    {
+        writer.Value(*category.contentionFraction);
+    }
+    else
+    {
+        writer.Null();
+    }
     writer.Key("busy_time_us");
     writer.Value(category.busyTimeUs);
     writer.Key("channel_utilization_percent");

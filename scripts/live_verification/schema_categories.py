@@ -12,6 +12,13 @@ from live_verification.common import (
 )
 
 
+BENCHMARK_PHY_RATE_KEYS = {
+    "average_theoretical_phy_rate_mbps", "average_practical_phy_rate_mbps",
+}
+BENCHMARK_PHY_FRACTION_KEYS = {"channel_efficiency", "contention_fraction"}
+PHY_CATEGORY_KEYS = PHY_KEYS | BENCHMARK_PHY_RATE_KEYS | BENCHMARK_PHY_FRACTION_KEYS
+
+
 def _validate_sample_distribution(value, source_path, json_path):
     expect_object_keys(value, SAMPLE_KEYS, source_path, json_path)
     expect_nonnegative_integer(value["sample_count"], source_path, f"{json_path}.sample_count")
@@ -289,7 +296,11 @@ def validate_entity_categories(record, known_nodes, source_path, json_path):
 
     phy = record["phy_stats"]
     phy_path = f"{json_path}.phy_stats"
-    expect_object_keys(phy, PHY_KEYS, source_path, phy_path)
+    expect_object_keys(phy, PHY_CATEGORY_KEYS, source_path, phy_path)
+    validate_optional_number_fields(phy, BENCHMARK_PHY_RATE_KEYS, source_path, phy_path)
+    validate_optional_number_fields(
+        phy, BENCHMARK_PHY_FRACTION_KEYS, source_path, phy_path, maximum=1.0
+    )
     expect_nonnegative_integer(phy["busy_time_us"], source_path, f"{phy_path}.busy_time_us")
     expect_optional_finite_number(
         phy["channel_utilization_percent"], source_path,

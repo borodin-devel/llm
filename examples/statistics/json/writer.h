@@ -6,6 +6,7 @@
 #include "ns3/json.hpp"
 
 #include <cstddef>
+#include <functional>
 #include <optional>
 #include <ostream>
 #include <stdexcept>
@@ -17,6 +18,25 @@ namespace ns3
 {
 
 struct ScenarioConfig;
+class JsonWriter;
+
+/** Callbacks that supply experiment-specific root document sections. */
+struct ExperimentJsonSections
+{
+    /**
+     * Write the measurement-semantics root value.
+     *
+     * The callback must write exactly one JSON value through the supplied writer.
+     */
+    std::function<void(JsonWriter&)> writeMeasurementSemantics;
+
+    /**
+     * Write the effective-configuration metadata value.
+     *
+     * The callback must write exactly one JSON value through the supplied writer.
+     */
+    std::function<void(JsonWriter&)> writeConfiguration;
+};
 
 /**
  * Stream one indented JSON value while validating its structural state.
@@ -362,6 +382,20 @@ void WriteExperimentValidationJson(JsonWriter& writer,
 void WriteExperimentHierarchyJson(std::ostream& output,
                                   const UnifiedExperimentSummary& summary,
                                   const ScenarioConfig& configuration);
+
+/**
+ * Stream the generic schema-version-1 hierarchy with caller-supplied root sections.
+ *
+ * Both callbacks must be set and each must write exactly one JSON value.
+ *
+ * @param output Destination stream.
+ * @param summary Finalized typed experiment summary.
+ * @param sections Callbacks for experiment-specific root values.
+ * @throws std::invalid_argument If either callback is empty.
+ */
+void WriteExperimentHierarchyJson(std::ostream& output,
+                                  const UnifiedExperimentSummary& summary,
+                                  const ExperimentJsonSections& sections);
 
 } // namespace ns3
 

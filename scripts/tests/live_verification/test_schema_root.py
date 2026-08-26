@@ -46,6 +46,65 @@ class LiveTraceSchemaRootTest(unittest.TestCase):
         self.assertIsNone(distribution["average_us"])
         validate_output_document(document, self.source, self.trace)
 
+    def test_accepts_null_benchmark_phy_fields(self):
+        document = valid_document(self.trace)
+        phy = document["windows"][0]["access_points"][0]["phy_stats"]
+        for field in (
+            "average_theoretical_phy_rate_mbps",
+            "average_practical_phy_rate_mbps",
+            "channel_efficiency",
+            "contention_fraction",
+        ):
+            phy[field] = None
+        validate_output_document(document, self.source, self.trace)
+
+    def test_rejects_missing_benchmark_phy_fields(self):
+        for field in (
+            "average_theoretical_phy_rate_mbps",
+            "average_practical_phy_rate_mbps",
+            "channel_efficiency",
+            "contention_fraction",
+        ):
+            with self.subTest(field=field):
+                document = valid_document(self.trace)
+                del document["windows"][0]["access_points"][0]["phy_stats"][field]
+                self.assert_document_error(document, ".phy_stats")
+
+    def test_rejects_invalid_benchmark_phy_field_types(self):
+        mutations = (
+            ("average_theoretical_phy_rate_mbps", {}),
+            ("average_practical_phy_rate_mbps", "720.6"),
+            ("channel_efficiency", {}),
+            ("contention_fraction", "0.2"),
+        )
+        for field, invalid in mutations:
+            with self.subTest(field=field, invalid=invalid):
+                document = valid_document(self.trace)
+                document["windows"][0]["access_points"][0]["phy_stats"][field] = invalid
+                self.assert_document_error(document, f".phy_stats.{field}")
+
+    def test_rejects_nonfinite_benchmark_phy_fields(self):
+        fields = (
+            "average_theoretical_phy_rate_mbps",
+            "average_practical_phy_rate_mbps",
+            "channel_efficiency",
+            "contention_fraction",
+        )
+        for field in fields:
+            for invalid in (float("inf"), float("-inf"), float("nan")):
+                with self.subTest(field=field, invalid=invalid):
+                    document = valid_document(self.trace)
+                    document["windows"][0]["access_points"][0]["phy_stats"][field] = invalid
+                    self.assert_document_error(document, f".phy_stats.{field}")
+
+    def test_rejects_out_of_range_benchmark_phy_fractions(self):
+        for field in ("channel_efficiency", "contention_fraction"):
+            for invalid in (-0.01, 1.01):
+                with self.subTest(field=field, invalid=invalid):
+                    document = valid_document(self.trace)
+                    document["windows"][0]["access_points"][0]["phy_stats"][field] = invalid
+                    self.assert_document_error(document, f".phy_stats.{field}")
+
     def test_accepts_sparse_full_windows_and_last_partial_window(self):
         document = valid_document(self.trace)
         full_sparse = copy.deepcopy(document["windows"][0])

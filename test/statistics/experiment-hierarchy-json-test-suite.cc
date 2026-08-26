@@ -73,6 +73,10 @@ PopulateDirectionOutputs(EntityStatisticsOutput& statistics)
                  {9, "10.1.0.3", 2, 200, 0.16, 2, 160, 0.128, 3, 300, 3, 3, {{9, 3}}}};
 
     auto& phy = statistics.phyStats;
+    phy.averageTheoreticalPhyRateMbps = 960.8;
+    phy.averagePracticalPhyRateMbps = 720.6;
+    phy.channelEfficiency = 0.75;
+    phy.contentionFraction = 0.2;
     phy.busyTimeUs = 4500;
     phy.channelUtilizationPercent = 45.0;
     phy.uplink = {600, 500, 8, 900, 10, 2, 2500.0, 54.0, 0.48, {}};
@@ -191,6 +195,20 @@ class ExperimentHierarchyStreamingScaleTestCase : public TestCase
     void DoRun() override;
 };
 
+/**
+ * @ingroup tests
+ *
+ * Verify default AP and station PHY benchmark fields serialize as null.
+ */
+class ExperimentHierarchyDefaultPhyJsonTestCase : public TestCase
+{
+  public:
+    ExperimentHierarchyDefaultPhyJsonTestCase();
+
+  private:
+    void DoRun() override;
+};
+
 ExperimentHierarchyJsonTestCase::ExperimentHierarchyJsonTestCase()
     : TestCase("serialize exact final experiment hierarchy")
 {
@@ -273,12 +291,30 @@ ExperimentHierarchyJsonTestCase::DoRun()
     {
         AssertExactKeys(ap.at(category), directions, category);
     }
-    AssertExactKeys(ap.at("phy_stats"),
-                    std::array<std::string_view, 4>{"busy_time_us",
-                                                    "channel_utilization_percent",
-                                                    "uplink",
-                                                    "downlink"},
-                    "phy_stats");
+    constexpr std::array<std::string_view, 8> phyKeys{
+        "average_theoretical_phy_rate_mbps",
+        "average_practical_phy_rate_mbps",
+        "channel_efficiency",
+        "contention_fraction",
+        "busy_time_us",
+        "channel_utilization_percent",
+        "uplink",
+        "downlink",
+    };
+    AssertExactKeys(ap.at("phy_stats"), phyKeys, "AP phy_stats");
+    AssertExactKeys(station.at("phy_stats"), phyKeys, "station phy_stats");
+    for (const auto* entity : {&ap, &station})
+    {
+        const auto& phy = entity->at("phy_stats");
+        NS_TEST_ASSERT_MSG_EQ(phy.at("average_theoretical_phy_rate_mbps"),
+                              960.8,
+                              "Wrong theoretical PHY rate");
+        NS_TEST_ASSERT_MSG_EQ(phy.at("average_practical_phy_rate_mbps"),
+                              720.6,
+                              "Wrong practical PHY rate");
+        NS_TEST_ASSERT_MSG_EQ(phy.at("channel_efficiency"), 0.75, "Wrong channel efficiency");
+        NS_TEST_ASSERT_MSG_EQ(phy.at("contention_fraction"), 0.2, "Wrong contention fraction");
+    }
 
     AssertExactKeys(ap.at("general_stats").at("uplink"),
                     std::array<std::string_view, 10>{"estimated_transmitted_tcp_payload_bytes",
@@ -489,6 +525,40 @@ ExperimentHierarchyStreamingScaleTestCase::ExperimentHierarchyStreamingScaleTest
 {
 }
 
+ExperimentHierarchyDefaultPhyJsonTestCase::ExperimentHierarchyDefaultPhyJsonTestCase()
+    : TestCase("serialize default AP and station PHY benchmark fields as null")
+{
+}
+
+void
+ExperimentHierarchyDefaultPhyJsonTestCase::DoRun()
+{
+    UnifiedExperimentSummary summary;
+    summary.overall.accessPoints.push_back({});
+    summary.overall.stations.push_back({});
+    std::ostringstream output;
+    WriteExperimentHierarchyJson(output, summary, ScenarioConfig{});
+    const auto document = nlohmann::json::parse(output.str());
+    const auto& overall = document.at("overall");
+    const auto& accessPointPhy = overall.at("access_points").at(0).at("phy_stats");
+    const auto& stationPhy = overall.at("stations").at(0).at("phy_stats");
+    for (const auto* phy : {&accessPointPhy, &stationPhy})
+    {
+        NS_TEST_ASSERT_MSG_EQ(phy->at("average_theoretical_phy_rate_mbps").is_null(),
+                              true,
+                              "Default theoretical PHY rate was not null");
+        NS_TEST_ASSERT_MSG_EQ(phy->at("average_practical_phy_rate_mbps").is_null(),
+                              true,
+                              "Default practical PHY rate was not null");
+        NS_TEST_ASSERT_MSG_EQ(phy->at("channel_efficiency").is_null(),
+                              true,
+                              "Default channel efficiency was not null");
+        NS_TEST_ASSERT_MSG_EQ(phy->at("contention_fraction").is_null(),
+                              true,
+                              "Default contention fraction was not null");
+    }
+}
+
 void
 ExperimentHierarchyStreamingScaleTestCase::DoRun()
 {
@@ -500,7 +570,7 @@ ExperimentHierarchyStreamingScaleTestCase::DoRun()
         summary.windows.push_back({index, static_cast<double>(index * 10), 10.0, {}, {}});
     }
     std::ostringstream output;
-    WriteExperimentHierarchyJson(output, summary, {});
+    WriteExperimentHierarchyJson(output, summary, ScenarioConfig{});
     const auto document = nlohmann::json::parse(output.str());
     const auto& windows = document.at("windows");
     NS_TEST_ASSERT_MSG_EQ(windows.size(), 10000, "Streaming scale lost windows");
@@ -517,5 +587,7 @@ ExperimentHierarchyStreamingScaleTestCase::DoRun()
 std::vector<TestCase*>
 CreateExperimentHierarchyJsonTestCases()
 {
-    return {new ExperimentHierarchyJsonTestCase, new ExperimentHierarchyStreamingScaleTestCase};
+    return {new ExperimentHierarchyJsonTestCase,
+            new ExperimentHierarchyStreamingScaleTestCase,
+            new ExperimentHierarchyDefaultPhyJsonTestCase};
 }
