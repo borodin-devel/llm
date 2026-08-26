@@ -150,3 +150,30 @@ live_test_traces.py --self-test                 43/43 passed
 ```
 
 Syntax, style, and diff checks passed. The real trace matrix was not rerun.
+
+## Fix round 3: cover the exact cleanup caller
+
+Review found that round 2 tested stored parsing and identity-checked killing as
+separate operations rather than exercising the exact caller used by real
+fixture cleanup. The closed-pipe fixture called the killer directly, and the
+open-pipe fixture had no failure-path `finally` cleanup.
+
+`_cleanup_recorded_test_process` was mutation-tested with unsafe behavior that
+read the stored PID but derived expected starttime from current `/proc` after
+run completion. Given stored `123 456` and current `123 789`, the focused RED
+test authorized SIGKILL:
+
+```text
+Ran 2 tests in 0.001s
+FAILED (failures=2)
+```
+
+The caller now reads the complete expected tuple only from the identity file
+and passes it to `_kill_test_process`, which independently reads current
+identity before signaling. The deterministic reuse test asserts mismatch and
+zero signals through this exact caller. The current-process-absent test also
+uses the caller and remains a no-op.
+
+Both real grandchild fixtures invoke the same caller from `finally`, so their
+failure cleanup follows the tested identity path. The real trace matrix was
+not rerun.

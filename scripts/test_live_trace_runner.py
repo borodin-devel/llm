@@ -75,6 +75,20 @@ def _kill_test_process(
         time.sleep(0.01)
 
 
+def _cleanup_recorded_test_process(
+    identity_path,
+    *,
+    identity_reader=_read_test_process_identity,
+    signal_process=os.kill,
+):
+    stored_identity = _read_stored_test_process_identity(identity_path)
+    _kill_test_process(
+        stored_identity,
+        identity_reader=identity_reader,
+        signal_process=signal_process,
+    )
+
+
 class LiveTraceRunnerTest(unittest.TestCase):
     def setUp(self):
         self.trace = "contrib/llm/traces/1W_high_load_1s.json"
@@ -139,15 +153,10 @@ class LiveTraceRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             identity_path = Path(directory) / "grandchild.identity"
             identity_path.write_text("123 456", encoding="utf-8")
-            module = sys.modules[__name__]
-            with mock.patch.object(
-                module, "_read_test_process_identity", identity_reader
-            ):
-                stored_identity = _read_stored_test_process_identity(identity_path)
             with self.subTest("identity mismatch"):
                 with self.assertRaisesRegex(RuntimeError, "identity changed"):
-                    _kill_test_process(
-                        stored_identity,
+                    _cleanup_recorded_test_process(
+                        identity_path,
                         identity_reader=identity_reader,
                         signal_process=signal_process,
                     )
@@ -156,11 +165,14 @@ class LiveTraceRunnerTest(unittest.TestCase):
 
     def test_cleanup_accepts_absent_process_without_signaling(self):
         signal_process = mock.Mock()
-        _kill_test_process(
-            (123, 456),
-            identity_reader=mock.Mock(return_value=None),
-            signal_process=signal_process,
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            identity_path = Path(directory) / "grandchild.identity"
+            identity_path.write_text("123 456", encoding="utf-8")
+            _cleanup_recorded_test_process(
+                identity_path,
+                identity_reader=mock.Mock(return_value=None),
+                signal_process=signal_process,
+            )
         signal_process.assert_not_called()
 
     def test_cleans_up_after_command_failure(self):
@@ -266,15 +278,22 @@ class LiveTraceRunnerTest(unittest.TestCase):
             self.assertTrue(identity_path.exists(), "grandchild did not start")
             grandchild_identity = _read_stored_test_process_identity(identity_path)
             grandchild_pid, _ = grandchild_identity
-            time.sleep(0.6)
-            self.assertFalse(marker_path.exists(), "grandchild survived timeout cleanup")
-            status_path = Path(f"/proc/{grandchild_pid}/stat")
-            reap_deadline = time.monotonic() + 1.0
-            while status_path.exists() and time.monotonic() < reap_deadline:
-                process_state = status_path.read_text(encoding="utf-8").split()[2]
-                self.assertEqual(process_state, "Z", "grandchild remains live after timeout")
-                time.sleep(0.01)
-            self.assertFalse(status_path.exists(), "grandchild was not reaped after timeout")
+            try:
+                time.sleep(0.6)
+                self.assertFalse(marker_path.exists(), "grandchild survived timeout cleanup")
+                status_path = Path(f"/proc/{grandchild_pid}/stat")
+                reap_deadline = time.monotonic() + 1.0
+                while status_path.exists() and time.monotonic() < reap_deadline:
+                    process_state = status_path.read_text(encoding="utf-8").split()[2]
+                    self.assertEqual(
+                        process_state, "Z", "grandchild remains live after timeout"
+                    )
+                    time.sleep(0.01)
+                self.assertFalse(
+                    status_path.exists(), "grandchild was not reaped after timeout"
+                )
+            finally:
+                _cleanup_recorded_test_process(identity_path)
 
     def test_timeout_kills_grandchild_after_leader_closes_pipe(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -309,8 +328,7 @@ class LiveTraceRunnerTest(unittest.TestCase):
             elapsed = time.monotonic() - started
             self.assertLess(elapsed, 0.8, "timeout cleanup did not return promptly")
             self.assertTrue(identity_path.exists(), "grandchild did not start")
-            grandchild_identity = _read_stored_test_process_identity(identity_path)
-            grandchild_pid, _ = grandchild_identity
+            grandchild_pid, _ = _read_stored_test_process_identity(identity_path)
             try:
                 time.sleep(0.6)
                 with self.subTest("survival marker"):
@@ -328,4 +346,4 @@ class LiveTraceRunnerTest(unittest.TestCase):
                         status_path.exists(), "grandchild was not reaped after timeout"
                     )
             finally:
-                _kill_test_process(grandchild_identity)
+                _cleanup_recorded_test_process(identity_path)
