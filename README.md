@@ -15,7 +15,8 @@ The most important mental model is:
 
 The default example creates three isolated basic service sets (BSSs), each
 with one AP and 30 physical STAs. Many application agents may share one
-physical STA.
+physical STA. The module also includes an independent saturated TCP Wi-Fi
+calibration benchmark that does not replay traces.
 
 ## Contents
 
@@ -27,6 +28,7 @@ physical STA.
 - [Traffic timing and readiness barrier](#traffic-timing-and-readiness-barrier)
 - [Application-to-PHY attribution](#application-to-phy-attribution)
 - [Output metrics](#output-metrics)
+- [Saturated TCP Wi-Fi benchmark](#saturated-tcp-wi-fi-benchmark)
 - [IEEE 802.11 review](#ieee-80211-review)
 - [Build and run](#build-and-run)
 - [Large trace tools](#large-trace-tools)
@@ -847,6 +849,303 @@ cleanup. In particular, it can race before acquisition captures the baseline
 identity and after the final identity check before pathname `rmdir`; name
 randomness is not same-EUID protection.
 
+## Saturated TCP Wi-Fi benchmark
+
+[`saturated-tcp-scenario`](examples/saturated-tcp-scenario.cc) is an
+independent 802.11ax calibration benchmark. It does not load an LLM trace,
+place agents, or reuse the trace traffic generators. Each run creates exactly
+three BSSs and measures one second of unlimited TCP traffic under a controlled
+station count, desired-link RSSI, cross-BSS visibility policy, traffic
+direction, and spatial mode.
+
+### Topology, propagation, and spatial mode
+
+Every BSS has its own wired server, 10 Gbit/s point-to-point link with 0.1 ms
+delay, routing AP, and configured number of STAs. No server or wired link is
+shared. All APs and STAs use 802.11ax, 5 GHz channel 42, 80 MHz width, primary
+20 MHz index 0, fixed 20 dBm transmit power, MinstrelHt, two antennas, and at
+most two transmit and receive spatial streams. AP BSS colors are 1, 2, and 3.
+
+Placement solves distances with the same native deterministic propagation
+models used by the run:
+
+- `YansWifiChannel` as the channel abstraction;
+- `LogDistancePropagationLossModel` for received power;
+- `ConstantSpeedPropagationDelayModel` for delay;
+- no fading model, fixed MCS, rate, RSSI, SIR, or SINR override.
+
+The desired AP/STA link targets are checked in both directions before traffic:
+
+| `rssi_range` | Target RSSI |
+|---|---:|
+| `high` | -41.5 dBm |
+| `medium` | -50.0 dBm |
+| `low` | -60.0 dBm |
+
+Every target must be within +/-0.5 dB. APs form an equilateral triangle whose
+native AP/AP links target -50.0 dBm. STAs are evenly spaced on a solved ring
+around their AP, with a deterministic angular offset per BSS.
+
+Cross-BSS visibility is deliberately constrained:
+
+| Sender/receiver relation | `isolated` | `ap_only_cochannel` |
+|---|---|---|
+| Same BSS, any AP/STA pair | Native propagation | Native propagation |
+| Different BSS, AP to AP | Impossible: separate channels | Native propagation |
+| Different BSS, any link involving a STA | Impossible: separate channels | Blocked |
+
+`ap_only_cochannel` therefore means that only AP-to-AP signals cross BSS
+boundaries. The filter changes only visibility; every allowed link delegates
+unchanged to native LogDistance propagation. This is a programmatic benchmark
+assumption, not a claim about physical 802.11 propagation.
+
+The current benchmark supports `mimo_mode = "su"` only. In SU mode one AP may
+use up to two spatial streams with one 2x2 STA. The checked-out ns-3
+multi-user scheduler does not support scheduled DL MU-MIMO, and its available
+scheduled UL multi-user path is OFDMA rather than MU-MIMO. Configuration and
+the runner therefore reject `mu`; they never label an SU or OFDMA result as
+MU-MIMO.
+
+### Saturated traffic, readiness, and station-only scope
+
+Each active direction gives every STA an independent TCP connection:
+
+- `ul`: STA sender to its BSS wired-server sink;
+- `dl`: wired-server sender to that STA sink;
+- `ul_dl`: both connections simultaneously on separate ports.
+
+The benchmark-specific sender connects without sending early, then fills the
+socket send buffer without a byte or data-rate limit. TCP uses
+`ns3::TcpHighSpeed`, 1460-byte segments, and 32 MiB send and receive buffers.
+Each buffer is exactly 33554432 bytes. The start is event-driven rather than
+a fixed warm-up:
+
+1. Install sinks and start every association and TCP connection.
+2. Wait until every STA is associated and every active sender is connected.
+3. Choose the first whole-second boundary strictly after complete readiness.
+4. Start all senders and metric collectors at that common epoch.
+5. Measure exactly one second, then stop, finalize, validate, and exit.
+
+A safety timeout makes missing readiness a failure; it never starts traffic
+early.
+
+Benchmark PHY metrics include only qualifying PPDUs transmitted by STAs. AP
+transmissions never enter station or BSS values, including in `dl` mode.
+Qualifying transmissions include unicast data, TCP ACK data frames, MAC ACK
+and BlockAck, traffic-related control frames, aggregation, and every retry.
+Beacon, association/probe, broadcast, and unrelated traffic are excluded.
+
+### Station metrics, null windows, and BSS aggregation
+
+For each STA, raw accumulators retain complete qualifying PPDU airtime,
+nominal `WifiTxVector` rate multiplied by that airtime, qualifying PSDU bits,
+and the union of EDCA wait intervals. Complete airtime includes the preamble,
+PHY headers, and payload time. PSDU bits include MAC/IP/TCP bytes and repeated
+copies on retransmission.
+
+The four derived station fields are:
+
+```text
+average_theoretical_phy_rate_mbps =
+  sum(nominal_rate_bps * ppdu_airtime_seconds)
+  / sum(ppdu_airtime_seconds)
+  / 1,000,000
+
+average_practical_phy_rate_mbps =
+  sum(qualifying_psdu_bits)
+  / sum(ppdu_airtime_seconds)
+  / 1,000,000
+
+channel_efficiency =
+  average_practical_phy_rate_mbps
+  / average_theoretical_phy_rate_mbps
+
+contention_fraction =
+  union_edca_waiting_time / statistics_window_duration
+```
+
+EDCA waiting includes AIFS, backoff countdown, and frozen backoff while at
+least one queue is pending. Concurrent access categories are unioned, so
+`contention_fraction` stays in `[0, 1]`. Application-layer received-byte rates
+are not inputs to these equations or exported benchmark columns.
+
+The AP record is a station-derived BSS aggregate. For the configured STAs in
+one BSS:
+
+```text
+avg_all_sta_theoretical_phy_rate_mbps =
+  mean(defined STA average_theoretical_phy_rate_mbps values)
+
+avg_all_sta_practical_phy_rate_mbps =
+  mean(defined STA average_practical_phy_rate_mbps values)
+
+bss_channel_efficiency =
+  avg_all_sta_practical_phy_rate_mbps
+  / avg_all_sta_theoretical_phy_rate_mbps
+
+bss_channel_contention_fraction =
+  mean(all configured STA contention_fraction values)
+```
+
+No AP-originated PPDU or AP contention is used. In a short window, a STA with
+contention but no qualifying PPDU has null theoretical rate, practical rate,
+and efficiency; it is excluded from the rate means but still contributes its
+contention value. An entity with neither PPDU nor contention activity is
+absent from that sparse window, and a completely inactive window is absent.
+The dense `overall` section contains all configured STAs and requires every
+overall station rate and efficiency to be non-null. Overall values are rebuilt
+from raw accumulators rather than averages of rounded windows.
+
+### JSON contract
+
+Each direct run writes one exclusive, two-space-indented JSON file with the
+existing seven-field root order. The starter configuration and matrix runner
+name it `output.json`:
+
+```text
+schema_version
+measurement_semantics
+statistics_window_ms
+windows
+overall
+validation
+experiment_metadata
+```
+
+Every window and `overall` AP/STA `phy_stats` object begins with:
+
+```text
+average_theoretical_phy_rate_mbps
+average_practical_phy_rate_mbps
+channel_efficiency
+contention_fraction
+```
+
+For a STA these fields describe that station's transmissions; for an AP they
+hold the station-derived BSS formulas above. The other shared category fields
+remain present with their default zero/null shapes. With the standard 10 ms
+window and saturated traffic, a valid direct audit contains 100 windows,
+three APs, and `3 * sta_count_per_bss` STAs. Configuration is recorded below
+`experiment_metadata.configuration`, the dense identity list is below
+`experiment_metadata.entity_inventory`, and all eight shared `validation`
+flags must be `true`.
+
+### Configuration and commands
+
+The complete starter configuration is
+[`config/saturated_tcp_config.toml`](config/saturated_tcp_config.toml). The
+one-run executable accepts compiled defaults, then TOML, then section-prefixed
+CLI overrides. The sections are `general`, `script`, `simulation`,
+`benchmark`, `wifi`, `tcp`, `statistics`, and `logging`. Its matrix
+coordinates are:
+
+| Field | Fixed runner values |
+|---|---|
+| `sta_count_per_bss` | 5, 10, 15, 20, 25, 30 |
+| `rssi_range` | `high`, `medium`, `low` |
+| `interference_mode` | `isolated`, `ap_only_cochannel` |
+| `traffic_mode` | `ul`, `dl`, `ul_dl` |
+| `mimo_mode` | `su` only |
+| `script.repetitions` | Positive attempt count; default 1 |
+
+The C++ executable records `script.repetitions` as metadata but still performs
+exactly one run; only the Python runner loops over attempts. If
+`general.run_folder` is omitted, a direct run exclusively creates
+`run/saturated_tcp_<timestamp>`; an explicit folder is used as the exact
+destination. The JSON filename is never overwritten. A direct run accepts
+from 1 through 30 STAs per BSS, while the runner uses only the six listed
+counts. `statistics.window_ms` must be positive and divide 1000 exactly.
+
+Run commands from the outer ns-3 root:
+
+```bash
+./ns3 run "saturated-tcp-scenario --config contrib/llm/config/saturated_tcp_config.toml"
+python3 contrib/llm/exp_scripts/saturated_tcp_experiment.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s contrib/llm/exp_scripts/tests -t contrib/llm/exp_scripts -p 'test_*.py' -v
+```
+
+The first command runs the default 5-STA, high-RSSI, isolated, UL, SU case.
+The second runs the complete sequential matrix. The runner fixes
+`rng_seed = 12345` and sets `rng_run` to the repetition-attempt number.
+Repetitions are retained as separate results and are never averaged.
+
+With the default single repetition, the honest SU-only matrix is exactly:
+
+```text
+6 STA counts * 3 RSSI ranges * 2 interference modes * 3 traffic modes * 1 SU mode
+  = 108 ns-3 runs
+108 runs * 3 BSS rows = 324 CSV rows
+```
+
+### Runner output, retention, and fixed Excel CSV
+
+The runner executes one ns-3 process at a time in stable matrix order and
+creates a new outer run tree without overwriting existing paths:
+
+```text
+run/scripted_exp_<timestamp>/
+|-- results.csv
+|-- experiment_001/
+|   `-- attempt_1/
+|       |-- output.json
+|       |-- stdout.log
+|       `-- stderr.log
+|-- experiment_002/
+|   `-- attempt_1/
+|       |-- output.json
+|       |-- stdout.log
+|       `-- stderr.log
+`-- ...
+```
+
+Every JSON is validated before exactly three BSS rows are appended. A process,
+timeout, path, metadata, schema, inventory, formula, range, or validation-flag
+failure stops the matrix immediately. The failed attempt contributes no CSV
+rows. `results.csv`, completed attempt JSON files, and all attempt logs remain
+for audit; the runner does not delete successful or failed evidence.
+
+There is exactly one CSV with exactly 133 fixed columns: nine identity
+columns, four BSS columns, and four columns for each station index 0 through
+29. Their order is:
+
+```text
+experiment_id
+repetition_attempt
+sta_count_per_bss
+rssi_range
+target_rssi_dbm
+interference_mode
+traffic_mode
+mimo_mode
+bss_id
+
+avg_all_sta_theoretical_phy_rate_mbps
+avg_all_sta_practical_phy_rate_mbps
+bss_channel_efficiency
+bss_channel_contention_fraction
+
+for each i = 0, ..., 29:
+  sta_i_avg_theoretical_phy_rate_mbps
+  sta_i_avg_practical_phy_rate_mbps
+  sta_i_efficiency
+  sta_i_contention_fraction
+```
+
+In that pattern, the decimal value of `i` is substituted literally in
+ascending order, so the first block starts with
+`sta_0_avg_theoretical_phy_rate_mbps` and the last starts with
+`sta_29_avg_theoretical_phy_rate_mbps`; no literal `sta_i` column exists.
+
+One row is one BSS in one repetition attempt, uniquely identified by
+`experiment_id + repetition_attempt + bss_id`. Station columns whose index is
+not present in that configuration are empty. There are no extra diagnostic
+columns; detailed diagnostics remain in each retained JSON.
+
+For direct Microsoft Excel opening, the CSV contract is semicolon delimiters,
+UTF-8 with BOM, CRLF line endings, decimal dots, and standard double-quote
+escaping.
+
 ## IEEE 802.11 review
 
 ### What is correctly modeled/configured
@@ -935,7 +1234,7 @@ git lfs pull
   --enable-warnings \
   --enable-werror
 
-./ns3 build llm-test llm-scenario
+./ns3 build llm-test llm-scenario saturated-tcp-scenario
 ```
 
 ### Run a small example
@@ -1165,18 +1464,32 @@ ordering, `AppTxTag`, readiness timing and fatal invariants, typed TOML/CLI
 configuration, safe run paths, topology choices, and statistics
 attribution/JSON.
 
-### Registered example smoke test
+### Registered example smoke tests
 
 The example requires `--config`, so select its registered parameterized entry
 with a wildcard:
 
 ```bash
 ./test.py -e 'llm-scenario*'
+./test.py -e 'saturated-tcp-scenario*'
 ```
 
 Running `./test.py -e llm-scenario` without `*` invokes the executable without
 the registered arguments; it reports the missing configuration and prints
-usage.
+usage. The saturated entry runs a deterministic one-STA direct audit, checks
+its JSON, and removes only that smoke output.
+
+### Saturated benchmark runner tests
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s contrib/llm/exp_scripts/tests -t contrib/llm/exp_scripts -p 'test_*.py' -v
+```
+
+These tests cover the exact 108-configuration order, repetition/RNG mapping,
+strict JSON validation, formula reconstruction, fail-fast process ownership,
+retained paths, and the fixed Excel CSV contract without running the expensive
+real matrix.
 
 ### Streaming-script tests
 
@@ -1212,15 +1525,23 @@ the debugger.
 ```text
 contrib/llm/
 |-- CMakeLists.txt                    Central library and C++ test inventory
-|-- config/llm_config.toml            Complete documented scenario configuration
+|-- config/
+|   |-- llm_config.toml               Complete trace-replay configuration
+|   `-- saturated_tcp_config.toml     Complete saturated benchmark configuration
 |-- examples/
-|   |-- CMakeLists.txt                Central llm-scenario source inventory
+|   |-- CMakeLists.txt                Central example source inventory
 |   |-- llm-scenario.cc               Main executable orchestration
+|   |-- saturated-tcp-scenario.cc     One-run saturated benchmark orchestration
+|   |-- saturated-tcp/                Benchmark config, topology, traffic, and metrics
 |   |-- config/                       TOML/CLI, validation, JSON, and run paths
 |   |-- runtime/                      Logging, topology, and readiness coordination
 |   `-- statistics/
 |       |-- *.cc, *.h                 APP/TCP/MAC/PHY collection and summaries
 |       `-- json/                     Streaming writer and hierarchy serializers
+|-- exp_scripts/
+|   |-- saturated_tcp_experiment.py  Sequential benchmark runner entry point
+|   |-- saturated_tcp_benchmark/     Matrix, runner, validation, and CSV modules
+|   `-- tests/                        Deterministic benchmark-runner tests
 |-- model/
 |   |-- applications/                 Generators, sink, schedule, and AppTxTag
 |   |-- distribution/                 Agent data and placement algorithms
@@ -1241,6 +1562,7 @@ contrib/llm/
 |   |   |-- distribution/             Distribution-domain C++ suites
 |   |   `-- traces/                   Trace-domain C++ suites
 |   |-- runtime/                      Runtime-domain C++ suites
+|   |-- saturated-tcp/                Saturated benchmark C++ and smoke tests
 |   |-- statistics/                   Statistics and JSON C++ suites
 |   |-- data/minimal-trace.json       Small deterministic fixture
 |   |-- examples-to-run.py            Registered example invocation
