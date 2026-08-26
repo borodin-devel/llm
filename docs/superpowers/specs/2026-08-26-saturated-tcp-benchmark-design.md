@@ -238,8 +238,13 @@ aborts the run with the BSS, node, target, actual RSSI, and distance.
 
 In `su` mode, an AP may use up to two spatial streams with one 2x2 STA.
 
-If the checked-out ns-3 version supports a meaningful scheduled end-to-end
-MU-MIMO path for this scenario, `mu` is added as a separate mode:
+The checked-out ns-3 `MultiUserScheduler` explicitly states that DL MU-MIMO is
+not yet supported. Its available scheduled UL multi-user path is OFDMA, not
+MU-MIMO. Therefore this implementation exposes `su` only and rejects `mu`
+with a precise unsupported-mode diagnostic.
+
+If a later ns-3 version adds meaningful scheduled end-to-end MU-MIMO, a future
+change may add `mu` as a separate mode with these semantics:
 
 - AP has two total spatial streams;
 - up to two STAs are served simultaneously;
@@ -247,9 +252,8 @@ MU-MIMO path for this scenario, `mu` is added as a separate mode:
 - UL MU is enabled only where the complete trigger/scheduler/PHY path exists;
 - DL and UL behavior are not simulated through artificial concurrency.
 
-If full support is absent or incomplete, the runner exposes only `su`, prints
-the limitation, and the documentation records it. It must not produce a `mu`
-label for an SU or OFDMA-only result.
+The current runner prints and documents the limitation. It must not produce a
+`mu` label for an SU or OFDMA-only result.
 
 ## Saturated TCP traffic
 
@@ -475,7 +479,7 @@ sta_count_per_bss: 5, 10, 15, 20, 25, 30
 rssi_range: high, medium, low
 interference_mode: isolated, ap_only_cochannel
 traffic_mode: ul, dl, ul_dl
-mimo_mode: su, then mu only if supported
+mimo_mode: su
 repetition_attempt: 1 through script.repetitions
 ```
 
@@ -505,7 +509,8 @@ With SU only and the default one repetition:
 108 * 3 BSS rows = 324 CSV rows
 ```
 
-Meaningful MU support doubles both counts.
+The current ns-3 capability does not add a second MIMO mode, so the honest
+default matrix is exactly 108 runs and 324 rows.
 
 ## Runner behavior and retained files
 
@@ -624,7 +629,7 @@ Focused tests cover:
 - exact matrix ordering and count;
 - stable experiment IDs;
 - attempt-to-RNG mapping;
-- SU-only and supported-MU mode lists;
+- SU-only mode list and precise rejection of unsupported `mu`;
 - exact ns-3 command construction;
 - sequential fail-fast execution;
 - retained directory paths;
