@@ -68,3 +68,48 @@ The real trace matrix was intentionally not rerun because this follow-up is
 limited to runner timeout cleanup. No `llm-trace-live.*` temporary directory
 or Python cache remains. The preserved outer artifact still has SHA-256
 `bc62df0060a4b7be9b7d4b841c69a64753f34a65f5cdf1df4ddb779ba8703b2a`.
+
+## Fix round 1: identifier reuse
+
+Review identified two check-then-signal reuse hazards. The process-group grace
+loop discarded an observed-absent result and probed the same numeric PGID
+again before SIGKILL. The regression injects the sequence `False, True` and
+requires exactly one probe and only the initial SIGTERM. Against `4c7bfa0`, it
+observed two probes and TERM plus KILL.
+
+The test-only failure cleanup also signaled a numeric PID before checking that
+it was still the grandchild. New regressions inject a changed `/proc` identity
+and an already-absent process; both require zero signal calls. Against
+`4c7bfa0`, both paths called SIGKILL, and the mismatch path did not raise.
+
+The focused RED run reported all intended observations:
+
+```text
+Ran 3 tests in 0.003s
+FAILED (failures=5)
+```
+
+The production loop now retains `group_exists` across iterations. Once a
+probe reports absence, that PGID is never probed or signaled again. SIGKILL is
+sent only when the last observation remains present at the grace deadline.
+
+The test cleanup now captures `(pid, starttime)` from field 22 of
+`/proc/<pid>/stat`, re-reads that identity before signaling, treats absence as
+success, and raises on mismatch without signaling. Its helper seam injects
+identity reads and signals for deterministic safety tests. The post-signal
+wait also follows the captured identity instead of numeric PID existence.
+
+Fix-round verification:
+
+```text
+python3 -m py_compile ...                         exit 0
+LiveTraceRunnerTest                             12/12 passed
+live_test_traces.py --self-test                 43/43 passed
+check-style-clang-format.py                     no issues
+git diff --check                                no issues
+./ns3 build llm-test llm_sample                 exit 0
+./test.py -s llm                                1/1 passed
+./test.py -e 'llm_sample*'                      1/1 passed
+```
+
+Both real grandchild cases remain green. The real trace matrix was not rerun.

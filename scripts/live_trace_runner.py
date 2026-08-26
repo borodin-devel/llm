@@ -47,12 +47,14 @@ def _terminate_process_group(process, timeout_output):
     except subprocess.TimeoutExpired as term_error:
         communication_timed_out = True
         stdout = term_error.stdout
-    while _process_group_exists(process):
+    group_exists = _process_group_exists(process)
+    while group_exists:
         remaining = grace_deadline - time.monotonic()
         if remaining <= 0:
             break
         time.sleep(min(0.01, remaining))
-    if _process_group_exists(process):
+        group_exists = _process_group_exists(process)
+    if group_exists:
         _signal_process_group(process, signal.SIGKILL)
     if communication_timed_out:
         drained_stdout, _ = process.communicate()

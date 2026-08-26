@@ -11,7 +11,9 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
+import live_trace_runner
 from live_trace_common import (
     POLICY, LiveTraceError, build_llm_command, reject_legacy_console,
     validate_policy_coverage,
@@ -30,13 +32,41 @@ class _FakeProcess:
         return self.stdout, None
 
 
-def _kill_test_process(process_id):
+def _read_test_process_identity(process_id):
     try:
-        os.kill(process_id, signal.SIGKILL)
+        stat_text = Path(f"/proc/{process_id}/stat").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    _, separator, stat_fields = stat_text.rpartition(") ")
+    fields = stat_fields.split()
+    if not separator or len(fields) <= 19:
+        raise RuntimeError(f"cannot read process identity for PID {process_id}")
+    return process_id, int(fields[19])
+
+
+def _kill_test_process(
+    process_identity,
+    *,
+    identity_reader=_read_test_process_identity,
+    signal_process=os.kill,
+):
+    if process_identity is None:
+        return
+    process_id, _ = process_identity
+    current_identity = identity_reader(process_id)
+    if current_identity is None:
+        return
+    if current_identity != process_identity:
+        raise RuntimeError(f"process identity changed for PID {process_id}")
+    try:
+        signal_process(process_id, signal.SIGKILL)
     except ProcessLookupError:
         return
     deadline = time.monotonic() + 1.0
-    while Path(f"/proc/{process_id}").exists() and time.monotonic() < deadline:
+    while (
+        identity_reader(process_id) == process_identity
+        and time.monotonic() < deadline
+    ):
         time.sleep(0.01)
 
 
@@ -80,6 +110,44 @@ class LiveTraceRunnerTest(unittest.TestCase):
     def test_rejects_legacy_console_marker(self):
         with self.assertRaisesRegex(LiveTraceError, "Final per-second"):
             reject_legacy_console("prefix [Final per-second] row", self.source)
+
+    def test_timeout_never_reprobes_group_after_observing_absence(self):
+        process = _FakeProcess(["command"], -signal.SIGTERM, "output")
+        with (
+            mock.patch.object(live_trace_runner, "TERM_GRACE_SECONDS", 0),
+            mock.patch.object(
+                live_trace_runner, "_process_group_exists", side_effect=(False, True)
+            ) as group_exists,
+            mock.patch.object(live_trace_runner, "_signal_process_group") as signal_group,
+        ):
+            live_trace_runner._terminate_process_group(process, "timeout output")
+        with self.subTest("probe count"):
+            self.assertEqual(group_exists.call_count, 1)
+        with self.subTest("signals"):
+            signal_group.assert_called_once_with(process, signal.SIGTERM)
+
+    def test_cleanup_refuses_reused_pid_without_signaling(self):
+        process_identity = (123, 456)
+        identity_reader = mock.Mock(return_value=(123, 789))
+        signal_process = mock.Mock()
+        with self.subTest("identity mismatch"):
+            with self.assertRaisesRegex(RuntimeError, "identity changed"):
+                _kill_test_process(
+                    process_identity,
+                    identity_reader=identity_reader,
+                    signal_process=signal_process,
+                )
+        with self.subTest("no signal"):
+            signal_process.assert_not_called()
+
+    def test_cleanup_accepts_absent_process_without_signaling(self):
+        signal_process = mock.Mock()
+        _kill_test_process(
+            (123, 456),
+            identity_reader=mock.Mock(return_value=None),
+            signal_process=signal_process,
+        )
+        signal_process.assert_not_called()
 
     def test_cleans_up_after_command_failure(self):
         self._assert_run_failure_cleans(parse_failure=False)
@@ -223,6 +291,7 @@ class LiveTraceRunnerTest(unittest.TestCase):
             self.assertLess(elapsed, 0.8, "timeout cleanup did not return promptly")
             self.assertTrue(pid_path.exists(), "grandchild did not start")
             grandchild_pid = int(pid_path.read_text(encoding="utf-8"))
+            grandchild_identity = _read_test_process_identity(grandchild_pid)
             try:
                 time.sleep(0.6)
                 with self.subTest("survival marker"):
@@ -240,4 +309,4 @@ class LiveTraceRunnerTest(unittest.TestCase):
                         status_path.exists(), "grandchild was not reaped after timeout"
                     )
             finally:
-                _kill_test_process(grandchild_pid)
+                _kill_test_process(grandchild_identity)
