@@ -22,6 +22,28 @@ AccessTrackingStaWifiMac::GetTypeId()
     return tid;
 }
 
+std::vector<AccessGrantStartNs>
+AccessTrackingStaWifiMac::GetActiveTxopStartTimes() const
+{
+    std::vector<AccessGrantStartNs> starts;
+    for (const auto ac : {AC_BE, AC_BK, AC_VI, AC_VO})
+    {
+        const auto txop = GetQosTxop(ac);
+        if (!txop)
+        {
+            continue;
+        }
+        for (const auto linkId : GetLinkIds())
+        {
+            if (const auto start = txop->GetTxopStartTime(linkId))
+            {
+                starts.push_back({ac, linkId, start->GetNanoSeconds()});
+            }
+        }
+    }
+    return starts;
+}
+
 void
 AccessTrackingStaWifiMac::NotifyRequestAccess(Ptr<Txop> txop, uint8_t linkId)
 {

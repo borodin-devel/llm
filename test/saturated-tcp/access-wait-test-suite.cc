@@ -3,14 +3,18 @@
 #include "../llm-test-suite.h"
 
 #include "ns3/boolean.h"
+#include "ns3/channel-access-manager.h"
 #include "ns3/default-power-save-manager.h"
 #include "ns3/enum.h"
 #include "ns3/pointer.h"
 #include "ns3/qos-txop.h"
+#include "ns3/simulator.h"
 #include "ns3/txop.h"
 
 #include <array>
 #include <cstdint>
+#include <map>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -94,6 +98,67 @@ void
 AccessTrackingStaWifiMacProbe::InvokeNotifyRequestAccess(Ptr<Txop> txop, uint8_t linkId)
 {
     NotifyRequestAccess(txop, linkId);
+}
+
+/** QoS channel access function with test-controlled active TXOP starts. */
+class ControlledStartQosTxop : public QosTxop
+{
+  public:
+    /**
+     * Get the object TypeId.
+     *
+     * @return The object TypeId.
+     */
+    static TypeId GetTypeId();
+
+    /**
+     * Set the reported TXOP start on one link.
+     *
+     * @param linkId Link identifier.
+     * @param startTime Active TXOP start, or no value when inactive.
+     */
+    void SetReportedTxopStartTime(uint8_t linkId, std::optional<Time> startTime);
+
+    std::optional<Time> GetTxopStartTime(uint8_t linkId) const override;
+
+  private:
+    std::map<uint8_t, Time> m_startTimes; ///< Test-controlled active starts by link.
+};
+
+NS_OBJECT_ENSURE_REGISTERED(ControlledStartQosTxop);
+
+TypeId
+ControlledStartQosTxop::GetTypeId()
+{
+    static TypeId tid = TypeId("ns3::ControlledStartQosTxop")
+                            .SetParent<QosTxop>()
+                            .AddConstructor<ControlledStartQosTxop>()
+                            .HideFromDocumentation();
+    return tid;
+}
+
+void
+ControlledStartQosTxop::SetReportedTxopStartTime(uint8_t linkId, std::optional<Time> startTime)
+{
+    if (startTime)
+    {
+        m_startTimes.insert_or_assign(linkId, *startTime);
+    }
+    else
+    {
+        m_startTimes.erase(linkId);
+    }
+}
+
+std::optional<Time>
+ControlledStartQosTxop::GetTxopStartTime(uint8_t linkId) const
+{
+    const auto start = m_startTimes.find(linkId);
+    if (start == m_startTimes.end())
+    {
+        return std::nullopt;
+    }
+    return start->second;
 }
 
 /** Verify trace arguments, event cardinality, and base STA forwarding. */
@@ -296,6 +361,117 @@ AccessWaitClippingTestCase::DoRun()
     }
 }
 
+/** Verify an active grant is reconciled before a release-delayed TXOP trace. */
+class AccessWaitDelayedReleaseTestCase : public TestCase
+{
+  public:
+    /** Construct the delayed-release regression test. */
+    AccessWaitDelayedReleaseTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+AccessWaitDelayedReleaseTestCase::AccessWaitDelayedReleaseTestCase()
+    : TestCase("saturated TCP active TXOP before delayed release trace")
+{
+}
+
+void
+AccessWaitDelayedReleaseTestCase::DoRun()
+{
+    const auto makeQosTxop = [](AcIndex ac) {
+        return CreateObjectWithAttributes<ControlledStartQosTxop>("AcIndex", EnumValue(ac));
+    };
+    const auto be = makeQosTxop(AC_BE);
+    auto mac =
+        CreateObjectWithAttributes<AccessTrackingStaWifiMacProbe>("QosSupported",
+                                                                  BooleanValue(true),
+                                                                  "BE_Txop",
+                                                                  PointerValue(be),
+                                                                  "BK_Txop",
+                                                                  PointerValue(makeQosTxop(AC_BK)),
+                                                                  "VI_Txop",
+                                                                  PointerValue(makeQosTxop(AC_VI)),
+                                                                  "VO_Txop",
+                                                                  PointerValue(makeQosTxop(AC_VO)));
+    mac->SetChannelAccessManagers({CreateObject<ChannelAccessManager>()});
+
+    AccessWaitTracker tracker(0, 1000);
+    Simulator::Schedule(NanoSeconds(800), [&tracker] {
+        tracker.NotifyRequest(AC_BE, 0, Simulator::Now().GetNanoSeconds());
+    });
+    Simulator::Schedule(NanoSeconds(900),
+                        [be] { be->SetReportedTxopStartTime(0, Simulator::Now()); });
+    Simulator::Schedule(NanoSeconds(1000),
+                        [&tracker, mac] { tracker.Finalize(mac->GetActiveTxopStartTimes()); });
+    Simulator::Schedule(NanoSeconds(1100), [&tracker, be] {
+        be->SetReportedTxopStartTime(0, std::nullopt);
+        tracker.NotifyGrant(AC_BE, 0, NanoSeconds(900).GetNanoSeconds());
+    });
+    Simulator::Run();
+
+    const auto& intervals = tracker.GetUnionIntervals();
+    NS_TEST_ASSERT_MSG_EQ(intervals.size(), 1, "Delayed release produced the wrong interval count");
+    NS_TEST_ASSERT_MSG_EQ(intervals[0].startNs, 800, "Delayed release changed the request time");
+    NS_TEST_ASSERT_MSG_EQ(intervals[0].endNs,
+                          900,
+                          "Delayed release extended waiting through measurement finalization");
+    mac->Dispose();
+    Simulator::Destroy();
+}
+
+/** Verify every concurrently active access category is reconciled. */
+class AccessWaitMultipleActiveAcTestCase : public TestCase
+{
+  public:
+    /** Construct the multiple-active-AC regression test. */
+    AccessWaitMultipleActiveAcTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+AccessWaitMultipleActiveAcTestCase::AccessWaitMultipleActiveAcTestCase()
+    : TestCase("saturated TCP multiple active TXOP reconciliation")
+{
+}
+
+void
+AccessWaitMultipleActiveAcTestCase::DoRun()
+{
+    const auto makeQosTxop = [](AcIndex ac) {
+        return CreateObjectWithAttributes<ControlledStartQosTxop>("AcIndex", EnumValue(ac));
+    };
+    const auto be = makeQosTxop(AC_BE);
+    const auto vi = makeQosTxop(AC_VI);
+    auto mac =
+        CreateObjectWithAttributes<AccessTrackingStaWifiMacProbe>("QosSupported",
+                                                                  BooleanValue(true),
+                                                                  "BE_Txop",
+                                                                  PointerValue(be),
+                                                                  "BK_Txop",
+                                                                  PointerValue(makeQosTxop(AC_BK)),
+                                                                  "VI_Txop",
+                                                                  PointerValue(vi),
+                                                                  "VO_Txop",
+                                                                  PointerValue(makeQosTxop(AC_VO)));
+    mac->SetChannelAccessManagers({CreateObject<ChannelAccessManager>()});
+
+    AccessWaitTracker tracker(0, 1000);
+    tracker.NotifyRequest(AC_BE, 0, 800);
+    tracker.NotifyRequest(AC_VI, 0, 825);
+    be->SetReportedTxopStartTime(0, NanoSeconds(900));
+    vi->SetReportedTxopStartTime(0, NanoSeconds(950));
+    tracker.Finalize(mac->GetActiveTxopStartTimes());
+
+    const auto& intervals = tracker.GetUnionIntervals();
+    NS_TEST_ASSERT_MSG_EQ(intervals.size(), 1, "Active access categories were not unioned");
+    NS_TEST_ASSERT_MSG_EQ(intervals[0].startNs, 800, "Wrong multiple-AC union start");
+    NS_TEST_ASSERT_MSG_EQ(intervals[0].endNs, 950, "Not every active access category was closed");
+    mac->Dispose();
+}
+
 } // namespace
 
 std::vector<TestCase*>
@@ -305,5 +481,7 @@ CreateSaturatedTcpAccessWaitTestCases()
         new AccessTrackingStaWifiMacTestCase(),
         new AccessWaitUnionTestCase(),
         new AccessWaitClippingTestCase(),
+        new AccessWaitDelayedReleaseTestCase(),
+        new AccessWaitMultipleActiveAcTestCase(),
     };
 }

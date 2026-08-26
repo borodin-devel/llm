@@ -30,11 +30,15 @@ AccessWaitTracker::NotifyGrant(uint8_t ac, uint8_t linkId, int64_t grantStartNs)
 }
 
 void
-AccessWaitTracker::Finalize()
+AccessWaitTracker::Finalize(const std::vector<AccessGrantStartNs>& activeGrantStarts)
 {
     if (m_finalized)
     {
         return;
+    }
+    for (const auto& grant : activeGrantStarts)
+    {
+        NotifyGrant(grant.ac, grant.linkId, grant.startNs);
     }
     for (const auto& [key, requestTimeNs] : m_pendingRequests)
     {

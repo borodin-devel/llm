@@ -16,6 +16,14 @@ struct AccessWaitIntervalNs
     int64_t endNs;   ///< Exclusive interval end in nanoseconds.
 };
 
+/** Historical channel-access grant start in nanoseconds. */
+struct AccessGrantStartNs
+{
+    uint8_t ac;      ///< Access category.
+    uint8_t linkId;  ///< Link identifier.
+    int64_t startNs; ///< Historical access-grant start in nanoseconds.
+};
+
 /** Collect and union station channel-access waiting intervals. */
 class AccessWaitTracker
 {
@@ -46,8 +54,12 @@ class AccessWaitTracker
      */
     void NotifyGrant(uint8_t ac, uint8_t linkId, int64_t grantStartNs);
 
-    /** Close pending requests at the measurement end and build the interval union. */
-    void Finalize();
+    /**
+     * Reconcile active grants, close remaining requests, and build the interval union.
+     *
+     * @param activeGrantStarts Historical starts for TXOPs active at the measurement end.
+     */
+    void Finalize(const std::vector<AccessGrantStartNs>& activeGrantStarts = {});
 
     /**
      * Get finalized waiting intervals clipped to the measurement epoch.
