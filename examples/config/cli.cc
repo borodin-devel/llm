@@ -1,4 +1,4 @@
-#include "scenario-config-internal.h"
+#include "internal.h"
 #include "scenario-config.h"
 
 #include <algorithm>

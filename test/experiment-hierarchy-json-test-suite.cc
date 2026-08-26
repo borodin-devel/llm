@@ -1,5 +1,5 @@
 #include "../examples/experiment-window-output.h"
-#include "../examples/scenario-config.h"
+#include "../examples/config/scenario-config.h"
 #include "../examples/statistics/json/writer.h"
 #include "llm-test-suite.h"
 

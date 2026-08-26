@@ -2,15 +2,15 @@ build_lib_example(
   NAME llm_sample
   SOURCE_FILES
     sample-scenario.cc
-    scenario-config.cc
-    scenario-config-json.cc
-    scenario-config-validation.cc
-    scenario-config-cli.cc
-    scenario-config-toml.cc
-    scenario-run-path.cc
-    scenario-log.cc
-    scenario-topology.cc
-    traffic-coordinator.cc
+    config/scenario-config.cc
+    config/json.cc
+    config/validation.cc
+    config/cli.cc
+    config/toml.cc
+    config/run-path.cc
+    runtime/log.cc
+    runtime/topology.cc
+    runtime/traffic-coordinator.cc
     experiment-json.cc
     experiment-statistics-owner.cc
     experiment-statistics-window.cc

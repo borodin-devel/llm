@@ -1,6 +1,6 @@
 #include "experiment-statistics-internal.h"
 #include "experiment-statistics.h"
-#include "traffic-coordinator.h"
+#include "runtime/traffic-coordinator.h"
 
 #include "ns3/abort.h"
 #include "ns3/wifi-net-device.h"

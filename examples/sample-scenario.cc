@@ -5,10 +5,10 @@
 //
 
 #include "experiment-statistics.h"
-#include "scenario-config.h"
-#include "scenario-log.h"
-#include "scenario-topology.h"
-#include "traffic-coordinator.h"
+#include "config/scenario-config.h"
+#include "runtime/log.h"
+#include "runtime/topology.h"
+#include "runtime/traffic-coordinator.h"
 
 #include "ns3/contention-aware-agent-distribution.h"
 #include "ns3/core-module.h"

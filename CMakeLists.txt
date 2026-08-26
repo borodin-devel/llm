@@ -56,13 +56,13 @@ set(test_sources
     test/model/distribution/agent-distribution-test-suite.cc
     # Model traces
     test/model/traces/trace-parser-test-suite.cc
-    test/traffic-coordinator-test-suite.cc
-    test/scenario-config-test-suite.cc
-    test/scenario-config-json-test-suite.cc
-    test/scenario-config-validation-test-suite.cc
-    test/scenario-logging-test-suite.cc
-    test/scenario-run-path-test-suite.cc
-    test/scenario-topology-test-suite.cc
+    test/config/scenario-config-test-suite.cc
+    test/config/scenario-config-json-test-suite.cc
+    test/config/scenario-config-validation-test-suite.cc
+    test/config/scenario-run-path-test-suite.cc
+    test/runtime/scenario-logging-test-suite.cc
+    test/runtime/scenario-topology-test-suite.cc
+    test/runtime/traffic-coordinator-test-suite.cc
     test/experiment-json-test-suite.cc
     test/experiment-hierarchy-json-test-suite.cc
     test/experiment-window-test-suite.cc
@@ -72,15 +72,15 @@ set(test_sources
     test/experiment-phy-test-suite.cc
     test/experiment-summary-test-suite.cc
     test/experiment-validation-test-suite.cc
-    examples/scenario-log.cc
-    examples/scenario-config.cc
-    examples/scenario-config-json.cc
-    examples/scenario-config-validation.cc
-    examples/scenario-config-cli.cc
-    examples/scenario-config-toml.cc
-    examples/scenario-run-path.cc
-    examples/scenario-topology.cc
-    examples/traffic-coordinator.cc
+    examples/config/scenario-config.cc
+    examples/config/json.cc
+    examples/config/validation.cc
+    examples/config/cli.cc
+    examples/config/toml.cc
+    examples/config/run-path.cc
+    examples/runtime/log.cc
+    examples/runtime/topology.cc
+    examples/runtime/traffic-coordinator.cc
     examples/experiment-json.cc
     examples/experiment-statistics-owner.cc
     examples/experiment-statistics-window.cc

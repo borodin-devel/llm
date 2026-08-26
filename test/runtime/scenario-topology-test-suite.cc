@@ -1,5 +1,5 @@
-#include "../examples/scenario-topology.h"
-#include "llm-test-suite.h"
+#include "../../examples/runtime/topology.h"
+#include "../llm-test-suite.h"
 
 #include <vector>
 

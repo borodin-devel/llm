@@ -1,6 +1,6 @@
 #include "scenario-config.h"
 
-#include "scenario-config-internal.h"
+#include "internal.h"
 
 #include <charconv>
 #include <ostream>

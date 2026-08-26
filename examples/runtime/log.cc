@@ -1,4 +1,4 @@
-#include "scenario-log.h"
+#include "log.h"
 
 namespace ns3::llm_example
 {

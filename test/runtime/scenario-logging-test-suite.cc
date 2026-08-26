@@ -1,5 +1,5 @@
-#include "../examples/scenario-config.h"
-#include "llm-test-suite.h"
+#include "../../examples/config/scenario-config.h"
+#include "../llm-test-suite.h"
 
 #include <array>
 #include <string>

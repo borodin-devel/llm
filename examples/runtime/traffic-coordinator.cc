@@ -1,6 +1,6 @@
 #include "traffic-coordinator.h"
 
-#include "scenario-log.h"
+#include "log.h"
 
 #include "ns3/ap-generator.h"
 #include "ns3/application.h"

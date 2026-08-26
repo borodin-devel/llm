@@ -1,7 +1,7 @@
 #ifndef SCENARIO_TOPOLOGY_H
 #define SCENARIO_TOPOLOGY_H
 
-#include "scenario-config.h"
+#include "../config/scenario-config.h"
 
 #include "ns3/address.h"
 #include "ns3/agent-data.h"

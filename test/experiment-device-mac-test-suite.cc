@@ -1,5 +1,5 @@
 #include "../examples/experiment-statistics-internal.h"
-#include "../examples/traffic-coordinator.h"
+#include "../examples/runtime/traffic-coordinator.h"
 #include "llm-test-suite.h"
 
 #include "ns3/ap-generator.h"

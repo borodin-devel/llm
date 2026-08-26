@@ -1,5 +1,5 @@
-#include "../examples/traffic-coordinator.h"
-#include "llm-test-suite.h"
+#include "../../examples/runtime/traffic-coordinator.h"
+#include "../llm-test-suite.h"
 
 #include <cstdio>
 #include <cstdlib>

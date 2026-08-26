@@ -1,5 +1,5 @@
 #include "experiment-statistics-internal.h"
-#include "traffic-coordinator.h"
+#include "runtime/traffic-coordinator.h"
 
 #include "ns3/app-tx-tag.h"
 #include "ns3/simulator.h"

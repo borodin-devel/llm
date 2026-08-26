@@ -1,6 +1,6 @@
-#include "../examples/scenario-config-internal.h"
-#include "../examples/statistics/json/writer.h"
-#include "llm-test-suite.h"
+#include "../../examples/config/internal.h"
+#include "../../examples/statistics/json/writer.h"
+#include "../llm-test-suite.h"
 
 #include "ns3/json.hpp"
 

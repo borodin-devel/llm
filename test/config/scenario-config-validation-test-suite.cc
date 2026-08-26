@@ -1,5 +1,5 @@
-#include "../examples/scenario-config.h"
-#include "llm-test-suite.h"
+#include "../../examples/config/scenario-config.h"
+#include "../llm-test-suite.h"
 
 #include "ns3/log.h"
 #include "ns3/type-id.h"

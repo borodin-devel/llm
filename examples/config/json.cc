@@ -1,4 +1,4 @@
-#include "scenario-config-internal.h"
+#include "internal.h"
 
 namespace ns3
 {
