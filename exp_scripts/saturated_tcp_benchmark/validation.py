@@ -6,7 +6,9 @@ from dataclasses import dataclass
 import ipaddress
 import json
 import math
+import os
 from pathlib import Path
+import stat
 from typing import NoReturn
 
 from .csv_output import BssCsvRow, StationCsvMetrics
@@ -111,6 +113,7 @@ _PHY_KEYS = (
     "downlink",
 )
 _METRIC_TOLERANCE = 1e-9
+_UINT32_MAX = (1 << 32) - 1
 
 
 class OutputValidationError(ValueError):
@@ -158,9 +161,15 @@ def _is_number(value: object) -> bool:
 
 
 def _finite_number(value: object, source_path: str | Path, json_path: str) -> float:
-    if not _is_number(value) or not math.isfinite(value):
-        _fail(source_path, json_path, "expected a finite number")
-    return float(value)
+    if not _is_number(value):
+        _fail(source_path, json_path, "expected a finite representable number")
+    try:
+        converted = float(value)
+    except (OverflowError, ValueError):
+        _fail(source_path, json_path, "expected a finite representable number")
+    if not math.isfinite(converted):
+        _fail(source_path, json_path, "expected a finite representable number")
+    return converted
 
 
 def _nonnegative_integer(value: object, source_path: str | Path, json_path: str) -> int:
@@ -174,6 +183,20 @@ def _positive_integer(value: object, source_path: str | Path, json_path: str) ->
     if result == 0:
         _fail(source_path, json_path, "expected a positive integer")
     return result
+
+
+def _uint32_integer(
+    value: object,
+    source_path: str | Path,
+    json_path: str,
+    *,
+    positive: bool = False,
+) -> int:
+    lower_bound = 1 if positive else 0
+    if type(value) is not int or not lower_bound <= value <= _UINT32_MAX:
+        interval = f"[{lower_bound}, {_UINT32_MAX}]"
+        _fail(source_path, json_path, f"expected an exact uint32 integer in {interval}")
+    return value
 
 
 def _nearly_equal(left: float, right: float) -> bool:
@@ -195,7 +218,12 @@ def _json_equal(left: object, right: object, *, strict_scalar_types: bool = Fals
     if strict_scalar_types and type(left) is not type(right):
         return False
     if _is_number(left) and _is_number(right):
-        return math.isfinite(left) and math.isfinite(right) and left == right
+        try:
+            left_float = float(left)
+            right_float = float(right)
+        except (OverflowError, ValueError):
+            return False
+        return math.isfinite(left_float) and math.isfinite(right_float) and left == right
     return type(left) is type(right) and left == right
 
 
@@ -317,10 +345,11 @@ def _default_expected_configuration(
             "$.experiment_metadata.configuration.general.run_folder",
             "expected a nonempty run folder string",
         )
-    repetitions = _positive_integer(
+    repetitions = _uint32_integer(
         actual["script"]["repetitions"],
         source_path,
         "$.experiment_metadata.configuration.script.repetitions",
+        positive=True,
     )
     return {
         "general": {"output_name": "output.json", "run_folder": run_folder},
@@ -393,16 +422,22 @@ def _validate_inventory_identity(
     ipv4_addresses: set[str],
 ) -> dict[str, object]:
     record = _expect_keys(identity, expected_keys, source_path, json_path)
-    if record["access_point_id"] != expected_bss_id or isinstance(
-        record["access_point_id"], bool
-    ):
+    access_point_id = _uint32_integer(
+        record["access_point_id"],
+        source_path,
+        f"{json_path}.access_point_id",
+    )
+    if access_point_id != expected_bss_id:
         _fail(source_path, json_path, "inventory order or access_point_id is invalid")
-    if expected_station_index is not None and (
-        record["station_index"] != expected_station_index
-        or isinstance(record["station_index"], bool)
-    ):
-        _fail(source_path, json_path, "inventory station order or index is invalid")
-    node_id = _nonnegative_integer(record["node_id"], source_path, f"{json_path}.node_id")
+    if expected_station_index is not None:
+        station_index = _uint32_integer(
+            record["station_index"],
+            source_path,
+            f"{json_path}.station_index",
+        )
+        if station_index != expected_station_index:
+            _fail(source_path, json_path, "inventory station order or index is invalid")
+    node_id = _uint32_integer(record["node_id"], source_path, f"{json_path}.node_id")
     if node_id in node_ids:
         _fail(source_path, f"{json_path}.node_id", "duplicate inventory node ID")
     node_ids.add(node_id)
@@ -496,6 +531,9 @@ def _validate_entity_shape(
     json_path: str,
 ) -> dict[str, object]:
     record = _expect_keys(entity, identity_keys + _CATEGORY_KEYS, source_path, json_path)
+    for key in ("access_point_id", "station_index", "node_id"):
+        if key in identity_keys:
+            _uint32_integer(record[key], source_path, f"{json_path}.{key}")
     for key in identity_keys:
         if not _json_equal(record[key], identity[key], strict_scalar_types=True):
             _fail(source_path, f"{json_path}.{key}", "entity identity does not match inventory")
@@ -635,6 +673,19 @@ def _mean(values: list[float]) -> float | None:
     return sum(values) / len(values) if values else None
 
 
+def _require_sparse_activity(
+    metrics: _MetricValues,
+    source_path: str | Path,
+    json_path: str,
+) -> None:
+    if metrics.theoretical is None and metrics.contention <= 0.0:
+        _fail(
+            source_path,
+            json_path,
+            "inert sparse entity has neither a defined theoretical rate nor positive contention",
+        )
+
+
 def _validate_ap_formula(
     actual: _MetricValues,
     stations: list[_MetricValues],
@@ -728,7 +779,17 @@ def _validate_windows(
             station_path = f"{window_path}.stations[{station_position}]"
             if type(station_value) is not dict:
                 _fail(source_path, station_path, "expected a station object")
-            key = (station_value.get("access_point_id"), station_value.get("station_index"))
+            access_point_id = _uint32_integer(
+                station_value.get("access_point_id"),
+                source_path,
+                f"{station_path}.access_point_id",
+            )
+            station_index = _uint32_integer(
+                station_value.get("station_index"),
+                source_path,
+                f"{station_path}.station_index",
+            )
+            key = (access_point_id, station_index)
             if key not in station_inventory:
                 _fail(source_path, station_path, "station identity is absent from inventory")
             station_keys.append(key)
@@ -745,6 +806,7 @@ def _validate_windows(
                 source_path=source_path,
                 json_path=station_path,
             )
+            _require_sparse_activity(metrics, source_path, station_path)
             metrics_by_bss.setdefault(key[0], []).append(metrics)
             metrics_by_station.setdefault(key, []).append((duration, metrics))
         if station_keys != sorted(set(station_keys)):
@@ -758,9 +820,15 @@ def _validate_windows(
         observed_ap_ids = []
         for ap_position, ap_value in enumerate(access_points):
             ap_path = f"{window_path}.access_points[{ap_position}]"
-            if type(ap_value) is not dict or ap_value.get("access_point_id") not in ap_inventory:
+            if type(ap_value) is not dict:
+                _fail(source_path, ap_path, "expected an AP object")
+            bss_id = _uint32_integer(
+                ap_value.get("access_point_id"),
+                source_path,
+                f"{ap_path}.access_point_id",
+            )
+            if bss_id not in ap_inventory:
                 _fail(source_path, ap_path, "AP identity is absent from inventory")
-            bss_id = ap_value["access_point_id"]
             observed_ap_ids.append(bss_id)
             entity = _validate_entity_shape(
                 ap_value,
@@ -775,6 +843,7 @@ def _validate_windows(
                 source_path=source_path,
                 json_path=ap_path,
             )
+            _require_sparse_activity(metrics, source_path, ap_path)
             _validate_ap_formula(
                 metrics,
                 metrics_by_bss[bss_id],
@@ -990,10 +1059,11 @@ def validate_output_document(
             "$.experiment_metadata.configuration.general.run_folder",
             "expected nonempty string",
         )
-    _positive_integer(
+    _uint32_integer(
         actual_configuration["script"]["repetitions"],
         source_path,
         "$.experiment_metadata.configuration.script.repetitions",
+        positive=True,
     )
     if actual_configuration["simulation"] != {"rng_seed": 12345, "rng_run": repetition_attempt}:
         _fail(
@@ -1064,8 +1134,18 @@ def load_output_document(
     def reject_constant(value: str) -> NoReturn:
         raise OutputValidationError(f"{path}: non-standard JSON number {value}")
 
+    descriptor = -1
     try:
-        with path.open("r", encoding="utf-8") as input_file:
+        path_status = path.lstat()
+        if stat.S_ISLNK(path_status.st_mode):
+            raise OutputValidationError(f"{path}: output JSON is a symlink")
+        if not stat.S_ISREG(path_status.st_mode):
+            raise OutputValidationError(f"{path}: output JSON is not a regular file")
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OutputValidationError(f"{path}: output JSON is not a regular file")
+        with os.fdopen(descriptor, "r", encoding="utf-8") as input_file:
+            descriptor = -1
             document = json.load(
                 input_file,
                 object_pairs_hook=reject_duplicate_keys,
@@ -1075,6 +1155,9 @@ def load_output_document(
         raise
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise OutputValidationError(f"{path}: cannot parse output JSON: {error}") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     return validate_output_document(
         document,
         configuration,

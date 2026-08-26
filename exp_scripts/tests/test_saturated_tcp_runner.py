@@ -5,12 +5,19 @@ from __future__ import annotations
 import csv
 from io import StringIO
 import json
+import os
 from pathlib import Path
 import shlex
+import signal
+import stat
 import subprocess
+import sys
 from tempfile import TemporaryDirectory
+import time
 import unittest
+from unittest import mock
 
+from saturated_tcp_benchmark import runner
 from saturated_tcp_benchmark.matrix import ExperimentConfiguration, build_matrix
 from saturated_tcp_benchmark.runner import (
     PROCESS_TIMEOUT_SECONDS,
@@ -26,6 +33,96 @@ from tests.test_saturated_tcp_validation import make_output_document
 
 OUTER_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_CONFIG = OUTER_ROOT / "contrib/llm/config/saturated_tcp_config.toml"
+
+
+class _FakeProcess:
+    """Small Popen-compatible process with deterministic wait effects."""
+
+    def __init__(self, returncode: int = 0, *, wait_effects=(), on_reap=None) -> None:
+        self.pid = 999999999
+        self.returncode = None
+        self._final_returncode = returncode
+        self._wait_effects = list(wait_effects)
+        self._on_reap = on_reap
+
+    def wait(self, timeout=None):
+        if self._wait_effects:
+            effect = self._wait_effects.pop(0)
+            if isinstance(effect, BaseException):
+                raise effect
+        self.returncode = self._final_returncode
+        if self._on_reap is not None:
+            callback, self._on_reap = self._on_reap, None
+            callback()
+        return self.returncode
+
+
+class _InterruptingProcess:
+    """Real process wrapper that injects one SIGINT-equivalent wait interruption."""
+
+    def __init__(self, process: subprocess.Popen) -> None:
+        self._process = process
+        self.pid = process.pid
+        self.returncode = None
+        self._interrupted = False
+
+    def wait(self, timeout=None):
+        if not self._interrupted:
+            self._interrupted = True
+            raise KeyboardInterrupt
+        result = self._process.wait(timeout=timeout)
+        self.returncode = result
+        return result
+
+    def kill(self) -> None:
+        self._process.kill()
+
+
+def _read_test_process_identity(process_id: int):
+    try:
+        stat_text = Path(f"/proc/{process_id}/stat").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    _, separator, stat_fields = stat_text.rpartition(") ")
+    fields = stat_fields.split()
+    if not separator or len(fields) <= 19:
+        raise RuntimeError(f"cannot read process identity for PID {process_id}")
+    return process_id, int(fields[19])
+
+
+def _stored_test_process_identity(identity_path: Path) -> tuple[int, int]:
+    fields = identity_path.read_text(encoding="utf-8").split()
+    if len(fields) != 2:
+        raise RuntimeError(f"invalid stored process identity in {identity_path}")
+    return int(fields[0]), int(fields[1])
+
+
+def _cleanup_test_process(identity_path: Path) -> None:
+    if not identity_path.exists():
+        return
+    identity = _stored_test_process_identity(identity_path)
+    current = _read_test_process_identity(identity[0])
+    if current is None:
+        return
+    if current != identity:
+        raise RuntimeError(f"process identity changed for PID {identity[0]}")
+    try:
+        os.kill(identity[0], signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + 1.0
+    while _read_test_process_identity(identity[0]) == identity and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+def _assert_test_process_reaped(test: unittest.TestCase, identity: tuple[int, int]) -> None:
+    status_path = Path(f"/proc/{identity[0]}/stat")
+    deadline = time.monotonic() + 1.0
+    while _read_test_process_identity(identity[0]) == identity and time.monotonic() < deadline:
+        state = status_path.read_text(encoding="utf-8").rpartition(") ")[2].split()[0]
+        test.assertEqual(state, "Z", "descendant remains live after process-group cleanup")
+        time.sleep(0.01)
+    test.assertNotEqual(_read_test_process_identity(identity[0]), identity)
 
 
 def create_fake_ns3_root(directory: str) -> Path:
@@ -64,22 +161,43 @@ def read_csv(path: Path) -> list[list[str]]:
 class SaturatedTcpRunnerTest(unittest.TestCase):
     """Protect exact commands, sequential publication, failure, and retention."""
 
+    def _assert_popen_kwargs(self, kwargs, root: Path) -> None:
+        self.assertEqual(kwargs["cwd"], root)
+        self.assertIs(kwargs["start_new_session"], True)
+        self.assertNotIn("timeout", kwargs)
+        self.assertNotIn("capture_output", kwargs)
+        self.assertNotIn("text", kwargs)
+        self.assertNotEqual(kwargs["stdout"], subprocess.PIPE)
+        self.assertNotEqual(kwargs["stderr"], subprocess.PIPE)
+        self.assertTrue(stat.S_ISREG(os.fstat(kwargs["stdout"].fileno()).st_mode))
+        self.assertTrue(stat.S_ISREG(os.fstat(kwargs["stderr"].fileno()).st_mode))
+        self.assertTrue(str(kwargs["stdout"].name).endswith("stdout.log"))
+        self.assertTrue(str(kwargs["stderr"].name).endswith("stderr.log"))
+
     def test_discovers_outer_root_and_default_one_repetition(self) -> None:
         self.assertEqual(discover_ns3_root(), OUTER_ROOT)
         loaded = load_runner_configuration(DEFAULT_CONFIG)
         self.assertEqual(loaded.repetitions, 1)
         self.assertEqual(loaded.effective_configuration["script"]["repetitions"], 1)
 
-    def test_repetition_parser_rejects_nonpositive_and_boolean_values(self) -> None:
+    def test_repetition_parser_enforces_exact_uint32_range(self) -> None:
         original = DEFAULT_CONFIG.read_text(encoding="utf-8")
-        for value in ("0", "-1", "true"):
+        with TemporaryDirectory() as directory:
+            maximum_path = Path(directory) / "maximum.toml"
+            maximum_path.write_text(
+                original.replace("repetitions = 1", "repetitions = 4294967295"),
+                encoding="utf-8",
+            )
+            self.assertEqual(load_runner_configuration(maximum_path).repetitions, 4294967295)
+
+        for value in ("0", "-1", "true", "4294967296"):
             with self.subTest(value=value), TemporaryDirectory() as directory:
                 config_path = Path(directory) / "config.toml"
                 config_path.write_text(
                     original.replace("repetitions = 1", f"repetitions = {value}"),
                     encoding="utf-8",
                 )
-                with self.assertRaisesRegex(RunnerError, "script.repetitions"):
+                with self.assertRaisesRegex(RunnerError, "script.repetitions.*uint32"):
                     load_runner_configuration(config_path)
 
     def test_builds_exact_ns3_command_and_deterministic_paths(self) -> None:
@@ -144,36 +262,36 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                 self.assertEqual(active, 0)
                 active += 1
                 maximum_active = max(maximum_active, active)
-                try:
-                    call_index = len(calls)
-                    configuration = configurations[call_index]
-                    attempt_directory = (
-                        run_directory
-                        / f"experiment_{configuration.experiment_id:03d}"
-                        / "attempt_1"
-                    )
-                    if call_index == 1:
-                        self.assertEqual(len(read_csv(run_directory / "results.csv")), 4)
-                    self.assertEqual(kwargs["cwd"], root)
-                    self.assertEqual(kwargs["timeout"], 600)
-                    self.assertIs(kwargs["capture_output"], True)
-                    self.assertIs(kwargs["text"], True)
-                    calls.append((command, kwargs))
-                    write_valid_output(
-                        attempt_directory / "output.json",
-                        configuration,
-                        attempt_directory,
-                    )
-                    return subprocess.CompletedProcess(command, 0, "child stdout", "")
-                finally:
-                    active -= 1
+                call_index = len(calls)
+                configuration = configurations[call_index]
+                attempt_directory = (
+                    run_directory
+                    / f"experiment_{configuration.experiment_id:03d}"
+                    / "attempt_1"
+                )
+                if call_index == 1:
+                    self.assertEqual(len(read_csv(run_directory / "results.csv")), 4)
+                self._assert_popen_kwargs(kwargs, root)
+                calls.append((command, kwargs))
+                kwargs["stdout"].write(b"child stdout\n")
+                kwargs["stderr"].write(b"child stderr\n")
+                write_valid_output(
+                    attempt_directory / "output.json",
+                    configuration,
+                    attempt_directory,
+                )
+                return _FakeProcess(on_reap=lambda: active_setter(0))
+
+            def active_setter(value):
+                nonlocal active
+                active = value
 
             result = run_benchmark(
                 ns3_root=root,
                 config_path=DEFAULT_CONFIG,
                 timestamp=timestamp,
                 configurations=configurations,
-                process_runner=fake_process,
+                process_factory=fake_process,
                 output=StringIO(),
             )
 
@@ -187,6 +305,15 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                     / f"experiment_{configuration.experiment_id:03d}/attempt_1/output.json"
                 )
                 self.assertTrue(output_path.is_file())
+                attempt_directory = output_path.parent
+                self.assertEqual(
+                    (attempt_directory / "stdout.log").read_text(encoding="utf-8"),
+                    "child stdout\n",
+                )
+                self.assertEqual(
+                    (attempt_directory / "stderr.log").read_text(encoding="utf-8"),
+                    "child stderr\n",
+                )
             self.assertEqual(list(run_directory.rglob("*.csv")), [run_directory / "results.csv"])
 
     def test_process_failures_stop_with_no_rows_for_failed_attempt(self) -> None:
@@ -201,16 +328,27 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                 )
 
                 def fake_process(command, **kwargs):
-                    self.assertEqual(kwargs["timeout"], PROCESS_TIMEOUT_SECONDS)
+                    self._assert_popen_kwargs(kwargs, root)
                     if case == "nonzero":
-                        return subprocess.CompletedProcess(command, 9, "out text", "err text")
+                        kwargs["stdout"].write(
+                            b"BEGIN_SHOULD_NOT_APPEAR" + b"x" * 10000 + b"out text\n"
+                        )
+                        kwargs["stderr"].write(b"y" * 10000 + b"err text\n")
+                        return _FakeProcess(9)
                     if case == "timeout":
-                        raise subprocess.TimeoutExpired(
-                            command, kwargs["timeout"], "slow out", "slow err"
+                        kwargs["stdout"].write(b"slow out\n")
+                        kwargs["stderr"].write(b"slow err\n")
+                        return _FakeProcess(
+                            -signal.SIGTERM,
+                            wait_effects=(
+                                subprocess.TimeoutExpired(
+                                    command, PROCESS_TIMEOUT_SECONDS
+                                ),
+                            ),
                         )
                     if case == "invalid":
                         (attempt_directory / "output.json").write_text("{}", encoding="utf-8")
-                    return subprocess.CompletedProcess(command, 0, "", "")
+                    return _FakeProcess(0)
 
                 with self.assertRaises(RunnerError) as caught:
                     run_benchmark(
@@ -218,7 +356,7 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                         config_path=DEFAULT_CONFIG,
                         timestamp=timestamp,
                         configurations=(configuration,),
-                        process_runner=fake_process,
+                        process_factory=fake_process,
                         output=StringIO(),
                     )
                 rows = read_csv(root / "run" / f"scripted_exp_{timestamp}/results.csv")
@@ -226,10 +364,13 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                 if case == "nonzero":
                     self.assertIn("out text", str(caught.exception))
                     self.assertIn("err text", str(caught.exception))
+                    self.assertNotIn("BEGIN_SHOULD_NOT_APPEAR", str(caught.exception))
                 if case == "invalid":
                     self.assertTrue((attempt_directory / "output.json").is_file())
                 else:
                     self.assertFalse((attempt_directory / "output.json").exists())
+                self.assertTrue((attempt_directory / "stdout.log").is_file())
+                self.assertTrue((attempt_directory / "stderr.log").is_file())
 
     def test_completed_rows_and_every_created_json_survive_later_failure(self) -> None:
         configurations = build_matrix()[:3]
@@ -242,6 +383,7 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
             def fake_process(command, **kwargs):
                 nonlocal calls
                 calls += 1
+                self._assert_popen_kwargs(kwargs, root)
                 configuration = configurations[calls - 1]
                 attempt_directory = (
                     run_directory
@@ -250,9 +392,11 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                 output_path = attempt_directory / "output.json"
                 if calls == 1:
                     write_valid_output(output_path, configuration, attempt_directory)
-                    return subprocess.CompletedProcess(command, 0, "", "")
+                    return _FakeProcess(0)
                 output_path.write_text('{"failed_attempt":true}', encoding="utf-8")
-                return subprocess.CompletedProcess(command, 3, "second out", "second err")
+                kwargs["stdout"].write(b"second out\n")
+                kwargs["stderr"].write(b"second err\n")
+                return _FakeProcess(3)
 
             with self.assertRaisesRegex(RunnerError, "return code 3"):
                 run_benchmark(
@@ -260,7 +404,7 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                     config_path=DEFAULT_CONFIG,
                     timestamp=timestamp,
                     configurations=configurations,
-                    process_runner=fake_process,
+                    process_factory=fake_process,
                     output=StringIO(),
                 )
             self.assertEqual(calls, 2)
@@ -291,7 +435,7 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                     config_path=DEFAULT_CONFIG,
                     timestamp="collision",
                     configurations=(configuration,),
-                    process_runner=unexpected_process,
+                    process_factory=unexpected_process,
                     output=StringIO(),
                 )
             self.assertEqual(calls, 0)
@@ -305,6 +449,7 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
             def colliding_process(command, **kwargs):
                 nonlocal calls
                 calls += 1
+                self._assert_popen_kwargs(kwargs, root)
                 first_attempt = run_directory / "experiment_001/attempt_1"
                 write_valid_output(
                     first_attempt / "output.json",
@@ -315,7 +460,7 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                 future_attempt = run_directory / "experiment_001/attempt_2"
                 future_attempt.mkdir()
                 (future_attempt / "sentinel.txt").write_text("keep", encoding="ascii")
-                return subprocess.CompletedProcess(command, 0, "", "")
+                return _FakeProcess(0)
 
             repeated_config = Path(directory) / "repeated.toml"
             repeated_config.write_text(
@@ -330,7 +475,7 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                     config_path=repeated_config,
                     timestamp="attempt_collision",
                     configurations=(configuration,),
-                    process_runner=colliding_process,
+                    process_factory=colliding_process,
                     output=StringIO(),
                 )
             self.assertEqual(calls, 1)
@@ -342,6 +487,236 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
             )
             self.assertEqual(len(read_csv(run_directory / "results.csv")), 4)
 
+    def test_rejects_symlink_outer_run_directory_without_following_it(self) -> None:
+        configuration = build_matrix()[0]
+        with TemporaryDirectory() as directory, TemporaryDirectory() as outside_directory:
+            root = create_fake_ns3_root(directory)
+            outside = Path(outside_directory)
+            (root / "run").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(RunnerError, "run.*symlink|symlink.*run"):
+                run_benchmark(
+                    ns3_root=root,
+                    config_path=DEFAULT_CONFIG,
+                    timestamp="run_symlink",
+                    configurations=(configuration,),
+                    process_factory=lambda *args, **kwargs: self.fail("process started"),
+                    output=StringIO(),
+                )
+            self.assertEqual(list(outside.iterdir()), [])
+
+    def test_rejects_output_symlink_to_outside_attempt(self) -> None:
+        configuration = build_matrix()[0]
+        with TemporaryDirectory() as directory, TemporaryDirectory() as outside_directory:
+            root = create_fake_ns3_root(directory)
+            run_directory = root / "run/scripted_exp_output_symlink"
+            attempt_directory = run_directory / "experiment_001/attempt_1"
+            outside_output = Path(outside_directory) / "outside.json"
+
+            def symlink_output(command, **kwargs):
+                self._assert_popen_kwargs(kwargs, root)
+                write_valid_output(outside_output, configuration, attempt_directory)
+                (attempt_directory / "output.json").symlink_to(outside_output)
+                return _FakeProcess(0)
+
+            with self.assertRaisesRegex(RunnerError, "output.*symlink|regular.*output"):
+                run_benchmark(
+                    ns3_root=root,
+                    config_path=DEFAULT_CONFIG,
+                    timestamp="output_symlink",
+                    configurations=(configuration,),
+                    process_factory=symlink_output,
+                    output=StringIO(),
+                )
+            self.assertTrue(outside_output.is_file())
+            self.assertEqual(len(read_csv(run_directory / "results.csv")), 1)
+
+    def test_rejects_attempt_directory_replaced_outside_containment(self) -> None:
+        configuration = build_matrix()[0]
+        with TemporaryDirectory() as directory, TemporaryDirectory() as outside_directory:
+            root = create_fake_ns3_root(directory)
+            run_directory = root / "run/scripted_exp_replaced_attempt"
+            attempt_directory = run_directory / "experiment_001/attempt_1"
+            displaced_attempt = run_directory / "experiment_001/displaced_attempt"
+            outside = Path(outside_directory)
+
+            def replace_attempt(command, **kwargs):
+                self._assert_popen_kwargs(kwargs, root)
+                attempt_directory.rename(displaced_attempt)
+                attempt_directory.symlink_to(outside, target_is_directory=True)
+                write_valid_output(
+                    outside / "output.json",
+                    configuration,
+                    attempt_directory,
+                )
+                return _FakeProcess(0)
+
+            with self.assertRaisesRegex(RunnerError, "attempt.*symlink|outside.*containment"):
+                run_benchmark(
+                    ns3_root=root,
+                    config_path=DEFAULT_CONFIG,
+                    timestamp="replaced_attempt",
+                    configurations=(configuration,),
+                    process_factory=replace_attempt,
+                    output=StringIO(),
+                )
+            self.assertTrue((outside / "output.json").is_file())
+            self.assertEqual(len(read_csv(run_directory / "results.csv")), 1)
+
+    def test_timeout_never_reprobes_group_after_observing_absence(self) -> None:
+        process = _FakeProcess(-signal.SIGTERM)
+        with (
+            mock.patch.object(runner, "TERM_GRACE_SECONDS", 0),
+            mock.patch.object(
+                runner, "_process_group_exists", side_effect=(False, True)
+            ) as group_exists,
+            mock.patch.object(runner, "_signal_process_group") as signal_group,
+        ):
+            runner._terminate_process_group(process, process.pid)
+        self.assertEqual(group_exists.call_count, 1)
+        signal_group.assert_called_once_with(process.pid, signal.SIGTERM)
+
+    def test_timeout_kills_term_ignoring_process_tree(self) -> None:
+        with TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            identity_path = temporary / "grandchild.identity"
+            marker_path = temporary / "survived.marker"
+            grandchild = (
+                "import os,signal,time,pathlib;"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+                "fields=pathlib.Path('/proc/self/stat').read_text().rpartition(') ')[2].split();"
+                f"pathlib.Path({str(identity_path)!r}).write_text("
+                "str(os.getpid())+' '+fields[19]);"
+                "time.sleep(0.6);"
+                f"pathlib.Path({str(marker_path)!r}).write_text('survived');"
+                "time.sleep(30)"
+            )
+            parent = (
+                "import subprocess,sys,time;"
+                f"subprocess.Popen([sys.executable, '-c', {grandchild!r}]);"
+                "time.sleep(30)"
+            )
+            stdout_path = temporary / "stdout.log"
+            stderr_path = temporary / "stderr.log"
+            started = time.monotonic()
+            try:
+                with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
+                    with self.assertRaisesRegex(RunnerError, "timed out"):
+                        runner._run_process(
+                            subprocess.Popen,
+                            [sys.executable, "-c", parent],
+                            temporary,
+                            stdout,
+                            stderr,
+                            0.1,
+                        )
+                self.assertLess(time.monotonic() - started, 1.0)
+                self.assertTrue(identity_path.exists(), "grandchild did not start")
+                time.sleep(0.65)
+                self.assertFalse(marker_path.exists(), "grandchild survived timeout")
+                _assert_test_process_reaped(
+                    self, _stored_test_process_identity(identity_path)
+                )
+            finally:
+                _cleanup_test_process(identity_path)
+
+    def test_wrapper_exit_kills_term_ignoring_child_after_logs_close(self) -> None:
+        with TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            identity_path = temporary / "grandchild.identity"
+            marker_path = temporary / "survived.marker"
+            grandchild = (
+                "import os,signal,time,pathlib;"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+                "fields=pathlib.Path('/proc/self/stat').read_text().rpartition(') ')[2].split();"
+                f"pathlib.Path({str(identity_path)!r}).write_text("
+                "str(os.getpid())+' '+fields[19]);"
+                "time.sleep(0.6);"
+                f"pathlib.Path({str(marker_path)!r}).write_text('survived');"
+                "time.sleep(30)"
+            )
+            parent = (
+                "import pathlib,subprocess,sys,time;"
+                f"subprocess.Popen([sys.executable, '-c', {grandchild!r}],"
+                "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);"
+                f"identity=pathlib.Path({str(identity_path)!r});"
+                "deadline=time.monotonic()+1;"
+                "exec('while not identity.exists() and time.monotonic() < deadline:\\n "
+                "time.sleep(0.01)')"
+            )
+            stdout_path = temporary / "stdout.log"
+            stderr_path = temporary / "stderr.log"
+            started = time.monotonic()
+            try:
+                with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
+                    with self.assertRaisesRegex(RunnerError, "descendant"):
+                        runner._run_process(
+                            subprocess.Popen,
+                            [sys.executable, "-c", parent],
+                            temporary,
+                            stdout,
+                            stderr,
+                            2.0,
+                        )
+                self.assertLess(time.monotonic() - started, 1.0)
+                self.assertTrue(identity_path.exists(), "grandchild did not start")
+                time.sleep(0.65)
+                self.assertFalse(marker_path.exists(), "grandchild survived wrapper exit")
+                _assert_test_process_reaped(
+                    self, _stored_test_process_identity(identity_path)
+                )
+            finally:
+                _cleanup_test_process(identity_path)
+
+    def test_sigint_kills_real_term_ignoring_process_tree(self) -> None:
+        with TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            identity_path = temporary / "grandchild.identity"
+            marker_path = temporary / "survived.marker"
+            grandchild = (
+                "import os,signal,time,pathlib;"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+                "fields=pathlib.Path('/proc/self/stat').read_text().rpartition(') ')[2].split();"
+                f"pathlib.Path({str(identity_path)!r}).write_text("
+                "str(os.getpid())+' '+fields[19]);"
+                "time.sleep(0.6);"
+                f"pathlib.Path({str(marker_path)!r}).write_text('survived');"
+                "time.sleep(30)"
+            )
+            parent = (
+                "import subprocess,sys,time;"
+                f"subprocess.Popen([sys.executable, '-c', {grandchild!r}]);"
+                "time.sleep(30)"
+            )
+
+            def interrupting_factory(command, **kwargs):
+                process = subprocess.Popen(command, **kwargs)
+                deadline = time.monotonic() + 1.0
+                while not identity_path.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                return _InterruptingProcess(process)
+
+            stdout_path = temporary / "stdout.log"
+            stderr_path = temporary / "stderr.log"
+            try:
+                with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
+                    with self.assertRaises(KeyboardInterrupt):
+                        runner._run_process(
+                            interrupting_factory,
+                            [sys.executable, "-c", parent],
+                            temporary,
+                            stdout,
+                            stderr,
+                            2.0,
+                        )
+                self.assertTrue(identity_path.exists(), "grandchild did not start")
+                time.sleep(0.65)
+                self.assertFalse(marker_path.exists(), "grandchild survived SIGINT cleanup")
+                _assert_test_process_reaped(
+                    self, _stored_test_process_identity(identity_path)
+                )
+            finally:
+                _cleanup_test_process(identity_path)
+
     def test_unsupported_mu_stops_before_creating_output(self) -> None:
         mu_configuration = ExperimentConfiguration(1, 5, "high", "isolated", "ul", "mu")
         with TemporaryDirectory() as directory:
@@ -352,7 +727,7 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                     config_path=DEFAULT_CONFIG,
                     timestamp="mu",
                     configurations=(mu_configuration,),
-                    process_runner=lambda *args, **kwargs: self.fail("process started"),
+                    process_factory=lambda *args, **kwargs: self.fail("process started"),
                     output=StringIO(),
                 )
             self.assertFalse((root / "run/scripted_exp_mu").exists())
@@ -363,11 +738,15 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
             error = StringIO()
 
             def interrupt_process(command, **kwargs):
-                raise KeyboardInterrupt
+                self._assert_popen_kwargs(kwargs, root)
+                return _FakeProcess(
+                    -signal.SIGTERM,
+                    wait_effects=(KeyboardInterrupt(),),
+                )
 
             status = main(
                 ["--ns3-root", str(root), "--config", str(DEFAULT_CONFIG)],
-                process_runner=interrupt_process,
+                process_factory=interrupt_process,
                 timestamp_factory=lambda: "interrupt",
                 output=StringIO(),
                 error=error,

@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Iterable, Sequence
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
+import os
 from pathlib import Path
 import re
+import signal
 import shlex
+import stat
 import subprocess
 import sys
+import time
 import tomllib
-from typing import TextIO
+from typing import BinaryIO, Iterator, TextIO
 
 from .csv_output import ExcelCsvWriter
 from .matrix import (
@@ -30,11 +35,15 @@ from .validation import OutputValidationError, load_output_document
 
 
 PROCESS_TIMEOUT_SECONDS = 600
+TERM_GRACE_SECONDS = 0.2
+KILL_GRACE_SECONDS = 0.2
+DIAGNOSTIC_TAIL_BYTES = 8192
 RNG_SEED = 12345
 OUTPUT_NAME = "output.json"
 DEFAULT_CONFIG_RELATIVE = Path("contrib/llm/config/saturated_tcp_config.toml")
 
 _TIMESTAMP_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+_UINT32_MAX = (1 << 32) - 1
 _CONFIGURATION_KEYS = {
     "general": ("output_name", "run_folder"),
     "script": ("repetitions",),
@@ -160,9 +169,10 @@ def load_runner_configuration(config_path: str | Path) -> RunnerConfiguration:
             effective[section][field] = value
 
     repetitions = effective["script"]["repetitions"]
-    if isinstance(repetitions, bool) or not isinstance(repetitions, int) or repetitions <= 0:
+    if type(repetitions) is not int or not 1 <= repetitions <= _UINT32_MAX:
         raise RunnerError(
-            f"invalid saturated script.repetitions in {path}: expected a positive integer"
+            f"invalid saturated script.repetitions in {path}: expected uint32 in "
+            f"[1, {_UINT32_MAX}]"
         )
     return RunnerConfiguration(repetitions=repetitions, effective_configuration=effective)
 
@@ -253,37 +263,242 @@ def _expected_configuration(
     return expected
 
 
-def _diagnostic_text(value: object) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return str(value)
+def _signal_process_group(process_group_id: int, signal_number: int) -> None:
+    """Signal one stored process group without resolving its leader again."""
+    try:
+        os.killpg(process_group_id, signal_number)
+    except ProcessLookupError:
+        pass
 
 
-def _child_failure(
-    message: str,
+def _process_group_exists(process_group_id: int) -> bool:
+    """Probe one stored process group, treating an empty group as absent."""
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _wait_for_process_group_absence(process_group_id: int, timeout: float) -> bool:
+    """Return whether members remain, never probing again after observing absence."""
+    deadline = time.monotonic() + timeout
+    group_exists = _process_group_exists(process_group_id)
+    while group_exists:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.01, remaining))
+        group_exists = _process_group_exists(process_group_id)
+    return group_exists
+
+
+def _terminate_process_group(process: object, process_group_id: int) -> None:
+    """TERM a dedicated group, KILL survivors, then reap the direct child."""
+    _signal_process_group(process_group_id, signal.SIGTERM)
+    group_exists = _wait_for_process_group_absence(
+        process_group_id, TERM_GRACE_SECONDS
+    )
+    if group_exists:
+        _signal_process_group(process_group_id, signal.SIGKILL)
+        group_exists = _wait_for_process_group_absence(
+            process_group_id, KILL_GRACE_SECONDS
+        )
+    try:
+        process.wait(timeout=KILL_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        if group_exists:
+            _signal_process_group(process_group_id, signal.SIGKILL)
+        else:
+            process.kill()
+        process.wait()
+
+
+def _run_process(
+    process_factory: Callable[..., object],
     command: Sequence[str],
-    stdout: object = None,
-    stderr: object = None,
-) -> RunnerError:
-    details = [message, f"command: {command!r}"]
-    stdout_text = _diagnostic_text(stdout)
-    stderr_text = _diagnostic_text(stderr)
-    if stdout_text:
-        details.append(f"stdout:\n{stdout_text}")
-    if stderr_text:
-        details.append(f"stderr:\n{stderr_text}")
-    return RunnerError("\n".join(details))
+    cwd: Path,
+    stdout: BinaryIO,
+    stderr: BinaryIO,
+    timeout_seconds: float,
+) -> int:
+    """Run one command in a dedicated group and leave no live descendants."""
+    process = process_factory(
+        command,
+        cwd=cwd,
+        stdout=stdout,
+        stderr=stderr,
+        start_new_session=True,
+    )
+    process_group_id = process.pid
+    group_observed_absent = False
+    try:
+        try:
+            return_code = process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as error:
+            _terminate_process_group(process, process_group_id)
+            raise RunnerError(
+                f"benchmark process timed out after {timeout_seconds} seconds"
+            ) from error
+
+        if _process_group_exists(process_group_id):
+            _terminate_process_group(process, process_group_id)
+            raise RunnerError(
+                "benchmark wrapper exited while descendant processes remained"
+            )
+        group_observed_absent = True
+        return return_code
+    except KeyboardInterrupt:
+        if not group_observed_absent:
+            _terminate_process_group(process, process_group_id)
+        raise
 
 
-def _create_directory_exclusively(path: Path, description: str) -> None:
+def _resolved_contained(path: Path, container: Path, description: str) -> Path:
+    try:
+        resolved_path = path.resolve(strict=True)
+        resolved_container = container.resolve(strict=True)
+        resolved_path.relative_to(resolved_container)
+    except (OSError, ValueError) as error:
+        raise RunnerError(
+            f"{description} is outside required containment {container}: {path}"
+        ) from error
+    return resolved_path
+
+
+def _require_directory_no_follow(
+    path: Path,
+    container: Path,
+    description: str,
+) -> None:
+    try:
+        status = path.lstat()
+    except OSError as error:
+        raise RunnerError(f"cannot inspect {description} {path}: {error}") from error
+    if stat.S_ISLNK(status.st_mode):
+        raise RunnerError(f"{description} is a symlink: {path}")
+    if not stat.S_ISDIR(status.st_mode):
+        raise RunnerError(f"{description} is not a directory: {path}")
+    _resolved_contained(path, container, description)
+
+
+def _require_regular_file_no_follow(
+    path: Path,
+    container: Path,
+    description: str,
+) -> None:
+    try:
+        status = path.lstat()
+    except OSError as error:
+        raise RunnerError(f"cannot inspect {description} {path}: {error}") from error
+    if stat.S_ISLNK(status.st_mode):
+        raise RunnerError(f"{description} is a symlink: {path}")
+    if not stat.S_ISREG(status.st_mode):
+        raise RunnerError(f"{description} is not a regular file: {path}")
+    _resolved_contained(path, container, description)
+
+
+def _prepare_run_parent(path: Path, root: Path) -> None:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        try:
+            path.mkdir()
+        except OSError as error:
+            raise RunnerError(f"cannot create benchmark run parent {path}: {error}") from error
+    except OSError as error:
+        raise RunnerError(f"cannot inspect benchmark run parent {path}: {error}") from error
+    _require_directory_no_follow(path, root, "benchmark run parent")
+
+
+def _create_directory_exclusively(
+    path: Path,
+    container: Path,
+    description: str,
+) -> None:
     try:
         path.mkdir()
     except FileExistsError as error:
         raise RunnerError(f"{description} already exists: {path}") from error
     except OSError as error:
         raise RunnerError(f"cannot create {description} {path}: {error}") from error
+    _require_directory_no_follow(path, container, description)
+
+
+def _require_attempt_hierarchy(
+    root: Path,
+    run_parent: Path,
+    run_directory: Path,
+    experiment_directory: Path,
+    attempt_directory: Path,
+) -> None:
+    _require_directory_no_follow(run_parent, root, "benchmark run parent")
+    _require_directory_no_follow(
+        run_directory, run_parent, "benchmark timestamp directory"
+    )
+    _require_directory_no_follow(
+        experiment_directory, run_directory, "experiment directory"
+    )
+    _require_directory_no_follow(
+        attempt_directory, experiment_directory, "attempt directory"
+    )
+
+
+def _nofollow_opener(path: str, flags: int) -> int:
+    return os.open(
+        path,
+        flags | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o644,
+    )
+
+
+@contextmanager
+def _exclusive_regular_log(path: Path) -> Iterator[BinaryIO]:
+    with open(path, "xb", opener=_nofollow_opener) as output:
+        if not stat.S_ISREG(os.fstat(output.fileno()).st_mode):
+            raise RunnerError(f"attempt log is not a regular file: {path}")
+        yield output
+
+
+def _read_log_tail(path: Path) -> str:
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode):
+            raise RunnerError(f"attempt log is not a regular file: {path}")
+        offset = max(0, status.st_size - DIAGNOSTIC_TAIL_BYTES)
+        os.lseek(descriptor, offset, os.SEEK_SET)
+        chunks = []
+        remaining = DIAGNOSTIC_TAIL_BYTES
+        while remaining > 0:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    finally:
+        os.close(descriptor)
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def _child_failure(
+    message: str,
+    command: Sequence[str],
+    stdout_path: Path,
+    stderr_path: Path,
+) -> RunnerError:
+    details = [message, f"command: {command!r}"]
+    for label, path in (("stdout", stdout_path), ("stderr", stderr_path)):
+        try:
+            tail = _read_log_tail(path)
+        except (OSError, RunnerError) as error:
+            details.append(f"{label} tail unavailable: {error}")
+        else:
+            if tail:
+                details.append(
+                    f"{label} tail (last {DIAGNOSTIC_TAIL_BYTES} bytes):\n{tail}"
+                )
+    return RunnerError("\n".join(details))
 
 
 def run_benchmark(
@@ -292,7 +507,7 @@ def run_benchmark(
     config_path: str | Path,
     timestamp: str | None = None,
     configurations: Iterable[ExperimentConfiguration] | None = None,
-    process_runner: Callable[..., object] = subprocess.run,
+    process_factory: Callable[..., object] = subprocess.Popen,
     output: TextIO | None = None,
 ) -> Path:
     """Run configurations sequentially and retain every created artifact."""
@@ -319,14 +534,11 @@ def run_benchmark(
     ):
         raise RunnerError(f"invalid benchmark timestamp component: {timestamp!r}")
     run_parent = root / "run"
-    try:
-        run_parent.mkdir(exist_ok=True)
-    except OSError as error:
-        raise RunnerError(f"cannot prepare benchmark run parent {run_parent}: {error}") from error
-    if not run_parent.is_dir():
-        raise RunnerError(f"benchmark run parent is not a directory: {run_parent}")
+    _prepare_run_parent(run_parent, root)
     run_directory = run_parent / f"scripted_exp_{timestamp}"
-    _create_directory_exclusively(run_directory, "benchmark timestamp directory")
+    _create_directory_exclusively(
+        run_directory, run_parent, "benchmark timestamp directory"
+    )
 
     attempt_count = len(requested) * loaded.repetitions
     completed = 0
@@ -341,17 +553,36 @@ def run_benchmark(
         raise RunnerError(f"cannot create benchmark CSV: {error}") from error
 
     with csv_output:
+        results_path = run_directory / "results.csv"
+        _require_regular_file_no_follow(results_path, run_directory, "benchmark CSV")
         for attempt in iter_experiment_attempts(requested, loaded.repetitions):
             configuration = attempt.configuration
             experiment_directory = run_directory / f"experiment_{configuration.experiment_id:03d}"
             if configuration.experiment_id not in created_experiments:
-                _create_directory_exclusively(experiment_directory, "experiment directory")
+                _create_directory_exclusively(
+                    experiment_directory, run_directory, "experiment directory"
+                )
                 created_experiments.add(configuration.experiment_id)
             attempt_directory = experiment_directory / f"attempt_{attempt.repetition_attempt}"
-            _create_directory_exclusively(attempt_directory, "attempt directory")
+            _create_directory_exclusively(
+                attempt_directory, experiment_directory, "attempt directory"
+            )
+            _require_attempt_hierarchy(
+                root,
+                run_parent,
+                run_directory,
+                experiment_directory,
+                attempt_directory,
+            )
             output_path = attempt_directory / OUTPUT_NAME
-            if output_path.exists():
+            try:
+                output_path.lstat()
+            except FileNotFoundError:
+                pass
+            else:
                 raise RunnerError(f"benchmark output already exists: {output_path}")
+            stdout_path = attempt_directory / "stdout.log"
+            stderr_path = attempt_directory / "stderr.log"
 
             command = build_ns3_command(
                 ns3,
@@ -367,32 +598,70 @@ def run_benchmark(
                 flush=True,
             )
             try:
-                result = process_runner(
-                    command,
-                    cwd=root,
-                    timeout=PROCESS_TIMEOUT_SECONDS,
-                    capture_output=True,
-                    text=True,
+                with (
+                    _exclusive_regular_log(stdout_path) as stdout_log,
+                    _exclusive_regular_log(stderr_path) as stderr_log,
+                ):
+                    return_code = _run_process(
+                        process_factory,
+                        command,
+                        root,
+                        stdout_log,
+                        stderr_log,
+                        PROCESS_TIMEOUT_SECONDS,
+                    )
+            except RunnerError as error:
+                _require_attempt_hierarchy(
+                    root,
+                    run_parent,
+                    run_directory,
+                    experiment_directory,
+                    attempt_directory,
                 )
-            except subprocess.TimeoutExpired as error:
+                _require_regular_file_no_follow(
+                    stdout_path, attempt_directory, "attempt stdout log"
+                )
+                _require_regular_file_no_follow(
+                    stderr_path, attempt_directory, "attempt stderr log"
+                )
                 raise _child_failure(
-                    f"benchmark process timed out after {PROCESS_TIMEOUT_SECONDS} seconds",
+                    str(error),
                     command,
-                    error.stdout,
-                    error.stderr,
+                    stdout_path,
+                    stderr_path,
                 ) from error
-            return_code = getattr(result, "returncode", None)
-            if not isinstance(return_code, int):
-                raise RunnerError("benchmark process runner returned no integer return code")
+
+            _require_attempt_hierarchy(
+                root,
+                run_parent,
+                run_directory,
+                experiment_directory,
+                attempt_directory,
+            )
+            _require_regular_file_no_follow(
+                results_path, run_directory, "benchmark CSV"
+            )
+            _require_regular_file_no_follow(
+                stdout_path, attempt_directory, "attempt stdout log"
+            )
+            _require_regular_file_no_follow(
+                stderr_path, attempt_directory, "attempt stderr log"
+            )
             if return_code != 0:
                 raise _child_failure(
                     f"benchmark process failed with return code {return_code}",
                     command,
-                    getattr(result, "stdout", None),
-                    getattr(result, "stderr", None),
+                    stdout_path,
+                    stderr_path,
                 )
-            if not output_path.is_file():
-                raise RunnerError(f"successful benchmark process did not create {output_path}")
+            try:
+                _require_regular_file_no_follow(
+                    output_path, attempt_directory, "benchmark output"
+                )
+            except RunnerError as error:
+                raise _child_failure(
+                    str(error), command, stdout_path, stderr_path
+                ) from error
 
             expected_configuration = _expected_configuration(
                 loaded,
@@ -408,7 +677,12 @@ def run_benchmark(
                     expected_configuration=expected_configuration,
                 )
             except OutputValidationError as error:
-                raise RunnerError(f"benchmark output validation failed: {error}") from error
+                raise _child_failure(
+                    f"benchmark output validation failed: {error}",
+                    command,
+                    stdout_path,
+                    stderr_path,
+                ) from error
             csv_output.append_attempt(rows)
             completed += 1
 
@@ -438,7 +712,7 @@ def _argument_parser() -> argparse.ArgumentParser:
 def main(
     argv: Sequence[str] | None = None,
     *,
-    process_runner: Callable[..., object] = subprocess.run,
+    process_factory: Callable[..., object] = subprocess.Popen,
     timestamp_factory: Callable[[], str] = _timestamp_now,
     output: TextIO | None = None,
     error: TextIO | None = None,
@@ -453,7 +727,7 @@ def main(
             ns3_root=root,
             config_path=arguments.config,
             timestamp=timestamp_factory(),
-            process_runner=process_runner,
+            process_factory=process_factory,
             output=output,
         )
     except KeyboardInterrupt:

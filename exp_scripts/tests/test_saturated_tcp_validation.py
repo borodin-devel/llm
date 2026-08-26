@@ -334,6 +334,115 @@ class SaturatedTcpValidationTest(unittest.TestCase):
         )
         self.assertEqual(first.stations[5:], (None,) * 25)
 
+    def test_repetitions_are_exact_nonbool_uint32_values(self) -> None:
+        maximum = (1 << 32) - 1
+        valid_document = deepcopy(self.document)
+        valid_expected = deepcopy(self.effective)
+        valid_document["experiment_metadata"]["configuration"]["script"][
+            "repetitions"
+        ] = maximum
+        valid_expected["script"]["repetitions"] = maximum
+        self.assertEqual(
+            len(
+                validate_output_document(
+                    valid_document,
+                    self.configuration,
+                    repetition_attempt=1,
+                    expected_configuration=valid_expected,
+                    source_path="fixture.json",
+                )
+            ),
+            3,
+        )
+
+        for value in (False, 0, -1, 1 << 32):
+            with self.subTest(value=value):
+                document = deepcopy(self.document)
+                expected = deepcopy(self.effective)
+                document["experiment_metadata"]["configuration"]["script"][
+                    "repetitions"
+                ] = value
+                expected["script"]["repetitions"] = value
+                with self.assertRaisesRegex(
+                    OutputValidationError, "repetitions.*uint32|uint32.*repetitions"
+                ):
+                    validate_output_document(
+                        document,
+                        self.configuration,
+                        repetition_attempt=1,
+                        expected_configuration=expected,
+                        source_path="fixture.json",
+                    )
+
+    def test_identity_ids_require_integer_uint32_types_before_matching(self) -> None:
+        floating_ap = deepcopy(self.document)
+        for identity in floating_ap["experiment_metadata"]["entity_inventory"][
+            "access_points"
+        ]:
+            if identity["access_point_id"] == 0:
+                identity["access_point_id"] = 0.0
+        for identity in floating_ap["experiment_metadata"]["entity_inventory"][
+            "stations"
+        ]:
+            if identity["access_point_id"] == 0:
+                identity["access_point_id"] = 0.0
+        for hierarchy in (floating_ap["windows"][0], floating_ap["overall"]):
+            for entity in hierarchy["access_points"] + hierarchy["stations"]:
+                if entity["access_point_id"] == 0:
+                    entity["access_point_id"] = 0.0
+
+        floating_station = deepcopy(self.document)
+        for identity in floating_station["experiment_metadata"]["entity_inventory"][
+            "stations"
+        ]:
+            if identity["station_index"] == 0:
+                identity["station_index"] = 0.0
+        for hierarchy in (floating_station["windows"][0], floating_station["overall"]):
+            for entity in hierarchy["stations"]:
+                if entity["station_index"] == 0:
+                    entity["station_index"] = 0.0
+
+        huge_node = deepcopy(self.document)
+        huge_node_id = 1 << 32
+        huge_node["experiment_metadata"]["entity_inventory"]["access_points"][0][
+            "node_id"
+        ] = huge_node_id
+        huge_node["windows"][0]["access_points"][0]["node_id"] = huge_node_id
+        huge_node["overall"]["access_points"][0]["node_id"] = huge_node_id
+
+        floating_output_id = deepcopy(self.document)
+        floating_output_id["overall"]["stations"][0]["station_index"] = 0.0
+
+        for name, document in (
+            ("floating AP ID", floating_ap),
+            ("floating STA ID", floating_station),
+            ("oversized node ID", huge_node),
+            ("floating output STA ID", floating_output_id),
+        ):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(OutputValidationError, "uint32"):
+                    self.validate(document)
+
+    def test_huge_metric_integer_is_a_validation_error_not_overflow(self) -> None:
+        huge = deepcopy(self.document)
+        huge["overall"]["stations"][0]["phy_stats"][
+            "average_theoretical_phy_rate_mbps"
+        ] = 10**10000
+        with self.assertRaisesRegex(OutputValidationError, "finite|representable"):
+            self.validate(huge)
+
+    def test_sparse_window_rejects_inert_station_and_ap_records(self) -> None:
+        for collection in ("stations", "access_points"):
+            with self.subTest(collection=collection):
+                inert = deepcopy(self.document)
+                phy = inert["windows"][0][collection][0]["phy_stats"]
+                phy["average_theoretical_phy_rate_mbps"] = None
+                phy["average_practical_phy_rate_mbps"] = None
+                phy["channel_efficiency"] = None
+                phy["contention_fraction"] = 0.0
+                with self.assertRaisesRegex(OutputValidationError, "inert|activity"):
+                    self.validate(inert)
+
     def test_exact_root_semantics_metadata_and_flags_are_required(self) -> None:
         mutations = []
         extra_root = deepcopy(self.document)
@@ -477,6 +586,20 @@ class SaturatedTcpValidationTest(unittest.TestCase):
                 expected_configuration=self.effective,
             )
         self.assertEqual(loaded_rows, self.validate())
+
+    def test_loader_does_not_follow_output_symlinks(self) -> None:
+        with TemporaryDirectory() as directory, TemporaryDirectory() as outside_directory:
+            outside_path = Path(outside_directory) / "outside.json"
+            outside_path.write_text(json.dumps(self.document), encoding="utf-8")
+            output_path = Path(directory) / "output.json"
+            output_path.symlink_to(outside_path)
+            with self.assertRaisesRegex(OutputValidationError, "symlink|regular"):
+                load_output_document(
+                    output_path,
+                    self.configuration,
+                    repetition_attempt=1,
+                    expected_configuration=self.effective,
+                )
 
 
 if __name__ == "__main__":
