@@ -28,5 +28,6 @@ std::vector<ns3::TestCase*> CreateScenarioTopologyTestCases();
 std::vector<ns3::TestCase*> CreateSaturatedTcpConfigTestCases();
 std::vector<ns3::TestCase*> CreateSaturatedTcpPropagationTestCases();
 std::vector<ns3::TestCase*> CreateSaturatedTcpAccessWaitTestCases();
+std::vector<ns3::TestCase*> CreateSaturatedTcpStaPhyMetricTestCases();
 
 #endif // LLM_TEST_SUITE_H
