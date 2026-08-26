@@ -1,7 +1,7 @@
-// examples/sample-scenario.cc
+// examples/llm-scenario.cc
 // Configurable ns-3 scenario: 802.11ax infrastructure BSSs with TCP trace replay
 //
-// Usage: ./sample-scenario --config <config.toml> [--section-field <value> ...]
+// Usage: ./llm-scenario --config <config.toml> [--section-field <value> ...]
 //
 
 #include "config/scenario-config.h"

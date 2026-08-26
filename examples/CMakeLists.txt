@@ -1,7 +1,7 @@
 build_lib_example(
-  NAME llm_sample
+  NAME llm-scenario
   SOURCE_FILES
-    sample-scenario.cc
+    llm-scenario.cc
     config/scenario-config.cc
     config/json.cc
     config/validation.cc

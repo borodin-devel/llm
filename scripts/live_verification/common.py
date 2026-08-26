@@ -163,7 +163,7 @@ def validate_policy_coverage(discovered, trace_directory, policy=POLICY):
 def build_llm_command(trace_path, run_directory, policy):
     """Build the one ns-3 command for a policy entry."""
     arguments = [
-        "llm_sample", "--config", "contrib/llm/config/basic_config.toml",
+        "llm-scenario", "--config", "contrib/llm/config/llm_config.toml",
         "--general-trace-file", str(trace_path), "--general-run-folder", str(run_directory),
     ]
     if policy.get("mode") == "fixed":

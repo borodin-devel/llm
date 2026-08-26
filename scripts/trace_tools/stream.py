@@ -30,7 +30,7 @@ UNRAR_ERROR_TAIL_BYTES = 8192
 
 
 class TraceValidationError(ValueError):
-    """Trace input cannot be consumed safely by llm_sample."""
+    """Trace input cannot be consumed safely by llm-scenario."""
 
 
 @dataclass(frozen=True)

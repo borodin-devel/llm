@@ -118,7 +118,7 @@ class LiveTraceRunnerTest(unittest.TestCase):
         run_directory = Path("/tmp/llm-trace-live.test.random")
         for name, policy in POLICY.items():
             expected_inner = (
-                "llm_sample --config contrib/llm/config/basic_config.toml "
+                "llm-scenario --config contrib/llm/config/llm_config.toml "
                 f"--general-trace-file contrib/llm/traces/{name} "
                 f"--general-run-folder {run_directory}"
             )

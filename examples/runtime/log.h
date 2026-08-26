@@ -6,7 +6,7 @@
 namespace ns3::llm_example
 {
 
-/** @return Shared sample-scenario log component. */
+/** @return Shared llm-scenario log component. */
 LogComponent& GetScenarioLog();
 
 } // namespace ns3::llm_example

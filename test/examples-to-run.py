@@ -2,7 +2,7 @@
 
 cpp_examples = [
     (
-        "llm_sample --config ../../contrib/llm/config/basic_config.toml "
+        "llm-scenario --config ../../contrib/llm/config/llm_config.toml "
         "--general-trace-file ../../contrib/llm/test/data/minimal-trace.json "
         "--general-run-folder . "
         "--general-output-name llm-smoke-stats.json "

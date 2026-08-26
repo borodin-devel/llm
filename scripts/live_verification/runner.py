@@ -141,7 +141,7 @@ def run_one_trace(
             raise LiveTraceError(
                 format_run_failure(
                     trace_path, command, result.returncode, console,
-                    "llm_sample command failed",
+                    "llm-scenario command failed",
                 )
             )
         try:

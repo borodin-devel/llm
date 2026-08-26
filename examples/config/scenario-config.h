@@ -127,7 +127,7 @@ struct LoggingConfig
     std::string contentionDistributionLevel{"info"}; ///< Contention distribution log level.
 };
 
-/** Typed configuration values for the sample scenario. */
+/** Typed configuration values for the llm scenario. */
 struct ScenarioConfig
 {
     GeneralConfig general;           ///< General input and output configuration.
@@ -280,7 +280,7 @@ ResolvedRunPaths ResolveRunPaths(const ScenarioLaunchConfig& launch,
  */
 void PrepareRunDirectory(const ResolvedRunPaths& paths);
 
-/** Result of parsing sample-scenario command-line arguments. */
+/** Result of parsing llm-scenario command-line arguments. */
 struct ScenarioCommandLineResult
 {
     bool valid{false};           ///< Whether the request is valid.
@@ -300,7 +300,7 @@ ScenarioCommandLineResult ParseScenarioArguments(const std::vector<std::string>&
                                                  const std::filesystem::path& workingDirectory);
 
 /**
- * Print sample-scenario command-line usage.
+ * Print llm-scenario command-line usage.
  *
  * @param output Destination stream.
  * @param programName Executable name shown in the command synopsis.
