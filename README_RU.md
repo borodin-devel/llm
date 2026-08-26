@@ -97,10 +97,10 @@ JSON-трасса
 
 ## Стандартный сценарий
 
-Исполняемая программа называется `llm_sample`. Типизированные значения по
-умолчанию заданы в [`ScenarioConfig`](examples/scenario-config.h), а полная
-документированная конфигурация запуска находится в
-[`config/basic_config.toml`](config/basic_config.toml).
+Исполняемая программа называется `llm-scenario`. Типизированные значения по
+умолчанию заданы в [`ScenarioConfig`](examples/config/scenario-config.h), а
+полная документированная конфигурация запуска находится в
+[`config/llm_config.toml`](config/llm_config.toml).
 
 | Параметр | Значение | Смысл |
 |---|---:|---|
@@ -226,7 +226,7 @@ C++-генераторы не планируют эту операцию. Одн
 
 ### Числовые ограничения
 
-[`trace_stream.py`](scripts/trace_stream.py) проверяет те же важные границы,
+[`stream.py`](scripts/trace_tools/stream.py) проверяет те же важные границы,
 что и C++-парсер:
 
 - `agentId` должен помещаться в знаковое 32-битное целое;
@@ -377,7 +377,11 @@ TCP может разделить одну прикладную запись н�
 Эксперимент записывает один JSON-документ, организованный сначала по окнам.
 `general.output_name` задает имя файла внутри папки запуска; по умолчанию это
 `output.json`. Файл создается эксклюзивно: существующий путь никогда не
-обрезается и не перезаписывается.
+обрезается и не перезаписывается. `output.json` всегда записывается потоково с
+отступом в два пробела и завершающим переводом строки, без построения полного
+DOM результата в памяти. Возможности компактного вывода нет. Читаемый формат
+не меняет схему и значения, но занимает на диске больше места, чем
+эквивалентный компактный JSON.
 
 По явному решению о совместимости целое поле `schema_version` остается равным
 `1`, но эта иерархия является несовместимой заменой на месте. Для удаленных
@@ -814,7 +818,7 @@ compiled defaults < TOML values < CLI overrides
 | `logging` | `sample_scenario_level`, `ap_generator_level`, `sta_generator_level`, `traffic_sink_level`, `contention_distribution_level` |
 
 Включенный в репозиторий
-[`config/basic_config.toml`](config/basic_config.toml) имеет восемь секций и 35
+[`config/llm_config.toml`](config/llm_config.toml) имеет восемь секций и 35
 заданных значений, потому что `run_folder` намеренно показан как
 закомментированная необязательная настройка. В результате всегда есть все 36
 полей, а пропущенный `general.run_folder` записывается как `null`. Значения
@@ -825,7 +829,7 @@ compiled defaults < TOML values < CLI overrides
 
 ### Воспроизводимая живая проверка
 
-После сборки `llm_sample` инструмент живой проверки сопоставляет найденные
+После сборки `llm-scenario` инструмент живой проверки сопоставляет найденные
 файлы с точной политикой из четырех трасс, проверяет каждый вход через
 `find_window.py`, затем последовательно выполняет одну симуляцию для каждой
 трассы. Используются уникальная папка
@@ -843,8 +847,8 @@ compiled defaults < TOML values < CLI overrides
 затем реальную матрицу:
 
 ```bash
-python3 contrib/llm/scripts/live_test_traces.py --self-test
-python3 contrib/llm/scripts/live_test_traces.py
+PYTHONDONTWRITEBYTECODE=1 python3 contrib/llm/scripts/live_test_traces.py --self-test
+PYTHONDONTWRITEBYTECODE=1 python3 contrib/llm/scripts/live_test_traces.py
 ```
 
 Инструмент требует равенства найденных имен политике и проверяет точную
@@ -956,14 +960,13 @@ git lfs pull
   --enable-warnings \
   --enable-werror
 
-./ns3 build llm-test llm_sample
+./ns3 build llm-test llm-scenario
 ```
 
 ### Запуск небольшого примера
 
 ```bash
-./ns3 run \
-  "llm_sample --config contrib/llm/config/basic_config.toml"
+./ns3 run "llm-scenario --config contrib/llm/config/llm_config.toml"
 ```
 
 Каждый настоящий запуск требует ровно один `--config PATH`. `--config` и все
@@ -972,7 +975,7 @@ git lfs pull
 конфигурации:
 
 ```bash
-./ns3 run "llm_sample --help"
+./ns3 run "llm-scenario --help"
 ```
 
 Порядок объединения значений:
@@ -1075,6 +1078,10 @@ compiled defaults < TOML values < CLI overrides
 | `traffic_sink_level` | `--logging-traffic-sink-level` | `warn` |
 | `contention_distribution_level` | `--logging-contention-distribution-level` | `info` |
 
+`sample_scenario_level` является стабильным полем конфигурации; его написание
+и переопределение `--logging-sample-scenario-level` намеренно не меняются,
+несмотря на имя исполняемой программы `llm-scenario`.
+
 Каждое поле уровня логирования принимает `off`, `error`, `warn`, `info`,
 `debug`, `function`, `logic` или `all`. Значение `off` не вызывает включение
 логирования и поэтому сохраняет состояние, уже включенное через `NS_LOG`.
@@ -1109,7 +1116,7 @@ TOML-файлом.
 
 ```bash
 ./ns3 run \
-  "llm_sample --config contrib/llm/config/basic_config.toml \
+  "llm-scenario --config contrib/llm/config/llm_config.toml \
   --general-trace-file contrib/llm/traces/1W_high_load_10m.json \
   --general-run-folder build/high-load \
   --general-output-name high-load.json \
@@ -1125,7 +1132,13 @@ TOML-файлом.
 
 JSON внутри отслеживаемых RAR-файлов занимают несколько гигабайт. Не следует
 распаковывать и загружать их через Python `json.load()` или передавать RAR
-напрямую в `llm_sample`. Используйте потоковый CLI с ограниченной памятью.
+напрямую в `llm-scenario`. Используйте потоковый CLI с ограниченной памятью.
+
+Справку потокового CLI можно вывести из корня ns-3 командой:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 contrib/llm/scripts/find_window.py --help
+```
 
 ### Проверка JSON или RAR
 
@@ -1183,10 +1196,10 @@ JSON.
 вариант выбирается маской:
 
 ```bash
-./test.py -e 'llm_sample*'
+./test.py -e 'llm-scenario*'
 ```
 
-Команда `./test.py -e llm_sample` без `*` запускает программу без
+Команда `./test.py -e llm-scenario` без `*` запускает программу без
 зарегистрированных аргументов; она сообщает об отсутствующей конфигурации и
 выводит справку.
 
@@ -1194,7 +1207,8 @@ JSON.
 
 ```bash
 cd contrib/llm
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_trace_stream.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s scripts/tests -t . -p 'test_*.py' -v
 ```
 
 Тестируются потоковая проверка, числовые границы, сохранение метаданных,
@@ -1212,7 +1226,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_trace_stream.py
 Для запуска отладчика:
 
 ```bash
-./ns3 run "llm_sample --config contrib/llm/config/basic_config.toml" \
+./ns3 run "llm-scenario --config contrib/llm/config/llm_config.toml" \
   --command-template="gdb --args %s"
 ```
 
@@ -1223,43 +1237,54 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_trace_stream.py
 
 ```text
 contrib/llm/
-|-- CMakeLists.txt                    регистрация модуля и тестов ns-3
-|-- README.md                         документация на английском
-|-- README_RU.md                      документация на русском
-|-- config/basic_config.toml          полная документированная конфигурация сценария
+|-- CMakeLists.txt                    общий перечень библиотеки и C++-тестов
+|-- config/llm_config.toml            полная документированная конфигурация сценария
 |-- examples/
-|   |-- sample-scenario.cc            оркестрация основной программы
-|   |-- scenario-config*              разбор TOML/CLI, проверка и реестр параметров
-|   |-- scenario-run-path.cc          безопасные пути запуска относительно CWD
-|   |-- scenario-topology.*           создание BSS/STA/IP/приложений
-|   |-- traffic-coordinator.*         глобальный барьер готовности TCP
-|   |-- experiment-statistics*        единый сбор и сводки APP/TCP/MAC/PHY
-|   |-- experiment-window-output.h    типизированная иерархия окон и сущностей
-|   `-- experiment-json.cc            потоковая запись корня и безопасный результат
+|   |-- CMakeLists.txt                общий перечень исходников llm-scenario
+|   |-- llm-scenario.cc               оркестрация основной программы
+|   |-- config/                       TOML/CLI, проверка, JSON и пути запуска
+|   |-- runtime/                      логирование, топология и барьер готовности
+|   `-- statistics/
+|       |-- *.cc, *.h                 сбор и сводки APP/TCP/MAC/PHY
+|       `-- json/                     потоковая запись и сериализаторы иерархии
 |-- model/
-|   |-- agent-data.h                  общие данные трассы и распределения
-|   |-- trace-parser.*                преобразование JSON в агентов
-|   |-- agent-distribution.*          исходный алгоритм распределения
-|   |-- contention-aware-*            фазы размещения по BSS и STA
-|   |-- traffic-schedule.*            построение расписаний UL/DL
-|   |-- app-tx-tag.*                  межуровневые байтовые метаданные
-|   |-- ap-generator*                 DL-отправитель AP и трассы статистики
-|   |-- sta-llm-generator*            UL-отправитель STA и трассы статистики
-|   `-- traffic-sink.*                TCP-приемник
+|   |-- applications/                 генераторы, приемник, расписание и AppTxTag
+|   |-- distribution/                 данные агентов и алгоритмы размещения
+|   |-- logging/                      общее логирование модели
+|   `-- traces/                       преобразование JSON-трассы в агентов
 |-- scripts/
-|   |-- find_window.py                потоковый CLI
-|   |-- live_test_traces.py           точная живая проверка четырех трасс
-|   |-- trace_stream.py               парсер, проверка, выбор окна, запись
-|   `-- test_trace_stream.py          тесты Python
+|   |-- find_window.py                намеренная точка входа потокового CLI
+|   |-- live_test_traces.py           намеренная точка входа живой проверки
+|   |-- trace_tools/                  пакет потоковой обработки трасс
+|   |-- live_verification/            пакет запуска и проверки схемы
+|   `-- tests/
+|       |-- trace_tools/              тесты пакета потоковой обработки
+|       `-- live_verification/        тесты пакета живой проверки
 |-- test/
+|   |-- config/                       C++-тесты конфигурации и путей запуска
+|   |-- model/
+|   |   |-- applications/             C++-тесты домена приложений
+|   |   |-- distribution/             C++-тесты домена распределения
+|   |   `-- traces/                   C++-тесты домена трасс
+|   |-- runtime/                      C++-тесты домена исполнения
+|   |-- statistics/                   C++-тесты статистики и JSON
 |   |-- data/minimal-trace.json       малая детерминированная трасса
 |   |-- examples-to-run.py            зарегистрированный запуск примера
-|   `-- *-test-suite.cc               C++ unit/characterization tests
+|   `-- llm-test-suite.*              общий реестр C++-тестов
 |-- traces/                            наборы данных Git LFS и производная трасса
-|-- lib/json.hpp                       встроенный заголовок nlohmann JSON
-|-- lib/toml.hpp                       встроенный единый заголовок toml++ 3.4.0
+|-- lib/                               встроенные заголовки JSON и TOML
+|-- README.md                          документация на английском
+|-- README_RU.md                       документация на русском
 `-- docs/superpowers/                  история дизайна и рефакторинга
 ```
+
+Поддержка сценария находится в `examples/config/`, `examples/runtime/` и
+`examples/statistics/json/` (сбор статистики расположен на уровень выше ее
+JSON-сериализаторов). Описание сборки остается централизованным в
+`CMakeLists.txt` модуля и примера; в каталогах ответственности нет отдельных
+файлов CMake. Аналогично, два файла Python непосредственно в `scripts/`
+являются намеренными исполняемыми точками входа, а реализации и тесты находятся
+в пакетах под ними.
 
 ## Глоссарий
 

@@ -95,9 +95,9 @@ The implementation uses five main methods to achieve its goal:
 
 ## Default scenario
 
-The executable is `llm_sample`. Its typed defaults are defined by
-[`ScenarioConfig`](examples/scenario-config.h); a complete documented launch
-configuration is in [`config/basic_config.toml`](config/basic_config.toml).
+The executable is `llm-scenario`. Its typed defaults are defined by
+[`ScenarioConfig`](examples/config/scenario-config.h); a complete documented
+launch configuration is in [`config/llm_config.toml`](config/llm_config.toml).
 
 | Setting | Default | Meaning |
 |---|---:|---|
@@ -221,7 +221,7 @@ duration, placement, PHY rate, or any output metric.
 
 ### Numeric requirements
 
-[`trace_stream.py`](scripts/trace_stream.py) applies the same important bounds
+[`stream.py`](scripts/trace_tools/stream.py) applies the same important bounds
 as the C++ parser:
 
 - `agentId` must fit a signed 32-bit integer;
@@ -371,7 +371,10 @@ in the `WifiTxVector` for an actual PPDU attempt.
 The experiment writes one window-first JSON document. `general.output_name`
 selects its filename inside the run folder and defaults to `output.json`. The
 writer creates the file exclusively: it never truncates or overwrites an
-existing path.
+existing path. `output.json` is always streamed with two-space indentation and
+a final newline, without building a complete result DOM in memory. There is no
+compact-output option. The schema and values are unchanged by this readable
+format, but the file is larger on disk than equivalent compact JSON.
 
 The integer `schema_version` remains `1` by an explicit compatibility decision,
 but this hierarchy is a breaking in-place replacement. There are no aliases for
@@ -795,7 +798,7 @@ The exact eight sections and 36 output fields are:
 | `statistics` | `window_ms` |
 | `logging` | `sample_scenario_level`, `ap_generator_level`, `sta_generator_level`, `traffic_sink_level`, `contention_distribution_level` |
 
-The checked-in [`config/basic_config.toml`](config/basic_config.toml) has eight
+The checked-in [`config/llm_config.toml`](config/llm_config.toml) has eight
 sections and 35 assigned values because `run_folder` is deliberately shown as
 a commented optional setting. Output always has all 36 fields and records an
 omitted `general.run_folder` as `null`. Values preserve TOML names and JSON
@@ -805,7 +808,7 @@ configuration provenance, or statistics.
 
 ### Reproducible live verification
 
-After building `llm_sample`, the live tool validates discovery against an
+After building `llm-scenario`, the live tool validates discovery against an
 exact four-trace policy, validates each input with `find_window.py`, then runs
 one simulation per trace sequentially. It uses a unique
 `/tmp/llm-trace-live.<trace>.<random>` run folder, the default `output.json`,
@@ -821,8 +824,8 @@ the policy timeout, and no output-name override.
 Run its deterministic pure-function/error/cleanup tests, then the real matrix:
 
 ```bash
-python3 contrib/llm/scripts/live_test_traces.py --self-test
-python3 contrib/llm/scripts/live_test_traces.py
+PYTHONDONTWRITEBYTECODE=1 python3 contrib/llm/scripts/live_test_traces.py --self-test
+PYTHONDONTWRITEBYTECODE=1 python3 contrib/llm/scripts/live_test_traces.py
 ```
 
 The tool requires discovered and policy filenames to be equal, checks the
@@ -932,14 +935,13 @@ git lfs pull
   --enable-warnings \
   --enable-werror
 
-./ns3 build llm-test llm_sample
+./ns3 build llm-test llm-scenario
 ```
 
 ### Run a small example
 
 ```bash
-./ns3 run \
-  "llm_sample --config contrib/llm/config/basic_config.toml"
+./ns3 run "llm-scenario --config contrib/llm/config/llm_config.toml"
 ```
 
 Every real launch requires exactly one `--config PATH`. `--config` and all
@@ -947,7 +949,7 @@ overrides are position-independent, and each may appear only once. Show the
 complete generated help without a configuration file:
 
 ```bash
-./ns3 run "llm_sample --help"
+./ns3 run "llm-scenario --help"
 ```
 
 The merged value order is:
@@ -1050,6 +1052,10 @@ defaults are applied before Internet-stack and socket creation.
 | `traffic_sink_level` | `--logging-traffic-sink-level` | `warn` |
 | `contention_distribution_level` | `--logging-contention-distribution-level` | `info` |
 
+`sample_scenario_level` is a stable configuration field; its spelling and
+`--logging-sample-scenario-level` override intentionally remain unchanged even
+though the executable is named `llm-scenario`.
+
 Every log field accepts `off`, `error`, `warn`, `info`, `debug`, `function`,
 `logic`, or `all`. `off` makes no enable call, so it preserves logging already
 enabled through `NS_LOG`.
@@ -1085,7 +1091,7 @@ Fixed-duration example:
 
 ```bash
 ./ns3 run \
-  "llm_sample --config contrib/llm/config/basic_config.toml \
+  "llm-scenario --config contrib/llm/config/llm_config.toml \
   --general-trace-file contrib/llm/traces/1W_high_load_10m.json \
   --general-run-folder build/high-load \
   --general-output-name high-load.json \
@@ -1100,8 +1106,14 @@ time and memory.
 ## Large trace tools
 
 The tracked RAR files expand to multi-gigabyte JSON documents. Do not extract
-and load them with Python `json.load()` or pass them directly to `llm_sample`.
+and load them with Python `json.load()` or pass them directly to `llm-scenario`.
 Use the bounded-memory streaming CLI.
+
+Show the streaming CLI help from the ns-3 root with:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 contrib/llm/scripts/find_window.py --help
+```
 
 ### Validate JSON or RAR
 
@@ -1159,10 +1171,10 @@ The example requires `--config`, so select its registered parameterized entry
 with a wildcard:
 
 ```bash
-./test.py -e 'llm_sample*'
+./test.py -e 'llm-scenario*'
 ```
 
-Running `./test.py -e llm_sample` without `*` invokes the executable without
+Running `./test.py -e llm-scenario` without `*` invokes the executable without
 the registered arguments; it reports the missing configuration and prints
 usage.
 
@@ -1170,7 +1182,8 @@ usage.
 
 ```bash
 cd contrib/llm
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_trace_stream.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s scripts/tests -t . -p 'test_*.py' -v
 ```
 
 These tests cover streaming validation, numeric bounds, metadata preservation,
@@ -1188,7 +1201,7 @@ The `[logging]` section configures these components independently:
 For debugger use:
 
 ```bash
-./ns3 run "llm_sample --config contrib/llm/config/basic_config.toml" \
+./ns3 run "llm-scenario --config contrib/llm/config/llm_config.toml" \
   --command-template="gdb --args %s"
 ```
 
@@ -1199,43 +1212,54 @@ the debugger.
 
 ```text
 contrib/llm/
-|-- CMakeLists.txt                    ns-3 module and test registration
-|-- README.md                         English documentation
-|-- README_RU.md                      Russian documentation
-|-- config/basic_config.toml          Complete documented scenario configuration
+|-- CMakeLists.txt                    Central library and C++ test inventory
+|-- config/llm_config.toml            Complete documented scenario configuration
 |-- examples/
-|   |-- sample-scenario.cc            Main executable orchestration
-|   |-- scenario-config*              TOML/CLI parsing, validation, and option registry
-|   |-- scenario-run-path.cc          CWD-based collision-safe run paths
-|   |-- scenario-topology.*           BSS/STA/IP/application construction
-|   |-- traffic-coordinator.*         Global TCP readiness barrier
-|   |-- experiment-statistics*        Unified APP/TCP/MAC/PHY collection and summaries
-|   |-- experiment-window-output.h    Typed window/entity/category output hierarchy
-|   `-- experiment-json.cc            Streaming root writer and collision-safe output
+|   |-- CMakeLists.txt                Central llm-scenario source inventory
+|   |-- llm-scenario.cc               Main executable orchestration
+|   |-- config/                       TOML/CLI, validation, JSON, and run paths
+|   |-- runtime/                      Logging, topology, and readiness coordination
+|   `-- statistics/
+|       |-- *.cc, *.h                 APP/TCP/MAC/PHY collection and summaries
+|       `-- json/                     Streaming writer and hierarchy serializers
 |-- model/
-|   |-- agent-data.h                  Shared trace/distribution data
-|   |-- trace-parser.*                JSON-to-agent parser
-|   |-- agent-distribution.*          Original distribution algorithm
-|   |-- contention-aware-*            BSS and STA placement phases
-|   |-- traffic-schedule.*            Pure UL/DL schedule construction
-|   |-- app-tx-tag.*                  Cross-layer byte metadata
-|   |-- ap-generator*                 AP downlink sender and statistics traces
-|   |-- sta-llm-generator*            STA uplink sender and statistics traces
-|   `-- traffic-sink.*                TCP receiver
+|   |-- applications/                 Generators, sink, schedule, and AppTxTag
+|   |-- distribution/                 Agent data and placement algorithms
+|   |-- logging/                      Shared model logging support
+|   `-- traces/                       JSON-to-agent trace parser
 |-- scripts/
-|   |-- find_window.py                Streaming CLI
-|   |-- live_test_traces.py           Exact four-trace live verification
-|   |-- trace_stream.py               Parser, validator, selector, writer
-|   `-- test_trace_stream.py          Python tests
+|   |-- find_window.py                Intentional streaming-CLI entry point
+|   |-- live_test_traces.py           Intentional live-verification entry point
+|   |-- trace_tools/                  Streaming trace-processing package
+|   |-- live_verification/            Live-runner and schema-check package
+|   `-- tests/
+|       |-- trace_tools/              Streaming package tests
+|       `-- live_verification/        Live-verification package tests
 |-- test/
+|   |-- config/                       Configuration and run-path C++ suites
+|   |-- model/
+|   |   |-- applications/             Application-domain C++ suites
+|   |   |-- distribution/             Distribution-domain C++ suites
+|   |   `-- traces/                   Trace-domain C++ suites
+|   |-- runtime/                      Runtime-domain C++ suites
+|   |-- statistics/                   Statistics and JSON C++ suites
 |   |-- data/minimal-trace.json       Small deterministic fixture
 |   |-- examples-to-run.py            Registered example invocation
-|   `-- *-test-suite.cc               C++ unit/characterization tests
+|   `-- llm-test-suite.*              Shared C++ test registry
 |-- traces/                            Git LFS datasets and derived trace
-|-- lib/json.hpp                       Vendored nlohmann JSON header
-|-- lib/toml.hpp                       Vendored toml++ 3.4.0 single header
+|-- lib/                               Vendored JSON and TOML headers
+|-- README.md                          English documentation
+|-- README_RU.md                       Russian documentation
 `-- docs/superpowers/                  Refactor/streaming design history
 ```
+
+The scenario support paths are `examples/config/`, `examples/runtime/`, and
+`examples/statistics/json/` (with statistics collection one level above its
+JSON serializers). Build declarations remain centralized in the module and
+example `CMakeLists.txt` files; the responsibility directories do not add
+per-directory CMake files. Likewise, the two Python files directly under
+`scripts/` are intentional executable entry points, while implementations and
+tests live in packages below them.
 
 ## Glossary
 
