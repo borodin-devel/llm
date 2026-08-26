@@ -118,7 +118,7 @@ struct SaturatedWifiConfig
     uint8_t primary20Index{0};  ///< Primary 20 MHz subchannel index.
     double txPowerDbm{20.0};    ///< Fixed transmit power in dBm.
     std::string rateManager{
-        "ns3::MinstrelHtWifiManager"}; ///< Registered Wi-Fi rate-manager TypeId.
+        "ns3::MinstrelHtWifiManager"}; ///< Fixed registered MinstrelHt rate-manager TypeId.
     uint8_t antennas{2};               ///< Number of antennas on every AP and station.
     uint8_t maxTxSpatialStreams{2};    ///< Maximum transmit spatial streams.
     uint8_t maxRxSpatialStreams{2};    ///< Maximum receive spatial streams.
@@ -127,12 +127,13 @@ struct SaturatedWifiConfig
 /** TCP and wired-backhaul configuration for the saturated benchmark. */
 struct SaturatedTcpTransportConfig
 {
-    std::string congestionControl{"ns3::TcpHighSpeed"}; ///< TCP congestion-control TypeId.
-    uint32_t segmentSizeBytes{1460};                    ///< TCP maximum segment payload.
-    uint32_t sendBufferBytes{32 * 1024 * 1024};         ///< TCP send-buffer size.
-    uint32_t receiveBufferBytes{32 * 1024 * 1024};      ///< TCP receive-buffer size.
-    std::string wiredRate{"10Gbps"};                    ///< Dedicated wired-link data rate.
-    std::string wiredDelay{"0.1ms"};                    ///< Dedicated wired-link delay.
+    std::string congestionControl{
+        "ns3::TcpHighSpeed"};        ///< Fixed registered TcpHighSpeed congestion-control TypeId.
+    uint32_t segmentSizeBytes{1460}; ///< TCP maximum segment payload.
+    uint32_t sendBufferBytes{32 * 1024 * 1024};    ///< TCP send-buffer size.
+    uint32_t receiveBufferBytes{32 * 1024 * 1024}; ///< TCP receive-buffer size.
+    std::string wiredRate{"10Gbps"};               ///< Dedicated wired-link data rate.
+    std::string wiredDelay{"0.1ms"};               ///< Dedicated wired-link delay.
 };
 
 /** Statistics configuration for the saturated benchmark. */

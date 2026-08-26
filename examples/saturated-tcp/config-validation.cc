@@ -1,15 +1,15 @@
 #include "config.h"
 
+#include "ns3/data-rate.h"
+#include "ns3/nstime.h"
 #include "ns3/tcp-congestion-ops.h"
 #include "ns3/type-id.h"
 #include "ns3/wifi-remote-station-manager.h"
 
 #include <array>
-#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
-#include <limits>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -80,92 +80,69 @@ IsKnownLogLevel(std::string_view level)
     return false;
 }
 
-std::pair<double, std::string_view>
-SplitQuantity(std::string_view text)
-{
-    double value{};
-    const auto result =
-        std::from_chars(text.data(), text.data() + text.size(), value, std::chars_format::general);
-    if (result.ec != std::errc{} || result.ptr == text.data() || !std::isfinite(value))
-    {
-        return {std::numeric_limits<double>::quiet_NaN(), {}};
-    }
-    std::string_view suffix(result.ptr, text.data() + text.size());
-    while (suffix.starts_with(' '))
-    {
-        suffix.remove_prefix(1);
-    }
-    return {value, suffix};
-}
-
 bool
 IsPositiveDataRate(std::string_view text)
 {
-    static constexpr std::array<std::pair<std::string_view, long double>, 25> units{{
-        {"", 1.0L},
-        {"bps", 1.0L},
-        {"b/s", 1.0L},
-        {"Bps", 8.0L},
-        {"B/s", 8.0L},
-        {"kbps", 1000.0L},
-        {"kb/s", 1000.0L},
-        {"Kbps", 1000.0L},
-        {"Kb/s", 1000.0L},
-        {"kBps", 8000.0L},
-        {"kB/s", 8000.0L},
-        {"KBps", 8000.0L},
-        {"KB/s", 8000.0L},
-        {"Kib/s", 1024.0L},
-        {"KiB/s", 8192.0L},
-        {"Mbps", 1000000.0L},
-        {"Mb/s", 1000000.0L},
-        {"MBps", 8000000.0L},
-        {"MB/s", 8000000.0L},
-        {"Mib/s", 1048576.0L},
-        {"MiB/s", 8388608.0L},
-        {"Gbps", 1000000000.0L},
-        {"Gb/s", 1000000000.0L},
-        {"GBps", 8000000000.0L},
-        {"GB/s", 8000000000.0L},
-    }};
-    const auto [value, suffix] = SplitQuantity(text);
-    for (const auto& [name, multiplier] : units)
-    {
-        if (suffix == name)
-        {
-            const long double bitsPerSecond = static_cast<long double>(value) * multiplier;
-            return bitsPerSecond >= 1.0L &&
-                   bitsPerSecond <= static_cast<long double>(std::numeric_limits<uint64_t>::max());
-        }
-    }
-    return false;
+    DataRateValue value;
+    return value.DeserializeFromString(std::string(text), MakeDataRateChecker()) &&
+           value.Get().GetBitRate() > 0;
 }
 
 bool
 IsPositiveDuration(std::string_view text)
 {
-    static constexpr std::array<std::pair<std::string_view, long double>, 10> units{{
-        {"", 1.0L},
-        {"s", 1.0L},
-        {"ms", 1.0e-3L},
-        {"us", 1.0e-6L},
-        {"ns", 1.0e-9L},
-        {"ps", 1.0e-12L},
-        {"fs", 1.0e-15L},
-        {"min", 60.0L},
-        {"h", 3600.0L},
-        {"d", 86400.0L},
-    }};
-    const auto [value, suffix] = SplitQuantity(text);
-    for (const auto& [name, multiplier] : units)
+    if (text.empty() || text.find_first_of(" \t\r\n\f\v") != std::string_view::npos)
     {
-        if (suffix == name)
+        return false;
+    }
+
+    const auto suffixStart = text.find_first_not_of("+-0123456789.eE");
+    const std::string_view numeric = text.substr(0, suffixStart);
+    const std::string_view suffix =
+        suffixStart == std::string_view::npos ? std::string_view{} : text.substr(suffixStart);
+    static constexpr std::array<std::pair<std::string_view, Time::Unit>, 10> units{{
+        {"s", Time::S},
+        {"ms", Time::MS},
+        {"us", Time::US},
+        {"ns", Time::NS},
+        {"ps", Time::PS},
+        {"fs", Time::FS},
+        {"min", Time::MIN},
+        {"h", Time::H},
+        {"d", Time::D},
+        {"y", Time::Y},
+    }};
+    Time::Unit unit = Time::S;
+    if (!suffix.empty())
+    {
+        bool knownUnit = false;
+        for (const auto& [name, candidate] : units)
         {
-            const long double seconds = static_cast<long double>(value) * multiplier;
-            return seconds > 0.0L && std::isfinite(seconds);
+            if (suffix == name)
+            {
+                unit = candidate;
+                knownUnit = true;
+                break;
+            }
+        }
+        if (!knownUnit)
+        {
+            return false;
         }
     }
-    return false;
+
+    std::istringstream numericInput{std::string(numeric)};
+    double quantity{};
+    numericInput >> quantity;
+    if (numericInput.fail() || !std::isfinite(quantity) || quantity <= 0.0 ||
+        quantity > Time::Max().ToDouble(unit))
+    {
+        return false;
+    }
+
+    TimeValue value;
+    return value.DeserializeFromString(std::string(text), MakeTimeChecker()) &&
+           value.Get().IsStrictlyPositive();
 }
 
 void
@@ -216,6 +193,11 @@ ValidateTypeIds(const SaturatedTcpConfig& config)
                      "registered TypeId derived from ns3::WifiRemoteStationManager",
                      config.wifi.rateManager);
     }
+    Require(config.wifi.rateManager == "ns3::MinstrelHtWifiManager",
+            "wifi.rate_manager",
+            "--wifi-rate-manager",
+            "ns3::MinstrelHtWifiManager",
+            config.wifi.rateManager);
     if (!TypeId::LookupByNameFailSafe(config.tcp.congestionControl, &type) ||
         !type.IsChildOf(TcpCongestionOps::GetTypeId()))
     {
@@ -224,6 +206,11 @@ ValidateTypeIds(const SaturatedTcpConfig& config)
                      "registered TypeId derived from ns3::TcpCongestionOps",
                      config.tcp.congestionControl);
     }
+    Require(config.tcp.congestionControl == "ns3::TcpHighSpeed",
+            "tcp.congestion_control",
+            "--tcp-congestion-control",
+            "ns3::TcpHighSpeed",
+            config.tcp.congestionControl);
 }
 
 } // namespace
@@ -293,10 +280,10 @@ ValidateSaturatedTcpConfig(const SaturatedTcpConfig& config)
             "--wifi-primary-20-index",
             "0",
             static_cast<unsigned int>(config.wifi.primary20Index));
-    Require(std::isfinite(config.wifi.txPowerDbm) && config.wifi.txPowerDbm > 0.0,
+    Require(config.wifi.txPowerDbm == 20.0,
             "wifi.tx_power_dbm",
             "--wifi-tx-power-dbm",
-            "positive finite value",
+            "20.0",
             config.wifi.txPowerDbm);
     Require(config.wifi.antennas == 2,
             "wifi.antennas",

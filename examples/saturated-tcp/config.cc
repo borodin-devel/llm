@@ -373,7 +373,7 @@ GetSaturatedTcpConfigOptions()
         MakeStringOption(
             "wifi.rate_manager",
             [](auto& c) -> auto& { return c.wifi.rateManager; },
-            "Registered Wi-Fi rate-manager TypeId"),
+            "Fixed registered MinstrelHt Wi-Fi rate-manager TypeId"),
         MakeIntegerOption<uint8_t>(
             "wifi.antennas",
             [](auto& c) -> auto& { return c.wifi.antennas; },
@@ -389,7 +389,7 @@ GetSaturatedTcpConfigOptions()
         MakeStringOption(
             "tcp.congestion_control",
             [](auto& c) -> auto& { return c.tcp.congestionControl; },
-            "Registered TCP congestion-control TypeId"),
+            "Fixed registered TcpHighSpeed congestion-control TypeId"),
         MakeIntegerOption<uint32_t>(
             "tcp.segment_size_bytes",
             [](auto& c) -> auto& { return c.tcp.segmentSizeBytes; },

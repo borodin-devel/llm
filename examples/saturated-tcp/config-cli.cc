@@ -86,10 +86,22 @@ ParseSaturatedTcpConfig(int argc, char** argv)
         }
         else
         {
-            if (++index == argc || argv[index] == nullptr)
+            if (index + 1 == argc || argv[index + 1] == nullptr)
             {
                 throw SaturatedTcpConfigError("saturated flag " + flag + " requires a value");
             }
+            const std::string_view candidateValue(argv[index + 1]);
+            if (candidateValue.starts_with("--"))
+            {
+                const auto [candidateFlag, candidateAttachedValue] = SplitArgument(candidateValue);
+                static_cast<void>(candidateAttachedValue);
+                if (candidateFlag != "--config" && !FindOption(candidateFlag))
+                {
+                    throw SaturatedTcpConfigError("unknown saturated flag: " + candidateFlag);
+                }
+                throw SaturatedTcpConfigError("saturated flag " + flag + " requires a value");
+            }
+            ++index;
             value = argv[index];
         }
         if (value.empty())

@@ -191,7 +191,7 @@ SaturatedTcpConfigParsingTestCase::DoRun()
                                                "traffic_mode = \"dl\"\n"
                                                "mimo_mode = \"su\"\n"
                                                "[wifi]\n"
-                                               "tx_power_dbm = 17.5\n"
+                                               "tx_power_dbm = 20.0\n"
                                                "[statistics]\n"
                                                "window_ms = 20\n");
     const auto config = ParseConfig({"--benchmark-rssi-range=low",
@@ -213,7 +213,7 @@ SaturatedTcpConfigParsingTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(config.benchmark.trafficMode,
                           SaturatedTrafficMode::UL_DL,
                           "Wrong traffic enum");
-    NS_TEST_ASSERT_MSG_EQ_TOL(config.wifi.txPowerDbm, 17.5, 1e-12, "TOML float not loaded");
+    NS_TEST_ASSERT_MSG_EQ_TOL(config.wifi.txPowerDbm, 20.0, 1e-12, "TOML float not loaded");
     NS_TEST_ASSERT_MSG_EQ(config.statistics.windowMs, 20, "TOML integer not loaded");
 
     const std::vector<std::pair<std::string, SaturatedRssiRange>> rssiValues{
@@ -264,6 +264,23 @@ SaturatedTcpConfigParsingTestCase::DoRun()
     CheckFailure({"--config", tracePath.string()}, "unknown saturated TOML field");
     CheckFailure({"--config", configPath.string(), "--distribution-slot-ms", "10"},
                  "unknown saturated flag");
+    CheckFailure({"--config", configPath.string(), "--general-run-folder", "--bogus"},
+                 "unknown saturated flag: --bogus");
+    CheckFailure({"--config", configPath.string(), "--bogus=value"},
+                 "unknown saturated flag: --bogus");
+    CheckFailure({"--config",
+                  configPath.string(),
+                  "--general-output-name",
+                  "--benchmark-rssi-range",
+                  "high"},
+                 "saturated flag --general-output-name requires a value");
+    CheckFailure({"--config", configPath.string(), "--wifi-tx-power-dbm", "-1"},
+                 "wifi.tx_power_dbm");
+    const auto optionLikeString =
+        ParseConfig({"--config", configPath.string(), "--general-run-folder=--literal"});
+    NS_TEST_ASSERT_MSG_EQ(optionLikeString.general.runFolder.value(),
+                          "--literal",
+                          "Equals syntax did not preserve option-like string value");
     const auto wrongFloatPath =
         WriteConfigFixture(CreateTempDirFilename("saturated-wrong-float.toml"),
                            "[wifi]\ntx_power_dbm = 20\n");
@@ -296,11 +313,40 @@ class SaturatedTcpConfigValidationTestCase : public TestCase
      */
     void CheckFailure(const std::function<void(SaturatedTcpConfig&)>& mutate,
                       std::string_view expected);
+
+    /**
+     * Require one valid ns-3 quantity mutation to pass.
+     *
+     * @param mutate Mutation applied to an otherwise valid configuration.
+     * @param description Quantity spelling used in diagnostics.
+     */
+    void CheckValid(const std::function<void(SaturatedTcpConfig&)>& mutate,
+                    std::string_view description);
 };
 
 SaturatedTcpConfigValidationTestCase::SaturatedTcpConfigValidationTestCase()
     : TestCase("saturated TCP configuration validation")
 {
+}
+
+void
+SaturatedTcpConfigValidationTestCase::CheckValid(
+    const std::function<void(SaturatedTcpConfig&)>& mutate,
+    std::string_view description)
+{
+    SaturatedTcpConfig config;
+    mutate(config);
+    try
+    {
+        ValidateSaturatedTcpConfig(config);
+    }
+    catch (const SaturatedTcpConfigError& error)
+    {
+        NS_TEST_ASSERT_MSG_EQ(true,
+                              false,
+                              "Valid ns-3 quantity rejected for " << description << ": "
+                                                                  << error.what());
+    }
 }
 
 void
@@ -367,6 +413,7 @@ SaturatedTcpConfigValidationTestCase::DoRun()
     CheckFailure([](auto& c) { c.general.outputName = "..json"; }, "general.output_name");
     CheckFailure([](auto& c) { c.general.outputName = "output.txt"; }, "general.output_name");
     CheckFailure([](auto& c) { c.wifi.txPowerDbm = 0.0; }, "wifi.tx_power_dbm");
+    CheckFailure([](auto& c) { c.wifi.txPowerDbm = 17.5; }, "wifi.tx_power_dbm");
     CheckFailure([](auto& c) { c.wifi.txPowerDbm = std::numeric_limits<double>::infinity(); },
                  "wifi.tx_power_dbm");
     CheckFailure([](auto& c) { c.wifi.txPowerDbm = std::numeric_limits<double>::quiet_NaN(); },
@@ -387,17 +434,27 @@ SaturatedTcpConfigValidationTestCase::DoRun()
                  "tcp.segment_size_bytes");
     CheckFailure([](auto& c) { c.tcp.wiredRate = "fast"; }, "tcp.wired_rate");
     CheckFailure([](auto& c) { c.tcp.wiredRate = "0Gbps"; }, "tcp.wired_rate");
+    CheckFailure([](auto& c) { c.tcp.wiredRate = "1e3Gbps"; }, "tcp.wired_rate");
     CheckFailure([](auto& c) { c.tcp.wiredDelay = "soon"; }, "tcp.wired_delay");
     CheckFailure([](auto& c) { c.tcp.wiredDelay = "0ms"; }, "tcp.wired_delay");
+    CheckFailure([](auto& c) { c.tcp.wiredDelay = "1 ms"; }, "tcp.wired_delay");
+    CheckValid([](auto& c) { c.tcp.wiredRate = "1Gib/s"; }, "1Gib/s");
+    CheckValid([](auto& c) { c.tcp.wiredRate = "1GiB/s"; }, "1GiB/s");
+    CheckValid([](auto& c) { c.tcp.wiredDelay = "+0.1ms"; }, "+0.1ms");
+    CheckValid([](auto& c) { c.tcp.wiredDelay = "1y"; }, "1y");
     CheckFailure([](auto& c) { c.statistics.windowMs = 0; }, "statistics.window_ms");
     CheckFailure([](auto& c) { c.statistics.windowMs = 3; }, "divide 1000");
     CheckFailure([](auto& c) { c.statistics.windowMs = 1001; }, "divide 1000");
     CheckFailure([](auto& c) { c.wifi.rateManager = "ns3::MissingWifiManager"; },
                  "wifi.rate_manager");
     CheckFailure([](auto& c) { c.wifi.rateManager = "ns3::TcpHighSpeed"; }, "wifi.rate_manager");
+    CheckFailure([](auto& c) { c.wifi.rateManager = "ns3::ConstantRateWifiManager"; },
+                 "wifi.rate_manager");
     CheckFailure([](auto& c) { c.tcp.congestionControl = "ns3::MissingTcpType"; },
                  "tcp.congestion_control");
     CheckFailure([](auto& c) { c.tcp.congestionControl = "ns3::MinstrelHtWifiManager"; },
+                 "tcp.congestion_control");
+    CheckFailure([](auto& c) { c.tcp.congestionControl = "ns3::TcpCubic"; },
                  "tcp.congestion_control");
     CheckFailure([](auto& c) { c.logging.scenarioLevel = "verbose"; }, "logging.scenario_level");
     CheckFailure([](auto& c) { c.benchmark.rssiRange = static_cast<SaturatedRssiRange>(99); },
