@@ -41,6 +41,8 @@ file(REMOVE
     "${CMAKE_HEADER_OUTPUT_DIRECTORY}/ap-generator.h"
     "${CMAKE_HEADER_OUTPUT_DIRECTORY}/app-tx-tag.h"
     "${CMAKE_HEADER_OUTPUT_DIRECTORY}/contention-aware-agent-distribution.h"
+    "${CMAKE_HEADER_OUTPUT_DIRECTORY}/contention-aware-distribution-internal.h"
+    "${CMAKE_HEADER_OUTPUT_DIRECTORY}/llm-log.h"
     "${CMAKE_HEADER_OUTPUT_DIRECTORY}/sta-llm-generator.h"
     "${CMAKE_HEADER_OUTPUT_DIRECTORY}/trace-parser.h"
     "${CMAKE_HEADER_OUTPUT_DIRECTORY}/traffic-schedule.h"

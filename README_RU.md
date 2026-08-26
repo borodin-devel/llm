@@ -1206,9 +1206,8 @@ JSON.
 ### Тесты потоковых скриптов
 
 ```bash
-cd contrib/llm
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
-  -s scripts/tests -t . -p 'test_*.py' -v
+  -s contrib/llm/scripts/tests -t contrib/llm/scripts -p 'test_*.py' -v
 ```
 
 Тестируются потоковая проверка, числовые границы, сохранение метаданных,

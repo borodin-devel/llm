@@ -1181,9 +1181,8 @@ usage.
 ### Streaming-script tests
 
 ```bash
-cd contrib/llm
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
-  -s scripts/tests -t . -p 'test_*.py' -v
+  -s contrib/llm/scripts/tests -t contrib/llm/scripts -p 'test_*.py' -v
 ```
 
 These tests cover streaming validation, numeric bounds, metadata preservation,
