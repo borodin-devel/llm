@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -26,6 +28,16 @@ class _FakeProcess:
 
     def communicate(self, timeout=None):
         return self.stdout, None
+
+
+def _kill_test_process(process_id):
+    try:
+        os.kill(process_id, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + 1.0
+    while Path(f"/proc/{process_id}").exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
 
 
 class LiveTraceRunnerTest(unittest.TestCase):
@@ -178,3 +190,54 @@ class LiveTraceRunnerTest(unittest.TestCase):
                 self.assertEqual(process_state, "Z", "grandchild remains live after timeout")
                 time.sleep(0.01)
             self.assertFalse(status_path.exists(), "grandchild was not reaped after timeout")
+
+    def test_timeout_kills_grandchild_after_leader_closes_pipe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            pid_path = temporary / "grandchild.pid"
+            marker_path = temporary / "survived.marker"
+            grandchild = (
+                "import os,signal,time,pathlib;"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+                f"pathlib.Path({str(pid_path)!r}).write_text(str(os.getpid()));"
+                "time.sleep(0.6);"
+                f"pathlib.Path({str(marker_path)!r}).write_text('survived');"
+                "time.sleep(30)"
+            )
+            parent = (
+                "import subprocess,sys,time;"
+                f"subprocess.Popen([sys.executable, '-c', {grandchild!r}],"
+                "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);"
+                "time.sleep(30)"
+            )
+            started = time.monotonic()
+            with self.assertRaisesRegex(LiveTraceError, "exceeded"):
+                _run_captured(
+                    subprocess.Popen,
+                    [sys.executable, "-c", parent],
+                    temporary,
+                    0.1,
+                    self.source,
+                )
+            elapsed = time.monotonic() - started
+            self.assertLess(elapsed, 0.8, "timeout cleanup did not return promptly")
+            self.assertTrue(pid_path.exists(), "grandchild did not start")
+            grandchild_pid = int(pid_path.read_text(encoding="utf-8"))
+            try:
+                time.sleep(0.6)
+                with self.subTest("survival marker"):
+                    self.assertFalse(marker_path.exists(), "grandchild survived timeout cleanup")
+                with self.subTest("process state"):
+                    status_path = Path(f"/proc/{grandchild_pid}/stat")
+                    reap_deadline = time.monotonic() + 1.0
+                    while status_path.exists() and time.monotonic() < reap_deadline:
+                        process_state = status_path.read_text(encoding="utf-8").split()[2]
+                        self.assertEqual(
+                            process_state, "Z", "grandchild remains live after timeout"
+                        )
+                        time.sleep(0.01)
+                    self.assertFalse(
+                        status_path.exists(), "grandchild was not reaped after timeout"
+                    )
+            finally:
+                _kill_test_process(grandchild_pid)

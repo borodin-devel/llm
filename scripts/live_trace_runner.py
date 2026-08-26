@@ -28,16 +28,36 @@ def _signal_process_group(process, signal_number):
         pass
 
 
+def _process_group_exists(process):
+    """Return whether the dedicated process group still has a member."""
+    try:
+        os.killpg(process.pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 def _terminate_process_group(process, timeout_output):
     """TERM a timed-out group, then KILL and reap it after a bounded grace."""
+    grace_deadline = time.monotonic() + TERM_GRACE_SECONDS
     _signal_process_group(process, signal.SIGTERM)
+    communication_timed_out = False
     try:
         stdout, _ = process.communicate(timeout=TERM_GRACE_SECONDS)
     except subprocess.TimeoutExpired as term_error:
+        communication_timed_out = True
+        stdout = term_error.stdout
+    while _process_group_exists(process):
+        remaining = grace_deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.01, remaining))
+    if _process_group_exists(process):
         _signal_process_group(process, signal.SIGKILL)
-        stdout, _ = process.communicate()
-        if stdout is None:
-            stdout = term_error.stdout
+    if communication_timed_out:
+        drained_stdout, _ = process.communicate()
+        if drained_stdout is not None:
+            stdout = drained_stdout
     if stdout is None:
         stdout = timeout_output
     return console_text(stdout)
