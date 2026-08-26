@@ -43,6 +43,7 @@ LlmTestSuite::LlmTestSuite()
     AddCases(CreateScenarioRunPathTestCases());
     AddCases(CreateScenarioTopologyTestCases());
     AddCases(CreateSaturatedTcpConfigTestCases());
+    AddCases(CreateSaturatedTcpPropagationTestCases());
 }
 
 void

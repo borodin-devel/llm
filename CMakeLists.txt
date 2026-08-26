@@ -63,6 +63,7 @@ set(test_sources
     test/config/scenario-config-validation-test-suite.cc
     test/config/scenario-run-path-test-suite.cc
     test/saturated-tcp/config-test-suite.cc
+    test/saturated-tcp/propagation-test-suite.cc
     test/runtime/scenario-logging-test-suite.cc
     test/runtime/scenario-topology-test-suite.cc
     test/runtime/traffic-coordinator-test-suite.cc
@@ -87,6 +88,8 @@ set(test_sources
     examples/saturated-tcp/config-cli.cc
     examples/saturated-tcp/config-validation.cc
     examples/saturated-tcp/config-json.cc
+    examples/saturated-tcp/bss-link-filter.cc
+    examples/saturated-tcp/rssi-placement.cc
     examples/runtime/log.cc
     examples/runtime/topology.cc
     examples/runtime/traffic-coordinator.cc
