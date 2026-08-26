@@ -47,7 +47,7 @@ examples/saturated-tcp-scenario.cc
   -> saturated-tcp/topology
        -> filtered native propagation
   -> saturated-tcp/traffic
-       -> readiness barrier + BulkSend
+       -> readiness barrier + SaturatedTcpSender
   -> saturated-tcp/sta-metrics
        -> PPDU rate/airtime collection
        -> EDCA channel-access waiting
@@ -73,6 +73,7 @@ examples/saturated-tcp/
 |-- config-internal.h
 |-- topology.{cc,h}
 |-- bss-link-filter.{cc,h}
+|-- saturated-tcp-sender.{cc,h}
 |-- traffic.{cc,h}
 |-- readiness-barrier.{cc,h}
 |-- access-tracking-sta-wifi-mac.{cc,h}
@@ -259,25 +260,38 @@ The current runner prints and documents the limitation. It must not produce a
 
 Each STA has one independent application-data flow per active direction:
 
-- UL: STA BulkSend sender to its BSS's wired server sink.
-- DL: wired server BulkSend sender to that STA sink.
+- UL: STA saturated sender to its BSS's wired server sink.
+- DL: wired server saturated sender to that STA sink.
 - UL+DL: both independent TCP connections simultaneously on separate ports.
 
 All three BSSs use the same traffic mode in a run.
 
-BulkSend is unlimited (`MaxBytes = 0`). There is no application data-rate
-throttle. TCP and Wi-Fi determine achieved traffic. TCP uses
-`ns3::TcpHighSpeed`, a 1460-byte segment payload, and 32 MiB send/receive
-buffers.
+The built-in `BulkSendApplication` cannot be used directly because it begins
+sending as soon as its TCP connection succeeds, before a common readiness
+barrier can open. A focused benchmark-only `SaturatedTcpSender` implements the
+same unlimited send-buffer-filling behavior while separating connection
+readiness from payload start:
+
+- connect the TCP socket early;
+- report ready exactly once when connection succeeds;
+- send no payload before `StartTraffic()`;
+- after `StartTraffic()`, keep calling `Socket::Send()` until the send buffer
+  fills, then resume from the socket send callback;
+- impose no byte or data-rate limit;
+- stop cleanly after the measured second.
+
+There is no application data-rate throttle. TCP and Wi-Fi determine achieved
+traffic. TCP uses `ns3::TcpHighSpeed`, a 1460-byte segment payload, and 32 MiB
+send/receive buffers.
 
 ### Event-driven measurement epoch
 
 There is no fixed warm-up interval. The benchmark follows the current
 `llm-scenario` readiness pattern:
 
-1. Install sinks and create all required TCP connections.
+1. Install sinks and create every benchmark sender/TCP connection.
 2. Wait for every STA association and every active BulkSend connection.
-3. Every sender reports ready without sending measured payload early.
+3. Every `SaturatedTcpSender` reports ready without sending payload early.
 4. Select the first whole-second boundary strictly after complete readiness.
 5. Reset/start all metric collectors and all senders at that common epoch.
 6. Measure exactly one second.
@@ -612,7 +626,8 @@ Focused tests cover:
 - equilateral AP and deterministic ring coordinates;
 - every same/cross-BSS role pair in isolated/shared link filtering;
 - 2x2 PHY attributes and BSS colors 1/2/3;
-- flow construction for UL, DL, and UL+DL;
+- sender connect/ready/start/send-buffer behavior and flow construction for
+  UL, DL, and UL+DL;
 - readiness barrier, next-second epoch, one-second stop, and timeout failure;
 - all relevant PPDU kinds, TxVector rates, PSDU bytes, PPDU airtime, and retries;
 - access request/grant intervals, frozen backoff, multiple-AC union, and window
