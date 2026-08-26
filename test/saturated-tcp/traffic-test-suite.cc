@@ -1065,6 +1065,60 @@ SaturatedReadinessBarrierDuplicateTestCase::DoRun()
 /**
  * @ingroup tests
  *
+ * Verify that a TCP retry after 30 seconds can still complete readiness.
+ */
+class SaturatedReadinessBarrierDelayedReadyTestCase : public TestCase
+{
+  public:
+    /** Construct the delayed-readiness regression test. */
+    SaturatedReadinessBarrierDelayedReadyTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+SaturatedReadinessBarrierDelayedReadyTestCase::SaturatedReadinessBarrierDelayedReadyTestCase()
+    : TestCase("accept saturated readiness at the 45-second TCP retry")
+{
+}
+
+void
+SaturatedReadinessBarrierDelayedReadyTestCase::DoRun()
+{
+#ifdef __unix__
+    const auto result = RunFatalPath([] {
+        BarrierRecorder recorder;
+        SaturatedReadinessBarrier barrier(
+            MakeCallback(&BarrierRecorder::StartStatistics, &recorder),
+            MakeCallback(&BarrierRecorder::FinalizeStatistics, &recorder));
+        auto sender = CreateObject<SaturatedTcpSender>();
+        const auto ready =
+            barrier.RegisterSender(sender,
+                                   MakeCallback(&BarrierRecorder::StartSender, &recorder).Bind(0),
+                                   MakeCallback(&BarrierRecorder::StopSender, &recorder).Bind(0));
+        sender->SetReadyCallback(ready);
+        barrier.FinalizeRegistration();
+        Simulator::Schedule(Seconds(45), ready);
+        Simulator::Run();
+        if (!barrier.IsMeasurementComplete() ||
+            barrier.GetExperimentStartNs() != Seconds(46).GetNanoSeconds())
+        {
+            std::_Exit(EXIT_FAILURE);
+        }
+    });
+    NS_TEST_ASSERT_MSG_EQ(result.launched,
+                          true,
+                          "Could not create delayed-readiness child process");
+    NS_TEST_ASSERT_MSG_EQ(
+        result.failed,
+        false,
+        "Readiness at the 45-second TCP retry was rejected: " << result.diagnostic);
+#endif
+}
+
+/**
+ * @ingroup tests
+ *
  * Verify the fixed simulation-time safety failure for missing readiness.
  */
 class SaturatedReadinessBarrierTimeoutTestCase : public TestCase
@@ -1078,7 +1132,7 @@ class SaturatedReadinessBarrierTimeoutTestCase : public TestCase
 };
 
 SaturatedReadinessBarrierTimeoutTestCase::SaturatedReadinessBarrierTimeoutTestCase()
-    : TestCase("fail saturated readiness after the fixed 30-second safety timeout")
+    : TestCase("fail saturated readiness after the post-retry safety timeout")
 {
 }
 
@@ -1100,9 +1154,9 @@ SaturatedReadinessBarrierTimeoutTestCase::DoRun()
     });
     NS_TEST_ASSERT_MSG_EQ(result.launched, true, "Could not create fatal-path child process");
     NS_TEST_ASSERT_MSG_EQ(result.failed, true, "Missing readiness did not trigger safety failure");
-    NS_TEST_ASSERT_MSG_NE(result.diagnostic.find("readiness timeout after 30 s"),
+    NS_TEST_ASSERT_MSG_NE(result.diagnostic.find("readiness timeout after "),
                           std::string::npos,
-                          "Safety failure omitted the fixed timeout diagnostic");
+                          "Safety failure omitted the timeout diagnostic");
     NS_TEST_ASSERT_MSG_NE(result.diagnostic.find("0/1 senders ready"),
                           std::string::npos,
                           "Safety failure omitted the incomplete readiness count");
@@ -1312,6 +1366,7 @@ CreateSaturatedTcpTrafficTestCases()
             new SaturatedReadinessBarrierLifetimeTestCase,
             new SaturatedReadinessBarrierEmptyTestCase,
             new SaturatedReadinessBarrierDuplicateTestCase,
+            new SaturatedReadinessBarrierDelayedReadyTestCase,
             new SaturatedReadinessBarrierTimeoutTestCase,
             new SaturatedTcpFlowMatrixTestCase};
 }

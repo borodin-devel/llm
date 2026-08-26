@@ -73,7 +73,7 @@ class SaturatedReadinessBarrier
      */
     void RegisterApplication(Ptr<Application> application);
 
-    /** Lock registration, reject an empty barrier, and arm the 30-second safety timeout. */
+    /** Lock registration, reject an empty barrier, and arm the post-retry safety timeout. */
     void FinalizeRegistration();
 
     /** @return Number of registered senders. */

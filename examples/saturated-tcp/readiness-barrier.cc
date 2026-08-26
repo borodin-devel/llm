@@ -27,7 +27,7 @@ namespace
 {
 
 constexpr int64_t MEASUREMENT_DURATION_NS = 1'000'000'000;
-constexpr int64_t READINESS_TIMEOUT_SECONDS = 30;
+constexpr int64_t READINESS_TIMEOUT_SECONDS = 200;
 
 /**
  * Disable application callbacks and close one packet-sink socket.
@@ -245,8 +245,9 @@ SaturatedReadinessBarrier::FinalizeMeasurement()
 void
 SaturatedReadinessBarrier::ReadinessTimeout()
 {
-    NS_FATAL_ERROR("saturated TCP readiness timeout after 30 s: "
-                   << m_readySenderCount << "/" << m_senders.size() << " senders ready");
+    NS_FATAL_ERROR("saturated TCP readiness timeout after "
+                   << READINESS_TIMEOUT_SECONDS << " s: " << m_readySenderCount << "/"
+                   << m_senders.size() << " senders ready");
 }
 
 } // namespace ns3
