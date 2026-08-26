@@ -36,11 +36,19 @@ IsQualifyingStationMpdu(const WifiMpdu& mpdu, Mac48Address transmitterAddress)
     {
         return header.GetAddr2() == transmitterAddress;
     }
-    return header.IsCtl();
+    if (!header.IsCtl())
+    {
+        return false;
+    }
+    if (header.IsAck() || header.IsCts())
+    {
+        return true;
+    }
+    return header.GetAddr2() == transmitterAddress;
 }
 
 /**
- * Count qualifying PSDU bytes, retaining aggregate delimiter and padding bytes.
+ * Count qualifying PSDU bytes, retaining each aggregate subframe's delimiter and padding.
  *
  * @param psdu Candidate PSDU.
  * @param transmitterAddress Registered station transmitter address.
@@ -52,18 +60,22 @@ GetQualifyingPsduBytes(const WifiPsdu& psdu, Mac48Address transmitterAddress)
     uint64_t qualifyingMpduBytes = 0;
     std::size_t presentMpdus = 0;
     std::size_t qualifyingMpdus = 0;
+    std::size_t mpduIndex = 0;
     for (const auto& mpdu : psdu)
     {
         if (!mpdu)
         {
+            ++mpduIndex;
             continue;
         }
         ++presentMpdus;
         if (IsQualifyingStationMpdu(*mpdu, transmitterAddress))
         {
             ++qualifyingMpdus;
-            qualifyingMpduBytes += mpdu->GetSize();
+            qualifyingMpduBytes +=
+                psdu.IsAggregate() ? psdu.GetAmpduSubframeSize(mpduIndex) : mpdu->GetSize();
         }
+        ++mpduIndex;
     }
     if (qualifyingMpdus == 0)
     {
@@ -206,6 +218,11 @@ ExtractStationPpduMetricContribution(Mac48Address transmitterAddress,
         if (!psdu)
         {
             continue;
+        }
+        if (!presentPsdus.empty())
+        {
+            throw std::invalid_argument(
+                "station PHY metrics do not support multiple non-null PSDUs in SU mode");
         }
         presentPsdus.emplace(staId, psdu);
         const uint64_t psduBytes = GetQualifyingPsduBytes(*psdu, transmitterAddress);

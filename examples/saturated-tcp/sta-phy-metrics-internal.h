@@ -11,10 +11,10 @@
 namespace ns3
 {
 
-/** Extracted raw contribution of one qualifying station PPDU. */
+/** Extracted raw contribution of one qualifying single-user station PPDU. */
 struct StationPpduMetricContribution
 {
-    long double nominalRateBps{0.0L}; ///< PSDU-byte-weighted actual nominal user rate.
+    long double nominalRateBps{0.0L}; ///< Actual nominal user rate.
     long double psduBits{0.0L};       ///< Qualifying PSDU bits.
     int64_t ppduAirtimeNs{0};         ///< Complete PPDU duration in nanoseconds.
 };
@@ -27,6 +27,7 @@ struct StationPpduMetricContribution
  * @param psduMap Actual transmitted PSDUs indexed by STA ID.
  * @param txVector Actual transmission vector, including per-user modes.
  * @return Raw PPDU contribution, or null when no PSDU qualifies.
+ * @throws std::invalid_argument if more than one PSDU is non-null in the SU-only benchmark.
  */
 std::optional<StationPpduMetricContribution> ExtractStationPpduMetricContribution(
     Mac48Address transmitterAddress,

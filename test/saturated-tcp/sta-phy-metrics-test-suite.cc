@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -55,12 +56,12 @@ BuildLegacyTxVector(WifiMode mode = OfdmPhy::GetOfdmRate54Mbps())
 }
 
 /**
- * Build a valid two-user HE MU transmission vector with distinct rates.
+ * Build a valid two-user HE MU transmission vector with equal rates.
  *
  * @return Configured multi-user transmission vector.
  */
 WifiTxVector
-BuildTwoUserTxVector()
+BuildEqualRateTwoUserTxVector()
 {
     WifiTxVector txVector(HePhy::GetHeMcs0(),
                           WIFI_MIN_TX_PWR_LEVEL,
@@ -72,7 +73,7 @@ BuildTwoUserTxVector()
                           MHz_u{20},
                           false);
     txVector.SetHeMuUserInfo(1, {HeRu::RuSpec{RuType::RU_106_TONE, 1, true}, 0, 1});
-    txVector.SetHeMuUserInfo(2, {HeRu::RuSpec{RuType::RU_106_TONE, 2, true}, 7, 1});
+    txVector.SetHeMuUserInfo(2, {HeRu::RuSpec{RuType::RU_106_TONE, 2, true}, 0, 1});
     txVector.SetSigBMode(VhtPhy::GetVhtMcs0());
     return txVector;
 }
@@ -143,6 +144,33 @@ BuildAggregatePsdu()
     std::vector<Ptr<WifiMpdu>> mpdus{
         Create<WifiMpdu>(Create<Packet>(300), firstHeader),
         Create<WifiMpdu>(Create<Packet>(500), secondHeader),
+    };
+    return Create<WifiPsdu>(std::move(mpdus));
+}
+
+/**
+ * Build an A-MPDU with one qualifying data MPDU and one null-data MPDU.
+ *
+ * @return Constructed partially qualifying aggregate PSDU.
+ */
+Ptr<WifiPsdu>
+BuildPartiallyQualifyingAggregatePsdu()
+{
+    WifiMacHeader dataHeader(WIFI_MAC_QOSDATA);
+    dataHeader.SetAddr1(ACCESS_POINT_ADDRESS);
+    dataHeader.SetAddr2(STATION_ADDRESS);
+    dataHeader.SetAddr3(ACCESS_POINT_ADDRESS);
+    dataHeader.SetQosTid(0);
+    dataHeader.SetSequenceNumber(1);
+    WifiMacHeader nullHeader(WIFI_MAC_QOSDATA_NULL);
+    nullHeader.SetAddr1(ACCESS_POINT_ADDRESS);
+    nullHeader.SetAddr2(STATION_ADDRESS);
+    nullHeader.SetAddr3(ACCESS_POINT_ADDRESS);
+    nullHeader.SetQosTid(0);
+    nullHeader.SetSequenceNumber(2);
+    std::vector<Ptr<WifiMpdu>> mpdus{
+        Create<WifiMpdu>(Create<Packet>(300), dataHeader),
+        Create<WifiMpdu>(Create<Packet>(500), nullHeader),
     };
     return Create<WifiPsdu>(std::move(mpdus));
 }
@@ -420,54 +448,166 @@ StationPhyMetricClassificationTestCase::DoRun()
                           "Duplicate station metric registration was accepted");
 }
 
-/** @ingroup tests Verify actual per-user TX-vector modes weight PPDU nominal rate. */
-class StationPhyMetricPerUserRateTestCase : public TestCase
+/** @ingroup tests Verify station control attribution follows the wire address layout. */
+class StationPhyMetricControlAttributionTestCase : public TestCase
 {
   public:
-    StationPhyMetricPerUserRateTestCase();
+    StationPhyMetricControlAttributionTestCase();
 
   private:
     void DoRun() override;
 };
 
-StationPhyMetricPerUserRateTestCase::StationPhyMetricPerUserRateTestCase()
-    : TestCase("use actual per-user TX-vector modes for station PPDU metrics")
+StationPhyMetricControlAttributionTestCase::StationPhyMetricControlAttributionTestCase()
+    : TestCase("attribute station control PPDUs by serialized transmitter address")
 {
 }
 
 void
-StationPhyMetricPerUserRateTestCase::DoRun()
+StationPhyMetricControlAttributionTestCase::DoRun()
 {
     StationPhyMetricRecorder recorder(0, 20'000'000, 10'000'000);
     recorder.RegisterStation(7, STATION_ADDRESS);
-    const auto txVector = BuildTwoUserTxVector();
+
+    const auto ack = BuildPsdu(WIFI_MAC_CTL_ACK, 0, ACCESS_POINT_ADDRESS, UNRELATED_ADDRESS);
+    const auto cts = BuildPsdu(WIFI_MAC_CTL_CTS, 0, ACCESS_POINT_ADDRESS, UNRELATED_ADDRESS);
+    RecordPsdu(recorder, 7, 1'000'000, ack);
+    RecordPsdu(recorder, 7, 2'000'000, cts);
+    const auto oneAddressOverall = recorder.BuildOverallAccumulator(7);
+    const long double expectedOneAddressBits =
+        static_cast<long double>(ack->GetSize() + cts->GetSize()) * 8.0L;
+    NS_TEST_ASSERT_MSG_EQ_TOL(
+        static_cast<double>(oneAddressOverall.psduBits),
+        static_cast<double>(expectedOneAddressBits),
+        1e-12,
+        "Recorder-owned station PHY binding did not admit one-address ACK/CTS frames");
+
+    RecordPsdu(recorder,
+               7,
+               3'000'000,
+               BuildPsdu(WIFI_MAC_CTL_RTS, 0, ACCESS_POINT_ADDRESS, UNRELATED_ADDRESS));
+    RecordPsdu(recorder,
+               7,
+               4'000'000,
+               BuildPsdu(WIFI_MAC_CTL_BACKREQ, 16, ACCESS_POINT_ADDRESS, UNRELATED_ADDRESS));
+    RecordPsdu(recorder,
+               7,
+               5'000'000,
+               BuildPsdu(WIFI_MAC_CTL_BACKRESP, 24, ACCESS_POINT_ADDRESS, UNRELATED_ADDRESS));
+
+    const auto afterMismatchedTransmitters = recorder.BuildOverallAccumulator(7);
+    NS_TEST_ASSERT_MSG_EQ(afterMismatchedTransmitters.ppduAirtimeNs,
+                          oneAddressOverall.ppduAirtimeNs,
+                          "Mismatched two-address control frame changed PPDU airtime");
+    NS_TEST_ASSERT_MSG_EQ_TOL(static_cast<double>(afterMismatchedTransmitters.nominalRateBpsNs),
+                              static_cast<double>(oneAddressOverall.nominalRateBpsNs),
+                              1e-12,
+                              "Mismatched two-address control frame changed nominal-rate airtime");
+    NS_TEST_ASSERT_MSG_EQ_TOL(static_cast<double>(afterMismatchedTransmitters.psduBits),
+                              static_cast<double>(oneAddressOverall.psduBits),
+                              1e-12,
+                              "Mismatched RTS/BAR/BlockAck frame changed PSDU bits");
+}
+
+/** @ingroup tests Verify partial A-MPDU attribution retains subframe overhead. */
+class StationPhyMetricPartialAggregateTestCase : public TestCase
+{
+  public:
+    StationPhyMetricPartialAggregateTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+StationPhyMetricPartialAggregateTestCase::StationPhyMetricPartialAggregateTestCase()
+    : TestCase("retain qualifying A-MPDU subframe delimiter and padding bytes")
+{
+}
+
+void
+StationPhyMetricPartialAggregateTestCase::DoRun()
+{
+    StationPhyMetricRecorder recorder(0, 20'000'000, 10'000'000);
+    recorder.RegisterStation(7, STATION_ADDRESS);
+    const auto aggregate = BuildPartiallyQualifyingAggregatePsdu();
+    RecordPsdu(recorder, 7, 1'000'000, aggregate, BuildAggregateTxVector());
+
+    const auto overall = recorder.BuildOverallAccumulator(7);
+    NS_TEST_ASSERT_MSG_EQ(overall.psduBits,
+                          2688.0L,
+                          "Qualifying aggregate subframe lost delimiter or padding bits");
+}
+
+/** @ingroup tests Verify SU-only station metrics reject multi-user PPDU maps. */
+class StationPhyMetricMultiUserRejectionTestCase : public TestCase
+{
+  public:
+    StationPhyMetricMultiUserRejectionTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+StationPhyMetricMultiUserRejectionTestCase::StationPhyMetricMultiUserRejectionTestCase()
+    : TestCase("reject multi-user PPDU maps from SU-only station metrics")
+{
+}
+
+void
+StationPhyMetricMultiUserRejectionTestCase::DoRun()
+{
+    StationPhyMetricRecorder recorder(0, 20'000'000, 10'000'000);
+    recorder.RegisterStation(7, STATION_ADDRESS);
+    const auto txVector = BuildEqualRateTwoUserTxVector();
     const WifiConstPsduMap psduMap{
-        {1, BuildPsdu(WIFI_MAC_DATA, 100)},
-        {2, BuildPsdu(WIFI_MAC_DATA, 300)},
+        {1, BuildPsdu(WIFI_MAC_DATA, 1400)},
+        {2, BuildPsdu(WIFI_MAC_DATA, 1400)},
     };
     const int64_t durationNs =
         WifiPhy::CalculateTxDuration(psduMap, txVector, WIFI_PHY_BAND_5GHZ).GetNanoSeconds();
-    recorder.RecordPpduAttempt(7, 1'000'000, WIFI_PHY_BAND_5GHZ, psduMap, txVector);
-
-    const long double firstBytes = psduMap.at(1)->GetSize();
-    const long double secondBytes = psduMap.at(2)->GetSize();
     const long double firstRate = txVector.GetMode(1).GetDataRate(txVector, 1);
     const long double secondRate = txVector.GetMode(2).GetDataRate(txVector, 2);
-    const long double expectedRate =
-        (firstRate * firstBytes + secondRate * secondBytes) / (firstBytes + secondBytes);
+    NS_TEST_ASSERT_MSG_EQ(firstRate, secondRate, "Multi-user regression rates are not equal");
+
+    StationPhyMetricAccumulator inconsistent;
+    inconsistent.nominalRateBpsNs = firstRate * durationNs;
+    inconsistent.psduBits =
+        static_cast<long double>(psduMap.at(1)->GetSize() + psduMap.at(2)->GetSize()) * 8.0L;
+    inconsistent.ppduAirtimeNs = durationNs;
+    bool derivationRejected = false;
+    try
+    {
+        static_cast<void>(DeriveStationPhyMetrics(inconsistent, 10'000'000));
+    }
+    catch (const std::invalid_argument&)
+    {
+        derivationRejected = true;
+    }
+    NS_TEST_ASSERT_MSG_EQ(derivationRejected,
+                          true,
+                          "Concurrent user bits did not expose the old rate inconsistency");
+
+    bool observationRejected = false;
+    std::string diagnostic;
+    try
+    {
+        recorder.RecordPpduAttempt(7, 1'000'000, WIFI_PHY_BAND_5GHZ, psduMap, txVector);
+    }
+    catch (const std::invalid_argument& error)
+    {
+        observationRejected = true;
+        diagnostic = error.what();
+    }
+    NS_TEST_ASSERT_MSG_EQ(observationRejected,
+                          true,
+                          "SU-only station metrics accepted a multi-user PPDU map");
+    NS_TEST_ASSERT_MSG_EQ(diagnostic,
+                          "station PHY metrics do not support multiple non-null PSDUs in SU mode",
+                          "Multi-user rejection diagnostic is not precise");
+
     const auto overall = recorder.BuildOverallAccumulator(7);
-    NS_TEST_ASSERT_MSG_EQ(overall.ppduAirtimeNs,
-                          durationNs,
-                          "Complete multi-user PPDU duration was not recorded once");
-    NS_TEST_ASSERT_MSG_EQ_TOL(
-        static_cast<double>(overall.nominalRateBpsNs),
-        static_cast<double>(expectedRate * static_cast<long double>(durationNs)),
-        1e-3,
-        "Actual per-user TX-vector modes did not weight nominal-rate airtime");
-    NS_TEST_ASSERT_MSG_EQ_TOL(static_cast<double>(overall.psduBits),
-                              static_cast<double>((firstBytes + secondBytes) * 8.0L),
-                              1e-12,
-                              "Qualifying per-user PSDU bytes were not summed");
+    NS_TEST_ASSERT_MSG_EQ(overall.ppduAirtimeNs, 0, "Rejected multi-user PPDU changed airtime");
+    NS_TEST_ASSERT_MSG_EQ(overall.psduBits, 0.0L, "Rejected multi-user PPDU changed PSDU bits");
 }
 
 /** @ingroup tests Verify nanosecond PPDU and contention boundary splitting. */
@@ -570,7 +710,9 @@ CreateSaturatedTcpStaPhyMetricTestCases()
         new StationPhyMetricFormulaTestCase(),
         new StationPhyMetricRangeTestCase(),
         new StationPhyMetricClassificationTestCase(),
-        new StationPhyMetricPerUserRateTestCase(),
+        new StationPhyMetricControlAttributionTestCase(),
+        new StationPhyMetricPartialAggregateTestCase(),
+        new StationPhyMetricMultiUserRejectionTestCase(),
         new StationPhyMetricWindowSplitTestCase(),
     };
 }

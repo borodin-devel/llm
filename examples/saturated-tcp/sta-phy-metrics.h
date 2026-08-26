@@ -92,14 +92,17 @@ class StationPhyMetricRecorder
      * Record one qualifying PPDU attempt from a registered station trace.
      *
      * Data, TCP-ACK-sized data, unicast control frames, aggregated MPDUs, and
-     * retries qualify. Management, null-data, group-addressed, mismatched-source,
-     * and unknown-transmitter observations do not qualify.
+     * retries qualify. Data and two-address control frames must carry the registered
+     * station transmitter address. One-address ACK and CTS frames rely on the
+     * recorder-owned station PHY binding. Management, null-data, group-addressed,
+     * mismatched-source, and unknown-transmitter observations do not qualify.
      *
      * @param stationId Bound registered station identifier.
      * @param ppduStartNs PPDU start time in nanoseconds.
      * @param band PHY band used for the transmission.
      * @param psduMap Actual transmitted PSDUs indexed by STA ID.
      * @param txVector Actual transmission vector, including per-user modes.
+     * @throws std::invalid_argument if more than one PSDU is non-null in the SU-only benchmark.
      */
     void RecordPpduAttempt(uint32_t stationId,
                            int64_t ppduStartNs,
