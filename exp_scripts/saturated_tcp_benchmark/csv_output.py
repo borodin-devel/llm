@@ -9,6 +9,7 @@ from io import StringIO
 import math
 import os
 from pathlib import Path
+import stat
 from typing import Any, TextIO
 
 from .matrix import ExperimentConfiguration
@@ -48,6 +49,10 @@ def _build_header() -> tuple[str, ...]:
 
 
 CSV_HEADER = _build_header()
+
+
+def _exclusive_nofollow_opener(path: str, flags: int) -> int:
+    return os.open(path, flags | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
 
 
 @dataclass(frozen=True)
@@ -189,8 +194,23 @@ class ExcelCsvWriter:
     ) -> None:
         self.path = Path(path)
         self._fsync = fsync
-        self._file = self.path.open("x", encoding="utf-8-sig", newline="")
+        self._file = open(
+            self.path,
+            "x",
+            encoding="utf-8-sig",
+            newline="",
+            opener=_exclusive_nofollow_opener,
+        )
         try:
+            descriptor_status = os.fstat(self._file.fileno())
+            path_status = self.path.lstat()
+            if not stat.S_ISREG(descriptor_status.st_mode):
+                raise OSError(f"CSV descriptor is not regular: {self.path}")
+            if not stat.S_ISREG(path_status.st_mode):
+                raise OSError(f"CSV path is not regular: {self.path}")
+            self._identity = (descriptor_status.st_dev, descriptor_status.st_ino)
+            if self._identity != (path_status.st_dev, path_status.st_ino):
+                raise OSError(f"CSV descriptor/path identity mismatch: {self.path}")
             _writer(self._file).writerow(CSV_HEADER)
             self._synchronize()
         except BaseException:
@@ -207,6 +227,14 @@ class ExcelCsvWriter:
         """Close the retained CSV without removing any published data."""
         if not self._file.closed:
             self._file.close()
+
+    def fileno(self) -> int:
+        """Return the live CSV descriptor for identity validation."""
+        return self._file.fileno()
+
+    def identity(self) -> tuple[int, int]:
+        """Return the CSV identity pinned immediately after exclusive open."""
+        return self._identity
 
     def append_attempt(self, rows: Iterable[BssCsvRow]) -> None:
         """Append exactly three validated rows using one prepared text write."""

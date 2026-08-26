@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 import os
 from pathlib import Path
 import re
@@ -114,6 +115,25 @@ _DEFAULT_EFFECTIVE_CONFIGURATION: dict[str, object] = {
 
 class RunnerError(RuntimeError):
     """A fail-fast runner lifecycle or configuration error."""
+
+
+class _ProcessGroupState(Enum):
+    """Sticky result of one stored-PGID operation."""
+
+    PRESENT = "present"
+    ABSENT = "absent"
+
+
+@dataclass(frozen=True)
+class _ObjectIdentity:
+    """Pinned filesystem object identity from lstat or fstat."""
+
+    device: int
+    inode: int
+
+
+def _object_identity(status: os.stat_result) -> _ObjectIdentity:
+    return _ObjectIdentity(status.st_dev, status.st_ino)
 
 
 @dataclass(frozen=True)
@@ -263,52 +283,61 @@ def _expected_configuration(
     return expected
 
 
-def _signal_process_group(process_group_id: int, signal_number: int) -> None:
-    """Signal one stored process group without resolving its leader again."""
+def _signal_process_group(
+    process_group_id: int, signal_number: int
+) -> _ProcessGroupState:
+    """Signal one stored group and report whether it existed at that operation."""
     try:
         os.killpg(process_group_id, signal_number)
     except ProcessLookupError:
-        pass
+        return _ProcessGroupState.ABSENT
+    return _ProcessGroupState.PRESENT
 
 
-def _process_group_exists(process_group_id: int) -> bool:
-    """Probe one stored process group, treating an empty group as absent."""
+def _probe_process_group(process_group_id: int) -> _ProcessGroupState:
+    """Probe one stored process group and return an explicit sticky state."""
     try:
         os.killpg(process_group_id, 0)
     except ProcessLookupError:
-        return False
-    return True
+        return _ProcessGroupState.ABSENT
+    return _ProcessGroupState.PRESENT
 
 
-def _wait_for_process_group_absence(process_group_id: int, timeout: float) -> bool:
+def _wait_for_process_group_absence(
+    process_group_id: int,
+    timeout: float,
+    initial_state: _ProcessGroupState,
+) -> _ProcessGroupState:
     """Return whether members remain, never probing again after observing absence."""
     deadline = time.monotonic() + timeout
-    group_exists = _process_group_exists(process_group_id)
-    while group_exists:
+    state = initial_state
+    while state is _ProcessGroupState.PRESENT:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
         time.sleep(min(0.01, remaining))
-        group_exists = _process_group_exists(process_group_id)
-    return group_exists
+        state = _probe_process_group(process_group_id)
+    return state
 
 
 def _terminate_process_group(process: object, process_group_id: int) -> None:
     """TERM a dedicated group, KILL survivors, then reap the direct child."""
-    _signal_process_group(process_group_id, signal.SIGTERM)
-    group_exists = _wait_for_process_group_absence(
-        process_group_id, TERM_GRACE_SECONDS
-    )
-    if group_exists:
-        _signal_process_group(process_group_id, signal.SIGKILL)
-        group_exists = _wait_for_process_group_absence(
-            process_group_id, KILL_GRACE_SECONDS
+    state = _signal_process_group(process_group_id, signal.SIGTERM)
+    if state is _ProcessGroupState.PRESENT:
+        state = _wait_for_process_group_absence(
+            process_group_id, TERM_GRACE_SECONDS, state
         )
+    if state is _ProcessGroupState.PRESENT:
+        state = _signal_process_group(process_group_id, signal.SIGKILL)
+        if state is _ProcessGroupState.PRESENT:
+            state = _wait_for_process_group_absence(
+                process_group_id, KILL_GRACE_SECONDS, state
+            )
     try:
         process.wait(timeout=KILL_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
-        if group_exists:
-            _signal_process_group(process_group_id, signal.SIGKILL)
+        if state is _ProcessGroupState.PRESENT:
+            state = _signal_process_group(process_group_id, signal.SIGKILL)
         else:
             process.kill()
         process.wait()
@@ -341,7 +370,8 @@ def _run_process(
                 f"benchmark process timed out after {timeout_seconds} seconds"
             ) from error
 
-        if _process_group_exists(process_group_id):
+        state = _probe_process_group(process_group_id)
+        if state is _ProcessGroupState.PRESENT:
             _terminate_process_group(process, process_group_id)
             raise RunnerError(
                 "benchmark wrapper exited while descendant processes remained"
@@ -370,7 +400,8 @@ def _require_directory_no_follow(
     path: Path,
     container: Path,
     description: str,
-) -> None:
+    expected_identity: _ObjectIdentity | None = None,
+) -> _ObjectIdentity:
     try:
         status = path.lstat()
     except OSError as error:
@@ -380,13 +411,21 @@ def _require_directory_no_follow(
     if not stat.S_ISDIR(status.st_mode):
         raise RunnerError(f"{description} is not a directory: {path}")
     _resolved_contained(path, container, description)
+    identity = _object_identity(status)
+    if expected_identity is not None and identity != expected_identity:
+        raise RunnerError(
+            f"{description} identity changed or was replaced: {path}"
+        )
+    return identity
 
 
 def _require_regular_file_no_follow(
     path: Path,
     container: Path,
     description: str,
-) -> None:
+    expected_identity: _ObjectIdentity | None = None,
+    descriptor: int | None = None,
+) -> _ObjectIdentity:
     try:
         status = path.lstat()
     except OSError as error:
@@ -396,33 +435,56 @@ def _require_regular_file_no_follow(
     if not stat.S_ISREG(status.st_mode):
         raise RunnerError(f"{description} is not a regular file: {path}")
     _resolved_contained(path, container, description)
+    identity = _object_identity(status)
+    if descriptor is not None:
+        descriptor_status = os.fstat(descriptor)
+        if not stat.S_ISREG(descriptor_status.st_mode):
+            raise RunnerError(f"{description} descriptor is not regular: {path}")
+        descriptor_identity = _object_identity(descriptor_status)
+        if expected_identity is not None and descriptor_identity != expected_identity:
+            raise RunnerError(f"{description} descriptor identity changed: {path}")
+        if descriptor_identity != identity:
+            raise RunnerError(
+                f"{description} descriptor/path identity mismatch: {path}"
+            )
+    if expected_identity is not None and identity != expected_identity:
+        raise RunnerError(
+            f"{description} identity changed or was replaced: {path}"
+        )
+    return identity
 
 
-def _prepare_run_parent(path: Path, root: Path) -> None:
+def _prepare_run_parent(path: Path, root: Path) -> _ObjectIdentity:
     try:
-        path.lstat()
+        initial_status = path.lstat()
     except FileNotFoundError:
         try:
             path.mkdir()
         except OSError as error:
             raise RunnerError(f"cannot create benchmark run parent {path}: {error}") from error
+        return _require_directory_no_follow(path, root, "benchmark run parent")
     except OSError as error:
         raise RunnerError(f"cannot inspect benchmark run parent {path}: {error}") from error
-    _require_directory_no_follow(path, root, "benchmark run parent")
+    return _require_directory_no_follow(
+        path,
+        root,
+        "benchmark run parent",
+        _object_identity(initial_status),
+    )
 
 
 def _create_directory_exclusively(
     path: Path,
     container: Path,
     description: str,
-) -> None:
+) -> _ObjectIdentity:
     try:
         path.mkdir()
     except FileExistsError as error:
         raise RunnerError(f"{description} already exists: {path}") from error
     except OSError as error:
         raise RunnerError(f"cannot create {description} {path}: {error}") from error
-    _require_directory_no_follow(path, container, description)
+    return _require_directory_no_follow(path, container, description)
 
 
 def _require_attempt_hierarchy(
@@ -431,16 +493,34 @@ def _require_attempt_hierarchy(
     run_directory: Path,
     experiment_directory: Path,
     attempt_directory: Path,
+    run_parent_identity: _ObjectIdentity,
+    run_directory_identity: _ObjectIdentity,
+    experiment_directory_identity: _ObjectIdentity,
+    attempt_directory_identity: _ObjectIdentity,
 ) -> None:
-    _require_directory_no_follow(run_parent, root, "benchmark run parent")
     _require_directory_no_follow(
-        run_directory, run_parent, "benchmark timestamp directory"
+        run_parent,
+        root,
+        "benchmark run parent",
+        run_parent_identity,
     )
     _require_directory_no_follow(
-        experiment_directory, run_directory, "experiment directory"
+        run_directory,
+        run_parent,
+        "benchmark timestamp directory",
+        run_directory_identity,
     )
     _require_directory_no_follow(
-        attempt_directory, experiment_directory, "attempt directory"
+        experiment_directory,
+        run_directory,
+        "experiment directory",
+        experiment_directory_identity,
+    )
+    _require_directory_no_follow(
+        attempt_directory,
+        experiment_directory,
+        "attempt directory",
+        attempt_directory_identity,
     )
 
 
@@ -453,11 +533,17 @@ def _nofollow_opener(path: str, flags: int) -> int:
 
 
 @contextmanager
-def _exclusive_regular_log(path: Path) -> Iterator[BinaryIO]:
+def _exclusive_regular_log(
+    path: Path,
+) -> Iterator[tuple[BinaryIO, _ObjectIdentity]]:
     with open(path, "xb", opener=_nofollow_opener) as output:
-        if not stat.S_ISREG(os.fstat(output.fileno()).st_mode):
-            raise RunnerError(f"attempt log is not a regular file: {path}")
-        yield output
+        identity = _require_regular_file_no_follow(
+            path,
+            path.parent,
+            "attempt log",
+            descriptor=output.fileno(),
+        )
+        yield output, identity
 
 
 def _read_log_tail(path: Path) -> str:
@@ -534,15 +620,15 @@ def run_benchmark(
     ):
         raise RunnerError(f"invalid benchmark timestamp component: {timestamp!r}")
     run_parent = root / "run"
-    _prepare_run_parent(run_parent, root)
+    run_parent_identity = _prepare_run_parent(run_parent, root)
     run_directory = run_parent / f"scripted_exp_{timestamp}"
-    _create_directory_exclusively(
+    run_directory_identity = _create_directory_exclusively(
         run_directory, run_parent, "benchmark timestamp directory"
     )
 
     attempt_count = len(requested) * loaded.repetitions
     completed = 0
-    created_experiments: set[int] = set()
+    experiment_identities: dict[int, _ObjectIdentity] = {}
     try:
         csv_output = ExcelCsvWriter(run_directory / "results.csv")
     except FileExistsError as error:
@@ -554,17 +640,44 @@ def run_benchmark(
 
     with csv_output:
         results_path = run_directory / "results.csv"
-        _require_regular_file_no_follow(results_path, run_directory, "benchmark CSV")
+        results_identity = _ObjectIdentity(*csv_output.identity())
+        _require_regular_file_no_follow(
+            results_path,
+            run_directory,
+            "benchmark CSV",
+            results_identity,
+            descriptor=csv_output.fileno(),
+        )
         for attempt in iter_experiment_attempts(requested, loaded.repetitions):
             configuration = attempt.configuration
             experiment_directory = run_directory / f"experiment_{configuration.experiment_id:03d}"
-            if configuration.experiment_id not in created_experiments:
-                _create_directory_exclusively(
+            _require_directory_no_follow(
+                run_parent,
+                root,
+                "benchmark run parent",
+                run_parent_identity,
+            )
+            _require_directory_no_follow(
+                run_directory,
+                run_parent,
+                "benchmark timestamp directory",
+                run_directory_identity,
+            )
+            if configuration.experiment_id not in experiment_identities:
+                experiment_identity = _create_directory_exclusively(
                     experiment_directory, run_directory, "experiment directory"
                 )
-                created_experiments.add(configuration.experiment_id)
+                experiment_identities[configuration.experiment_id] = experiment_identity
+            else:
+                experiment_identity = experiment_identities[configuration.experiment_id]
+                _require_directory_no_follow(
+                    experiment_directory,
+                    run_directory,
+                    "experiment directory",
+                    experiment_identity,
+                )
             attempt_directory = experiment_directory / f"attempt_{attempt.repetition_attempt}"
-            _create_directory_exclusively(
+            attempt_identity = _create_directory_exclusively(
                 attempt_directory, experiment_directory, "attempt directory"
             )
             _require_attempt_hierarchy(
@@ -573,6 +686,10 @@ def run_benchmark(
                 run_directory,
                 experiment_directory,
                 attempt_directory,
+                run_parent_identity,
+                run_directory_identity,
+                experiment_identity,
+                attempt_identity,
             )
             output_path = attempt_directory / OUTPUT_NAME
             try:
@@ -597,19 +714,89 @@ def run_benchmark(
                 file=output,
                 flush=True,
             )
+            stdout_identity = None
+            stderr_identity = None
             try:
                 with (
-                    _exclusive_regular_log(stdout_path) as stdout_log,
-                    _exclusive_regular_log(stderr_path) as stderr_log,
+                    _exclusive_regular_log(stdout_path) as stdout_pinned,
+                    _exclusive_regular_log(stderr_path) as stderr_pinned,
                 ):
-                    return_code = _run_process(
-                        process_factory,
-                        command,
-                        root,
-                        stdout_log,
-                        stderr_log,
-                        PROCESS_TIMEOUT_SECONDS,
-                    )
+                    stdout_log, stdout_identity = stdout_pinned
+                    stderr_log, stderr_identity = stderr_pinned
+                    try:
+                        _require_attempt_hierarchy(
+                            root,
+                            run_parent,
+                            run_directory,
+                            experiment_directory,
+                            attempt_directory,
+                            run_parent_identity,
+                            run_directory_identity,
+                            experiment_identity,
+                            attempt_identity,
+                        )
+                        _require_regular_file_no_follow(
+                            results_path,
+                            run_directory,
+                            "benchmark CSV",
+                            results_identity,
+                            csv_output.fileno(),
+                        )
+                        _require_regular_file_no_follow(
+                            stdout_path,
+                            attempt_directory,
+                            "attempt stdout log",
+                            stdout_identity,
+                            stdout_log.fileno(),
+                        )
+                        _require_regular_file_no_follow(
+                            stderr_path,
+                            attempt_directory,
+                            "attempt stderr log",
+                            stderr_identity,
+                            stderr_log.fileno(),
+                        )
+                        return_code = _run_process(
+                            process_factory,
+                            command,
+                            root,
+                            stdout_log,
+                            stderr_log,
+                            PROCESS_TIMEOUT_SECONDS,
+                        )
+                    finally:
+                        _require_attempt_hierarchy(
+                            root,
+                            run_parent,
+                            run_directory,
+                            experiment_directory,
+                            attempt_directory,
+                            run_parent_identity,
+                            run_directory_identity,
+                            experiment_identity,
+                            attempt_identity,
+                        )
+                        _require_regular_file_no_follow(
+                            results_path,
+                            run_directory,
+                            "benchmark CSV",
+                            results_identity,
+                            csv_output.fileno(),
+                        )
+                        _require_regular_file_no_follow(
+                            stdout_path,
+                            attempt_directory,
+                            "attempt stdout log",
+                            stdout_identity,
+                            stdout_log.fileno(),
+                        )
+                        _require_regular_file_no_follow(
+                            stderr_path,
+                            attempt_directory,
+                            "attempt stderr log",
+                            stderr_identity,
+                            stderr_log.fileno(),
+                        )
             except RunnerError as error:
                 _require_attempt_hierarchy(
                     root,
@@ -617,13 +804,25 @@ def run_benchmark(
                     run_directory,
                     experiment_directory,
                     attempt_directory,
+                    run_parent_identity,
+                    run_directory_identity,
+                    experiment_identity,
+                    attempt_identity,
                 )
-                _require_regular_file_no_follow(
-                    stdout_path, attempt_directory, "attempt stdout log"
-                )
-                _require_regular_file_no_follow(
-                    stderr_path, attempt_directory, "attempt stderr log"
-                )
+                if stdout_identity is not None:
+                    _require_regular_file_no_follow(
+                        stdout_path,
+                        attempt_directory,
+                        "attempt stdout log",
+                        stdout_identity,
+                    )
+                if stderr_identity is not None:
+                    _require_regular_file_no_follow(
+                        stderr_path,
+                        attempt_directory,
+                        "attempt stderr log",
+                        stderr_identity,
+                    )
                 raise _child_failure(
                     str(error),
                     command,
@@ -637,15 +836,29 @@ def run_benchmark(
                 run_directory,
                 experiment_directory,
                 attempt_directory,
+                run_parent_identity,
+                run_directory_identity,
+                experiment_identity,
+                attempt_identity,
             )
             _require_regular_file_no_follow(
-                results_path, run_directory, "benchmark CSV"
+                results_path,
+                run_directory,
+                "benchmark CSV",
+                results_identity,
+                csv_output.fileno(),
             )
             _require_regular_file_no_follow(
-                stdout_path, attempt_directory, "attempt stdout log"
+                stdout_path,
+                attempt_directory,
+                "attempt stdout log",
+                stdout_identity,
             )
             _require_regular_file_no_follow(
-                stderr_path, attempt_directory, "attempt stderr log"
+                stderr_path,
+                attempt_directory,
+                "attempt stderr log",
+                stderr_identity,
             )
             if return_code != 0:
                 raise _child_failure(
@@ -683,7 +896,67 @@ def run_benchmark(
                     stdout_path,
                     stderr_path,
                 ) from error
+            _require_attempt_hierarchy(
+                root,
+                run_parent,
+                run_directory,
+                experiment_directory,
+                attempt_directory,
+                run_parent_identity,
+                run_directory_identity,
+                experiment_identity,
+                attempt_identity,
+            )
+            _require_regular_file_no_follow(
+                results_path,
+                run_directory,
+                "benchmark CSV",
+                results_identity,
+                csv_output.fileno(),
+            )
+            _require_regular_file_no_follow(
+                stdout_path,
+                attempt_directory,
+                "attempt stdout log",
+                stdout_identity,
+            )
+            _require_regular_file_no_follow(
+                stderr_path,
+                attempt_directory,
+                "attempt stderr log",
+                stderr_identity,
+            )
             csv_output.append_attempt(rows)
+            _require_attempt_hierarchy(
+                root,
+                run_parent,
+                run_directory,
+                experiment_directory,
+                attempt_directory,
+                run_parent_identity,
+                run_directory_identity,
+                experiment_identity,
+                attempt_identity,
+            )
+            _require_regular_file_no_follow(
+                results_path,
+                run_directory,
+                "benchmark CSV",
+                results_identity,
+                csv_output.fileno(),
+            )
+            _require_regular_file_no_follow(
+                stdout_path,
+                attempt_directory,
+                "attempt stdout log",
+                stdout_identity,
+            )
+            _require_regular_file_no_follow(
+                stderr_path,
+                attempt_directory,
+                "attempt stderr log",
+                stderr_identity,
+            )
             completed += 1
 
     print(f"Completed {completed} attempts: {run_directory}", file=output, flush=True)

@@ -562,18 +562,146 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
             self.assertTrue((outside / "output.json").is_file())
             self.assertEqual(len(read_csv(run_directory / "results.csv")), 1)
 
-    def test_timeout_never_reprobes_group_after_observing_absence(self) -> None:
+    def test_rejects_attempt_directory_replaced_by_contained_directory(self) -> None:
+        configuration = build_matrix()[0]
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            run_directory = root / "run/scripted_exp_replaced_regular_attempt"
+            experiment_directory = run_directory / "experiment_001"
+            attempt_directory = experiment_directory / "attempt_1"
+            displaced_attempt = experiment_directory / "displaced_attempt"
+
+            def replace_attempt(command, **kwargs):
+                self._assert_popen_kwargs(kwargs, root)
+                kwargs["stdout"].write(b"original stdout\n")
+                kwargs["stderr"].write(b"original stderr\n")
+                attempt_directory.rename(displaced_attempt)
+                attempt_directory.mkdir()
+                (attempt_directory / "stdout.log").write_text(
+                    "replacement stdout\n", encoding="utf-8"
+                )
+                (attempt_directory / "stderr.log").write_text(
+                    "replacement stderr\n", encoding="utf-8"
+                )
+                write_valid_output(
+                    attempt_directory / "output.json",
+                    configuration,
+                    attempt_directory,
+                )
+                return _FakeProcess(0)
+
+            with self.assertRaisesRegex(RunnerError, "identity|replaced"):
+                run_benchmark(
+                    ns3_root=root,
+                    config_path=DEFAULT_CONFIG,
+                    timestamp="replaced_regular_attempt",
+                    configurations=(configuration,),
+                    process_factory=replace_attempt,
+                    output=StringIO(),
+                )
+            self.assertTrue((displaced_attempt / "stdout.log").is_file())
+            self.assertTrue((attempt_directory / "output.json").is_file())
+            self.assertEqual(len(read_csv(run_directory / "results.csv")), 1)
+
+    def test_rejects_log_replaced_by_regular_contained_file(self) -> None:
+        configuration = build_matrix()[0]
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            run_directory = root / "run/scripted_exp_replaced_log"
+            attempt_directory = run_directory / "experiment_001/attempt_1"
+            displaced_log = attempt_directory / "stdout.original.log"
+
+            def replace_log(command, **kwargs):
+                self._assert_popen_kwargs(kwargs, root)
+                kwargs["stdout"].write(b"original stdout\n")
+                (attempt_directory / "stdout.log").rename(displaced_log)
+                (attempt_directory / "stdout.log").write_text(
+                    "replacement stdout\n", encoding="utf-8"
+                )
+                write_valid_output(
+                    attempt_directory / "output.json",
+                    configuration,
+                    attempt_directory,
+                )
+                return _FakeProcess(0)
+
+            with self.assertRaisesRegex(RunnerError, "stdout.*identity|identity.*stdout"):
+                run_benchmark(
+                    ns3_root=root,
+                    config_path=DEFAULT_CONFIG,
+                    timestamp="replaced_log",
+                    configurations=(configuration,),
+                    process_factory=replace_log,
+                    output=StringIO(),
+                )
+            self.assertTrue(displaced_log.is_file())
+            self.assertEqual(
+                (attempt_directory / "stdout.log").read_text(encoding="utf-8"),
+                "replacement stdout\n",
+            )
+            self.assertEqual(len(read_csv(run_directory / "results.csv")), 1)
+
+    def test_rejects_results_csv_replaced_during_append(self) -> None:
+        configuration = build_matrix()[0]
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            run_directory = root / "run/scripted_exp_replaced_csv"
+            results_path = run_directory / "results.csv"
+            displaced_results = run_directory / "results.original.csv"
+
+            def valid_process(command, **kwargs):
+                self._assert_popen_kwargs(kwargs, root)
+                attempt_directory = run_directory / "experiment_001/attempt_1"
+                write_valid_output(
+                    attempt_directory / "output.json",
+                    configuration,
+                    attempt_directory,
+                )
+                return _FakeProcess(0)
+
+            original_append = runner.ExcelCsvWriter.append_attempt
+
+            def replace_after_append(writer, rows):
+                original_append(writer, rows)
+                writer.path.rename(displaced_results)
+                writer.path.write_bytes(displaced_results.read_bytes())
+
+            with (
+                mock.patch.object(
+                    runner.ExcelCsvWriter,
+                    "append_attempt",
+                    new=replace_after_append,
+                ),
+                self.assertRaisesRegex(RunnerError, "CSV.*identity|identity.*CSV"),
+            ):
+                run_benchmark(
+                    ns3_root=root,
+                    config_path=DEFAULT_CONFIG,
+                    timestamp="replaced_csv",
+                    configurations=(configuration,),
+                    process_factory=valid_process,
+                    output=StringIO(),
+                )
+            self.assertTrue(displaced_results.is_file())
+            self.assertTrue(results_path.is_file())
+            self.assertEqual(results_path.read_bytes(), displaced_results.read_bytes())
+
+    def test_sigterm_esrch_is_sticky_and_never_probes_group(self) -> None:
         process = _FakeProcess(-signal.SIGTERM)
         with (
             mock.patch.object(runner, "TERM_GRACE_SECONDS", 0),
             mock.patch.object(
-                runner, "_process_group_exists", side_effect=(False, True)
-            ) as group_exists,
-            mock.patch.object(runner, "_signal_process_group") as signal_group,
+                runner.os,
+                "killpg",
+                side_effect=(
+                    ProcessLookupError(),
+                    AssertionError("PGID was touched after SIGTERM reported absence"),
+                ),
+            ) as killpg,
         ):
             runner._terminate_process_group(process, process.pid)
-        self.assertEqual(group_exists.call_count, 1)
-        signal_group.assert_called_once_with(process.pid, signal.SIGTERM)
+        self.assertEqual(killpg.call_count, 1)
+        killpg.assert_called_once_with(process.pid, signal.SIGTERM)
 
     def test_timeout_kills_term_ignoring_process_tree(self) -> None:
         with TemporaryDirectory() as directory:
