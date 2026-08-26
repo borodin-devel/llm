@@ -5,14 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from live_trace_common import (
+from live_verification.common import (
     AP_IDENTITY_KEYS, CATEGORY_KEYS, CONFIGURATION_KEYS, MEASUREMENT_SEMANTICS,
     ROOT_KEYS, STA_IDENTITY_KEYS, VALIDATION_KEYS, WINDOW_KEYS, LiveTraceError,
     expect_boolean, expect_finite_number, expect_list, expect_nonnegative_integer,
     expect_object_keys, expect_string, fail, is_nonnegative_integer, reject_removed_keys,
     validate_ordered_unique,
 )
-from live_trace_schema_categories import validate_entity_categories
+from live_verification.schema_categories import validate_entity_categories
 
 
 def _validate_configuration(configuration, source_path):

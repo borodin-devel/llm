@@ -10,7 +10,7 @@ import stat
 import sys
 import tempfile
 
-from live_trace_common import LiveTraceError
+from live_verification.common import LiveTraceError
 
 
 _OWNER_CREATION_TOKEN = object()

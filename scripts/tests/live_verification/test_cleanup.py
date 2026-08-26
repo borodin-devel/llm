@@ -8,9 +8,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-import live_trace_cleanup
-from live_trace_cleanup import OwnedTemporaryRun, cleanup_run_directory
-from live_trace_common import LiveTraceError
+from live_verification import cleanup
+from live_verification.cleanup import OwnedTemporaryRun, cleanup_run_directory
+from live_verification.common import LiveTraceError
 
 
 class LiveTraceCleanupTest(unittest.TestCase):
@@ -31,7 +31,7 @@ class LiveTraceCleanupTest(unittest.TestCase):
     def test_cleanup_uses_random_dirfd_quarantine(self):
         with tempfile.TemporaryDirectory() as directory:
             owner = OwnedTemporaryRun.create("test", Path(directory))
-            original_rename = live_trace_cleanup._rename_noreplace
+            original_rename = cleanup._rename_noreplace
             calls = []
 
             def record_rename(source, destination, parent_fd):
@@ -39,7 +39,7 @@ class LiveTraceCleanupTest(unittest.TestCase):
                 return original_rename(source, destination, parent_fd)
 
             with mock.patch(
-                "live_trace_cleanup._rename_noreplace", side_effect=record_rename
+                "live_verification.cleanup._rename_noreplace", side_effect=record_rename
             ):
                 cleanup_run_directory(owner)
 

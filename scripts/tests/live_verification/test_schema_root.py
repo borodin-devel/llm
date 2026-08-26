@@ -7,9 +7,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from live_trace_common import LiveTraceError
-from live_trace_schema import load_output_document, validate_output_document
-from live_trace_test_fixtures import add_second_bss, entity, valid_document
+from live_verification.common import LiveTraceError
+from live_verification.schema import load_output_document, validate_output_document
+from tests.live_verification.fixtures import add_second_bss, entity, valid_document
 
 
 class LiveTraceSchemaRootTest(unittest.TestCase):

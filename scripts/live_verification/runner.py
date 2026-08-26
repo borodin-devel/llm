@@ -9,12 +9,12 @@ import subprocess
 import sys
 import time
 
-from live_trace_cleanup import OwnedTemporaryRun
-from live_trace_common import (
+from live_verification.cleanup import OwnedTemporaryRun
+from live_verification.common import (
     POLICY, LiveTraceError, build_llm_command, console_text, format_run_failure,
     reject_legacy_console, validate_policy_coverage,
 )
-from live_trace_schema import load_output_document
+from live_verification.schema import load_output_document
 
 
 TERM_GRACE_SECONDS = 0.2

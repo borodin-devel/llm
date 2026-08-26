@@ -6,9 +6,9 @@ import copy
 from pathlib import Path
 import unittest
 
-from live_trace_common import LiveTraceError
-from live_trace_schema import validate_output_document
-from live_trace_test_fixtures import add_second_bss, valid_document
+from live_verification.common import LiveTraceError
+from live_verification.schema import validate_output_document
+from tests.live_verification.fixtures import add_second_bss, valid_document
 
 
 class LiveTraceSchemaOrderingTest(unittest.TestCase):

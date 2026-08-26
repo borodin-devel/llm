@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 
-from live_trace_common import VALIDATION_KEYS
+from live_verification.common import VALIDATION_KEYS
 
 
 def sample_distribution():

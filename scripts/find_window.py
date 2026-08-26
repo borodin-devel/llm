@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 
-from trace_stream import (
+from trace_tools.stream import (
     SliceSummary,
     TraceSummary,
     TraceValidationError,

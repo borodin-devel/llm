@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from live_trace_common import (
+from live_verification.common import (
     APP_AGENT_KEYS, APP_KEYS, APP_PEER_KEYS, DIRECTIONS, GENERAL_KEYS, MAC_KEYS,
     MAC_PEER_KEYS, MAC_REASON_KEYS, PHY_DIRECTION_KEYS, PHY_KEYS, PHY_PEER_KEYS,
     SAMPLE_KEYS, TCP_CONNECTION_KEYS, TCP_KEYS, expect_finite_number, expect_list,

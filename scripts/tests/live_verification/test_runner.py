@@ -13,12 +13,12 @@ import time
 import unittest
 from unittest import mock
 
-import live_trace_runner
-from live_trace_common import (
+from live_verification import runner
+from live_verification.common import (
     POLICY, LiveTraceError, build_llm_command, reject_legacy_console,
     validate_policy_coverage,
 )
-from live_trace_runner import _run_captured, run_one_trace
+from live_verification.runner import _run_captured, run_one_trace
 
 
 class _FakeProcess:
@@ -133,13 +133,13 @@ class LiveTraceRunnerTest(unittest.TestCase):
     def test_timeout_never_reprobes_group_after_observing_absence(self):
         process = _FakeProcess(["command"], -signal.SIGTERM, "output")
         with (
-            mock.patch.object(live_trace_runner, "TERM_GRACE_SECONDS", 0),
+            mock.patch.object(runner, "TERM_GRACE_SECONDS", 0),
             mock.patch.object(
-                live_trace_runner, "_process_group_exists", side_effect=(False, True)
+                runner, "_process_group_exists", side_effect=(False, True)
             ) as group_exists,
-            mock.patch.object(live_trace_runner, "_signal_process_group") as signal_group,
+            mock.patch.object(runner, "_signal_process_group") as signal_group,
         ):
-            live_trace_runner._terminate_process_group(process, "timeout output")
+            runner._terminate_process_group(process, "timeout output")
         with self.subTest("probe count"):
             self.assertEqual(group_exists.call_count, 1)
         with self.subTest("signals"):

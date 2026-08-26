@@ -11,10 +11,10 @@ import unittest
 from contextlib import contextmanager
 from pathlib import Path
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR))
+SCRIPTS_DIR = Path(__file__).resolve().parents[2]
+FIND_WINDOW = SCRIPTS_DIR / "find_window.py"
 
-from trace_stream import (
+from trace_tools.stream import (
     TraceValidationError,
     _WindowEventStore,
     find_first_window,
@@ -215,7 +215,7 @@ class TraceValidationTest(unittest.TestCase):
                 **os.environ,
                 "FAKE_RAR_JSON": str(trace_path),
                 "PATH": f"{directory}{os.pathsep}{os.environ['PATH']}",
-                "PYTHONPATH": str(SCRIPT_DIR),
+                "PYTHONPATH": str(SCRIPTS_DIR),
                 "PYTHONDONTWRITEBYTECODE": "1",
             }
             process = subprocess.Popen(
@@ -223,7 +223,7 @@ class TraceValidationTest(unittest.TestCase):
                     sys.executable,
                     "-c",
                     "from pathlib import Path; "
-                    "from trace_stream import validate_path; "
+                    "from trace_tools.stream import validate_path; "
                     "print(validate_path(Path('input.rar')).trace_count)",
                 ],
                 cwd=directory,
@@ -318,7 +318,7 @@ class TraceCliTest(unittest.TestCase):
             completed = subprocess.run(
                 [
                     sys.executable,
-                    str(SCRIPT_DIR / "find_window.py"),
+                    str(FIND_WINDOW),
                     "slice-first",
                     str(source),
                     str(output),
@@ -338,7 +338,7 @@ class TraceCliTest(unittest.TestCase):
 
     def test_validate_accepts_stdin(self):
         completed = subprocess.run(
-            [sys.executable, str(SCRIPT_DIR / "find_window.py"), "validate", "-"],
+            [sys.executable, str(FIND_WINDOW), "validate", "-"],
             input=json.dumps(VALID_DOCUMENT),
             capture_output=True,
             text=True,
@@ -352,7 +352,7 @@ class TraceCliTest(unittest.TestCase):
         completed = subprocess.run(
             [
                 sys.executable,
-                str(SCRIPT_DIR / "find_window.py"),
+                str(FIND_WINDOW),
                 "find-window",
                 "-",
                 "unused.json",
