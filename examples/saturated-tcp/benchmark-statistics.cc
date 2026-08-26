@@ -12,7 +12,6 @@
 #include "ns3/wifi-phy.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -148,7 +147,10 @@ SaturatedTcpStatistics::SaturatedTcpStatistics(uint32_t windowMs)
     }
 }
 
-SaturatedTcpStatistics::~SaturatedTcpStatistics() = default;
+SaturatedTcpStatistics::~SaturatedTcpStatistics()
+{
+    DisconnectAllTraceConnections();
+}
 
 void
 SaturatedTcpStatistics::RegisterAccessPoint(uint32_t accessPointId,
@@ -209,59 +211,104 @@ SaturatedTcpStatistics::ConnectStation(Ptr<WifiNetDevice> device)
     {
         throw std::invalid_argument("station statistics require AccessTrackingStaWifiMac");
     }
-    if (device->GetNPhys() == 0)
+    StationTraceConnections connections;
+    connections.mac = mac;
+    connections.accessRequestedCallback =
+        MakeCallback(&SaturatedTcpStatistics::NotifyAccessRequested, this).Bind(nodeId);
+    try
     {
-        throw std::invalid_argument("station statistics require at least one station PHY");
-    }
-
-    std::array<Ptr<QosTxop>, 4> txops;
-    std::size_t txopIndex = 0;
-    for (const auto ac : {AC_BE, AC_BK, AC_VI, AC_VO})
-    {
-        const auto txop = mac->GetQosTxop(ac);
-        if (!txop)
+        if (!mac->TraceConnectWithoutContext("AccessRequested",
+                                             connections.accessRequestedCallback))
         {
-            throw std::invalid_argument("station statistics require every QoS TXOP");
+            throw std::invalid_argument("station AccessRequested trace could not be connected");
         }
-        txops.at(txopIndex++) = txop;
-    }
-    for (const auto& phy : device->GetPhys())
-    {
-        if (!phy)
+        for (const auto ac : {AC_BE, AC_BK, AC_VI, AC_VO})
         {
-            throw std::invalid_argument("station statistics cannot connect a null station PHY");
+            const auto txop = mac->GetQosTxop(ac);
+            if (!txop)
+            {
+                throw std::invalid_argument("station statistics require every QoS TXOP");
+            }
+            TxopTraceConnection connection{
+                txop,
+                MakeCallback(&SaturatedTcpStatistics::NotifyTxopGranted, this)
+                    .Bind(nodeId, static_cast<uint8_t>(ac)),
+            };
+            if (!txop->TraceConnectWithoutContext("TxopTrace", connection.callback))
+            {
+                throw std::invalid_argument("station TXOP trace could not be connected");
+            }
+            connections.txopTraces.push_back(std::move(connection));
         }
-    }
-
-    if (!mac->TraceConnectWithoutContext(
-            "AccessRequested",
-            MakeCallback(&SaturatedTcpStatistics::NotifyAccessRequested, this).Bind(nodeId)))
-    {
-        throw std::invalid_argument("station AccessRequested trace could not be connected");
-    }
-    for (const auto& txop : txops)
-    {
-        const uint8_t ac = txop->GetAccessCategory();
-        if (!txop->TraceConnectWithoutContext(
-                "TxopTrace",
-                MakeCallback(&SaturatedTcpStatistics::NotifyTxopGranted, this).Bind(nodeId, ac)))
+        if (device->GetNPhys() == 0)
         {
-            throw std::invalid_argument("station TXOP trace could not be connected");
+            throw std::invalid_argument("station statistics require at least one station PHY");
         }
-    }
-    for (const auto& phy : device->GetPhys())
-    {
-        if (!phy->TraceConnectWithoutContext(
-                "PhyTxPsduBegin",
+        for (const auto& phy : device->GetPhys())
+        {
+            if (!phy)
+            {
+                throw std::invalid_argument("station statistics cannot connect a null station PHY");
+            }
+            PhyTraceConnection connection{
+                phy,
                 MakeCallback(&SaturatedTcpStatistics::NotifyPhyTxPsduBegin, this)
-                    .Bind(nodeId, phy->GetPhyBand())))
-        {
-            throw std::invalid_argument("station PhyTxPsduBegin trace could not be connected");
+                    .Bind(nodeId, phy->GetPhyBand()),
+            };
+            if (!phy->TraceConnectWithoutContext("PhyTxPsduBegin", connection.callback))
+            {
+                throw std::invalid_argument("station PhyTxPsduBegin trace could not be connected");
+            }
+            connections.phyTraces.push_back(std::move(connection));
         }
+    }
+    catch (...)
+    {
+        DisconnectTraceConnections(connections);
+        throw;
     }
 
     m_stationDevices.emplace(nodeId, device);
-    m_stationMacs.emplace(nodeId, mac);
+    m_traceConnections.emplace(nodeId, std::move(connections));
+}
+
+void
+SaturatedTcpStatistics::DisconnectTraceConnections(StationTraceConnections& connections) noexcept
+{
+    if (connections.mac && !connections.accessRequestedCallback.IsNull())
+    {
+        connections.mac->TraceDisconnectWithoutContext("AccessRequested",
+                                                       connections.accessRequestedCallback);
+    }
+    for (auto& connection : connections.txopTraces)
+    {
+        if (connection.source)
+        {
+            connection.source->TraceDisconnectWithoutContext("TxopTrace", connection.callback);
+        }
+    }
+    for (auto& connection : connections.phyTraces)
+    {
+        if (connection.source)
+        {
+            connection.source->TraceDisconnectWithoutContext("PhyTxPsduBegin", connection.callback);
+        }
+    }
+    connections.txopTraces.clear();
+    connections.phyTraces.clear();
+    connections.mac = nullptr;
+    connections.accessRequestedCallback = {};
+}
+
+void
+SaturatedTcpStatistics::DisconnectAllTraceConnections() noexcept
+{
+    for (auto& [nodeId, connections] : m_traceConnections)
+    {
+        static_cast<void>(nodeId);
+        DisconnectTraceConnections(connections);
+    }
+    m_traceConnections.clear();
 }
 
 void
@@ -285,10 +332,14 @@ SaturatedTcpStatistics::Start(int64_t experimentStartNs)
     m_phyRecorder = std::make_unique<StationPhyMetricRecorder>(m_experimentStartNs,
                                                                m_experimentEndNs,
                                                                m_windowNs);
+    m_overallPhyRecorder = std::make_unique<StationPhyMetricRecorder>(m_experimentStartNs,
+                                                                      m_experimentEndNs,
+                                                                      MEASUREMENT_DURATION_NS);
     for (const auto& station : m_registry.GetStations())
     {
         const auto device = m_stationDevices.at(station.nodeId);
         m_phyRecorder->RegisterStation(station.nodeId, device->GetMac()->GetAddress());
+        m_overallPhyRecorder->RegisterStation(station.nodeId, device->GetMac()->GetAddress());
         m_accessWaitTrackers.emplace(
             station.nodeId,
             std::make_unique<AccessWaitTracker>(m_experimentStartNs, m_experimentEndNs));
@@ -315,8 +366,10 @@ SaturatedTcpStatistics::Finalize(int64_t experimentEndNs)
     for (const auto& station : m_registry.GetStations())
     {
         auto& tracker = *m_accessWaitTrackers.at(station.nodeId);
-        tracker.Finalize(m_stationMacs.at(station.nodeId)->GetActiveTxopStartTimes());
+        tracker.Finalize(m_traceConnections.at(station.nodeId).mac->GetActiveTxopStartTimes());
         m_phyRecorder->IngestContentionIntervals(station.nodeId, tracker.GetUnionIntervals());
+        m_overallPhyRecorder->IngestContentionIntervals(station.nodeId,
+                                                        tracker.GetUnionIntervals());
     }
     m_finalized = true;
 }
@@ -324,34 +377,42 @@ SaturatedTcpStatistics::Finalize(int64_t experimentEndNs)
 UnifiedExperimentSummary
 SaturatedTcpStatistics::BuildSummary() const
 {
-    if (!m_finalized || !m_phyRecorder)
+    if (!m_finalized || !m_phyRecorder || !m_overallPhyRecorder)
     {
         throw std::logic_error("cannot build saturated TCP summary before finalization");
     }
 
     std::map<uint32_t, std::vector<StationPhyMetricAccumulator>> rawWindows;
+    std::map<uint32_t, StationPhyMetricAccumulator> rawOverall;
     for (const auto& station : m_registry.GetStations())
     {
         rawWindows.emplace(station.nodeId, m_phyRecorder->GetWindowAccumulators(station.nodeId));
+        rawOverall.emplace(station.nodeId,
+                           m_overallPhyRecorder->BuildOverallAccumulator(station.nodeId));
     }
-    auto summary = BuildSummaryFromRaw(rawWindows);
-    for (const auto& station : m_registry.GetStations())
-    {
-        StationPhyMetricAccumulator mergedWindows;
-        for (const auto& window : rawWindows.at(station.nodeId))
-        {
-            mergedWindows.Merge(window);
-        }
-        summary.validation.overallMatchesWindows =
-            summary.validation.overallMatchesWindows &&
-            RawMetricsEqual(m_phyRecorder->BuildOverallAccumulator(station.nodeId), mergedWindows);
-    }
-    return summary;
+    return BuildSummaryFromRaw(rawWindows, rawOverall);
 }
 
 UnifiedExperimentSummary
 SaturatedTcpStatistics::BuildSummaryFromRaw(
     const std::map<uint32_t, std::vector<StationPhyMetricAccumulator>>& rawWindows) const
+{
+    std::map<uint32_t, StationPhyMetricAccumulator> rawOverall;
+    for (const auto& [nodeId, windows] : rawWindows)
+    {
+        auto& overall = rawOverall[nodeId];
+        for (const auto& window : windows)
+        {
+            overall.Merge(window);
+        }
+    }
+    return BuildSummaryFromRaw(rawWindows, rawOverall);
+}
+
+UnifiedExperimentSummary
+SaturatedTcpStatistics::BuildSummaryFromRaw(
+    const std::map<uint32_t, std::vector<StationPhyMetricAccumulator>>& rawWindows,
+    const std::map<uint32_t, StationPhyMetricAccumulator>& rawOverall) const
 {
     const std::size_t windowCount = static_cast<std::size_t>(1000 / m_windowMs);
     for (const auto& station : m_registry.GetStations())
@@ -360,6 +421,10 @@ SaturatedTcpStatistics::BuildSummaryFromRaw(
         if (raw == rawWindows.end() || raw->second.size() != windowCount)
         {
             throw std::invalid_argument("station raw windows do not cover the one-second epoch");
+        }
+        if (!rawOverall.contains(station.nodeId))
+        {
+            throw std::invalid_argument("station independent overall raw state is missing");
         }
     }
 
@@ -419,20 +484,17 @@ SaturatedTcpStatistics::BuildSummaryFromRaw(
     std::map<uint32_t, std::vector<StationPhyMetricOutput>> overallMetricsByAccessPoint;
     for (const auto& station : m_registry.GetStations())
     {
-        StationPhyMetricAccumulator overall;
+        StationPhyMetricAccumulator mergedWindows;
         for (const auto& window : rawWindows.at(station.nodeId))
         {
-            overall.Merge(window);
-        }
-        StationPhyMetricAccumulator reproduced;
-        for (const auto& window : rawWindows.at(station.nodeId))
-        {
-            reproduced.Merge(window);
+            mergedWindows.Merge(window);
         }
         summary.validation.overallMatchesWindows =
-            summary.validation.overallMatchesWindows && RawMetricsEqual(overall, reproduced);
+            summary.validation.overallMatchesWindows &&
+            RawMetricsEqual(rawOverall.at(station.nodeId), mergedWindows);
 
-        const auto metrics = DeriveStationPhyMetrics(overall, MEASUREMENT_DURATION_NS);
+        const auto metrics =
+            DeriveStationPhyMetrics(rawOverall.at(station.nodeId), MEASUREMENT_DURATION_NS);
         if (!metrics.averageTheoreticalPhyRateMbps || !metrics.averagePracticalPhyRateMbps)
         {
             throw std::invalid_argument(
@@ -455,6 +517,10 @@ void
 SaturatedTcpStatistics::NotifyAccessRequested(uint32_t stationNodeId, uint8_t ac, uint8_t linkId)
 {
     if (!m_started || m_finalized)
+    {
+        return;
+    }
+    if (ac == AC_BE_NQOS)
     {
         return;
     }
@@ -494,6 +560,11 @@ SaturatedTcpStatistics::NotifyPhyTxPsduBegin(uint32_t stationNodeId,
                                      band,
                                      psduMap,
                                      txVector);
+    m_overallPhyRecorder->RecordPpduAttempt(stationNodeId,
+                                            Simulator::Now().GetNanoSeconds(),
+                                            band,
+                                            psduMap,
+                                            txVector);
 }
 
 } // namespace ns3

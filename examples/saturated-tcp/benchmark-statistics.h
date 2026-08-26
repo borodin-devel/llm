@@ -5,9 +5,12 @@
 #include "../statistics/types.h"
 #include "sta-phy-metrics.h"
 
+#include "ns3/callback.h"
+#include "ns3/nstime.h"
 #include "ns3/ptr.h"
 
 #include <cstdint>
+#include <functional>
 #include <iosfwd>
 #include <map>
 #include <memory>
@@ -23,8 +26,9 @@ namespace ns3
 class AccessTrackingStaWifiMac;
 class AccessWaitTracker;
 class JsonWriter;
-class Time;
+class QosTxop;
 class WifiNetDevice;
+class WifiPhy;
 struct SaturatedTcpConfig;
 
 /** Own station-only saturated TCP benchmark measurement and aggregation state. */
@@ -128,6 +132,52 @@ class SaturatedTcpStatistics
         const std::map<uint32_t, std::vector<StationPhyMetricAccumulator>>& rawWindows) const;
 
     /**
+     * Build the public summary from configured windows and independent overall raw state.
+     *
+     * @param rawWindows Raw configured windows keyed by station node identifier.
+     * @param rawOverall Independent one-second raw values keyed by station node identifier.
+     * @return Complete shared-schema benchmark summary.
+     */
+    UnifiedExperimentSummary BuildSummaryFromRaw(
+        const std::map<uint32_t, std::vector<StationPhyMetricAccumulator>>& rawWindows,
+        const std::map<uint32_t, StationPhyMetricAccumulator>& rawOverall) const;
+
+    /** One exact QoS TXOP trace subscription. */
+    struct TxopTraceConnection
+    {
+        Ptr<QosTxop> source;                          ///< Subscribed QoS TXOP.
+        Callback<void, Time, Time, uint8_t> callback; ///< Exact connected callback.
+    };
+
+    /** One exact station PHY trace subscription. */
+    struct PhyTraceConnection
+    {
+        Ptr<WifiPhy> source; ///< Subscribed station PHY.
+        Callback<void, WifiConstPsduMap, WifiTxVector, double>
+            callback; ///< Exact connected callback.
+    };
+
+    /** Every trace subscription owned for one connected station. */
+    struct StationTraceConnections
+    {
+        Ptr<AccessTrackingStaWifiMac> mac; ///< Subscribed benchmark station MAC.
+        Callback<void, uint8_t, uint8_t>
+            accessRequestedCallback;                 ///< Exact access-request callback.
+        std::vector<TxopTraceConnection> txopTraces; ///< Exact per-AC TXOP subscriptions.
+        std::vector<PhyTraceConnection> phyTraces;   ///< Exact per-PHY subscriptions.
+    };
+
+    /**
+     * Disconnect every recorded callback for one station.
+     *
+     * @param connections Exact station trace connections to remove.
+     */
+    static void DisconnectTraceConnections(StationTraceConnections& connections) noexcept;
+
+    /** Disconnect every station trace before measurement state is disposed. */
+    void DisconnectAllTraceConnections() noexcept;
+
+    /**
      * Record a station channel-access request callback.
      *
      * @param stationNodeId Bound station node identifier.
@@ -170,9 +220,11 @@ class SaturatedTcpStatistics
     int64_t m_windowNs;                  ///< Fixed statistics window width in nanoseconds.
     ExperimentEntityRegistry m_registry; ///< Deterministic AP and station identity registry.
     std::map<uint32_t, Ptr<WifiNetDevice>> m_stationDevices; ///< Connected STA devices by node ID.
-    std::map<uint32_t, Ptr<AccessTrackingStaWifiMac>>
-        m_stationMacs; ///< Connected benchmark STA MACs by node ID.
+    std::map<uint32_t, StationTraceConnections>
+        m_traceConnections; ///< Exact subscriptions by station node ID.
     std::unique_ptr<StationPhyMetricRecorder> m_phyRecorder; ///< Task 5 raw PPDU recorder.
+    std::unique_ptr<StationPhyMetricRecorder>
+        m_overallPhyRecorder; ///< Independent one-window Task 5 overall recorder.
     std::map<uint32_t, std::unique_ptr<AccessWaitTracker>>
         m_accessWaitTrackers;       ///< Task 4 wait trackers by station node ID.
     int64_t m_experimentStartNs{0}; ///< Inclusive measurement start in nanoseconds.
@@ -212,6 +264,25 @@ void WriteSaturatedTcpExperimentJson(std::ostream& output,
 void WriteSaturatedTcpExperimentJson(const std::string& outputPath,
                                      const UnifiedExperimentSummary& summary,
                                      const SaturatedTcpConfig& config);
+
+/** Internal benchmark output seams shared with deterministic lifecycle tests. */
+namespace saturated_tcp_internal
+{
+
+/** Callback that writes one complete JSON body to an owned output stream. */
+using JsonBodyWriter = std::function<void(std::ostream&)>;
+
+/**
+ * Exclusively create a file, invoke its body writer, and remove partial owned output on failure.
+ *
+ * @param outputPath Destination path.
+ * @param writeBody Complete body writer.
+ * @throws std::invalid_argument if @p writeBody is empty.
+ * @throws std::runtime_error if exclusive creation, writing, flushing, closing, or cleanup fails.
+ */
+void WriteExclusiveJsonFile(const std::string& outputPath, const JsonBodyWriter& writeBody);
+
+} // namespace saturated_tcp_internal
 
 } // namespace ns3
 

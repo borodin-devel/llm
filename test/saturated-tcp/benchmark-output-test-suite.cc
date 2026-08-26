@@ -7,6 +7,7 @@
 
 #include "ns3/boolean.h"
 #include "ns3/channel-access-manager.h"
+#include "ns3/default-power-save-manager.h"
 #include "ns3/enum.h"
 #include "ns3/json.hpp"
 #include "ns3/node.h"
@@ -17,10 +18,14 @@
 #include "ns3/yans-wifi-phy.h"
 
 #include <array>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
+#include <limits>
 #include <map>
+#include <memory>
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
@@ -35,6 +40,88 @@ namespace
 {
 
 using RawStationWindows = std::map<uint32_t, std::vector<StationPhyMetricAccumulator>>;
+using RawStationOverall = std::map<uint32_t, StationPhyMetricAccumulator>;
+
+/** Power-save manager that accepts test access requests without PHY side effects. */
+class BenchmarkStatsPowerSaveManager : public DefaultPowerSaveManager
+{
+  public:
+    /**
+     * Get the object TypeId.
+     *
+     * @return Object TypeId.
+     */
+    static TypeId GetTypeId();
+
+  private:
+    void DoNotifyRequestAccess(Ptr<Txop> txop, linkId_t linkId) override;
+};
+
+NS_OBJECT_ENSURE_REGISTERED(BenchmarkStatsPowerSaveManager);
+
+TypeId
+BenchmarkStatsPowerSaveManager::GetTypeId()
+{
+    static TypeId tid = TypeId("ns3::BenchmarkStatsPowerSaveManager")
+                            .SetParent<DefaultPowerSaveManager>()
+                            .AddConstructor<BenchmarkStatsPowerSaveManager>()
+                            .HideFromDocumentation();
+    return tid;
+}
+
+void
+BenchmarkStatsPowerSaveManager::DoNotifyRequestAccess(Ptr<Txop> txop, linkId_t linkId)
+{
+    static_cast<void>(txop);
+    static_cast<void>(linkId);
+}
+
+/** Station MAC probe that can emit a real access-request trace. */
+class BenchmarkStatsStaWifiMacProbe : public AccessTrackingStaWifiMac
+{
+  public:
+    /**
+     * Get the object TypeId.
+     *
+     * @return Object TypeId.
+     */
+    static TypeId GetTypeId();
+
+    /**
+     * Invoke the protected access-request notification.
+     *
+     * @param txop Requesting channel-access function.
+     * @param linkId Link identifier.
+     */
+    void InvokeNotifyRequestAccess(Ptr<Txop> txop, uint8_t linkId);
+};
+
+NS_OBJECT_ENSURE_REGISTERED(BenchmarkStatsStaWifiMacProbe);
+
+TypeId
+BenchmarkStatsStaWifiMacProbe::GetTypeId()
+{
+    static TypeId tid = TypeId("ns3::BenchmarkStatsStaWifiMacProbe")
+                            .SetParent<AccessTrackingStaWifiMac>()
+                            .AddConstructor<BenchmarkStatsStaWifiMacProbe>()
+                            .HideFromDocumentation();
+    return tid;
+}
+
+void
+BenchmarkStatsStaWifiMacProbe::InvokeNotifyRequestAccess(Ptr<Txop> txop, uint8_t linkId)
+{
+    NotifyRequestAccess(txop, linkId);
+}
+
+/** Count one access-request trace event. */
+void
+CountAccessRequest(uint32_t* count, uint8_t ac, uint8_t linkId)
+{
+    static_cast<void>(ac);
+    static_cast<void>(linkId);
+    ++*count;
+}
 
 /** Stream buffer that rejects every body write. */
 class RejectingStreamBuffer : public std::streambuf
@@ -78,6 +165,27 @@ SetRawWindow(RawStationWindows& windows,
         raw.ppduAirtimeNs = airtimeNs;
     }
     raw.contentionNs = contentionNs;
+}
+
+/**
+ * Merge literal raw station windows independently.
+ *
+ * @param windows Raw station windows.
+ * @return Raw overall values keyed by node identifier.
+ */
+RawStationOverall
+MergeRawWindows(const RawStationWindows& windows)
+{
+    RawStationOverall overall;
+    for (const auto& [nodeId, stationWindows] : windows)
+    {
+        auto& stationOverall = overall[nodeId];
+        for (const auto& window : stationWindows)
+        {
+            stationOverall.Merge(window);
+        }
+    }
+    return overall;
 }
 
 /**
@@ -199,6 +307,14 @@ MakeLiteralSummary()
         SetBenchmarkPhy(station.statistics, theoreticalMbps, practicalMbps, contentionFraction);
         window.accessPoints.push_back(accessPoint);
         window.stations.push_back(station);
+        SetBenchmarkPhy(accessPoint.statistics,
+                        theoreticalMbps,
+                        practicalMbps,
+                        contentionFraction / 100.0);
+        SetBenchmarkPhy(station.statistics,
+                        theoreticalMbps,
+                        practicalMbps,
+                        contentionFraction / 100.0);
         summary.overall.accessPoints.push_back(accessPoint);
         summary.overall.stations.push_back(station);
     }
@@ -232,32 +348,39 @@ GetKeys(const nlohmann::ordered_json& object)
  * @return Wi-Fi device with the benchmark station MAC, QoS TXOPs, and one PHY.
  */
 Ptr<WifiNetDevice>
-MakeStationDevice(Ptr<Node> node, Mac48Address address)
+MakeStationDevice(Ptr<Node> node, Mac48Address address, bool omitPhy = false)
 {
     const auto makeQosTxop = [](AcIndex ac) {
         return CreateObjectWithAttributes<QosTxop>("AcIndex", EnumValue(ac));
     };
     auto mac =
-        CreateObjectWithAttributes<AccessTrackingStaWifiMac>("QosSupported",
-                                                             BooleanValue(true),
-                                                             "BE_Txop",
-                                                             PointerValue(makeQosTxop(AC_BE)),
-                                                             "BK_Txop",
-                                                             PointerValue(makeQosTxop(AC_BK)),
-                                                             "VI_Txop",
-                                                             PointerValue(makeQosTxop(AC_VI)),
-                                                             "VO_Txop",
-                                                             PointerValue(makeQosTxop(AC_VO)));
+        CreateObjectWithAttributes<BenchmarkStatsStaWifiMacProbe>("QosSupported",
+                                                                  BooleanValue(true),
+                                                                  "BE_Txop",
+                                                                  PointerValue(makeQosTxop(AC_BE)),
+                                                                  "BK_Txop",
+                                                                  PointerValue(makeQosTxop(AC_BK)),
+                                                                  "VI_Txop",
+                                                                  PointerValue(makeQosTxop(AC_VI)),
+                                                                  "VO_Txop",
+                                                                  PointerValue(makeQosTxop(AC_VO)));
     mac->SetAddress(address);
+    mac->SetPowerSaveManager(CreateObject<BenchmarkStatsPowerSaveManager>());
     mac->SetChannelAccessManagers({CreateObject<ChannelAccessManager>()});
     for (const auto ac : {AC_BE, AC_BK, AC_VI, AC_VO})
     {
-        mac->GetQosTxop(ac)->SetWifiMac(mac);
+        if (const auto txop = mac->GetQosTxop(ac))
+        {
+            txop->SetWifiMac(mac);
+        }
     }
 
     auto device = CreateObject<WifiNetDevice>();
     device->SetMac(mac);
-    device->SetPhy(CreateObject<YansWifiPhy>());
+    if (!omitPhy)
+    {
+        device->SetPhy(CreateObject<YansWifiPhy>());
+    }
     node->AddDevice(device);
     return device;
 }
@@ -403,6 +526,19 @@ SaturatedTcpBenchmarkSummaryTestCase::DoRun()
                           true,
                           "Raw overall did not match merged windows");
 
+    auto mismatchedOverall = MergeRawWindows(rawWindows);
+    mismatchedOverall.at(10).contentionNs += 1'000'000;
+    const auto mismatchedSummary = statistics.BuildSummaryFromRaw(rawWindows, mismatchedOverall);
+    NS_TEST_ASSERT_MSG_EQ(mismatchedSummary.validation.overallMatchesWindows,
+                          false,
+                          "Independent overall mismatch passed raw-window validation");
+    NS_TEST_ASSERT_MSG_EQ_TOL(
+        FindStation(mismatchedSummary.overall.stations, 0, 0)
+            .statistics.phyStats.contentionFraction.value(),
+        0.002,
+        1e-12,
+        "Overall DTO was not derived from the independent one-window recorder");
+
     SaturatedTcpStatistics invalidInventory(10);
     invalidInventory.RegisterAccessPoint(0, 500, "AP0", "10.2.0.1");
     invalidInventory.RegisterStation(9, 0, 501, "AP9/STA0", "10.2.9.2");
@@ -440,69 +576,147 @@ SaturatedTcpBenchmarkLifecycleTestCase::DoRun()
     auto stationNode = CreateObject<Node>();
     auto accessPointDevice = MakeStationDevice(accessPointNode, Mac48Address("00:00:00:00:00:01"));
     auto stationDevice = MakeStationDevice(stationNode, Mac48Address("00:00:00:00:00:02"));
-
-    SaturatedTcpStatistics statistics(10);
-    statistics.RegisterAccessPoint(0, accessPointNode->GetId(), "AP0", "10.1.0.1");
-    statistics.RegisterStation(0, 0, stationNode->GetId(), "AP0/STA0", "10.1.0.2");
-    try
-    {
-        statistics.ConnectStation(accessPointDevice);
-        NS_TEST_ASSERT_MSG_EQ(true, false, "Registered AP device was connected as a station");
-    }
-    catch (const std::invalid_argument&)
-    {
-    }
-    statistics.ConnectStation(stationDevice);
-    try
-    {
-        statistics.ConnectStation(stationDevice);
-        NS_TEST_ASSERT_MSG_EQ(true, false, "Station device was connected twice");
-    }
-    catch (const std::invalid_argument&)
-    {
-    }
-
     const uint32_t stationNodeId = stationNode->GetId();
-    statistics.NotifyAccessRequested(stationNodeId, AC_BE, 0);
-    statistics.Start(0);
-    try
+    Callback<void, uint8_t, uint8_t> savedAccessCallback;
     {
+        SaturatedTcpStatistics statistics(10);
+        statistics.RegisterAccessPoint(0, accessPointNode->GetId(), "AP0", "10.1.0.1");
+        statistics.RegisterStation(0, 0, stationNodeId, "AP0/STA0", "10.1.0.2");
+        try
+        {
+            statistics.ConnectStation(accessPointDevice);
+            NS_TEST_ASSERT_MSG_EQ(true, false, "Registered AP device was connected as a station");
+        }
+        catch (const std::invalid_argument&)
+        {
+        }
+        statistics.ConnectStation(stationDevice);
+        savedAccessCallback =
+            statistics.m_traceConnections.at(stationNodeId).accessRequestedCallback;
+        try
+        {
+            statistics.ConnectStation(stationDevice);
+            NS_TEST_ASSERT_MSG_EQ(true, false, "Station device was connected twice");
+        }
+        catch (const std::invalid_argument&)
+        {
+        }
+
+        statistics.NotifyAccessRequested(stationNodeId, AC_BE, 0);
         statistics.Start(0);
-        NS_TEST_ASSERT_MSG_EQ(true, false, "Statistics measurement started twice");
-    }
-    catch (const std::logic_error&)
-    {
+        try
+        {
+            statistics.Start(0);
+            NS_TEST_ASSERT_MSG_EQ(true, false, "Statistics measurement started twice");
+        }
+        catch (const std::logic_error&)
+        {
+        }
+
+        statistics.NotifyAccessRequested(stationNodeId, AC_BE_NQOS, 0);
+        statistics.NotifyAccessRequested(stationNodeId, AC_BE, 0);
+        statistics.NotifyTxopGranted(stationNodeId, AC_BE, MilliSeconds(2), MilliSeconds(1), 0);
+        statistics.m_accessWaitTrackers.at(stationNodeId)
+            ->NotifyRequest(AC_BE, 0, MilliSeconds(5).GetNanoSeconds());
+
+        try
+        {
+            statistics.Finalize(999'999'999);
+            NS_TEST_ASSERT_MSG_EQ(true, false, "Non-one-second endpoint was accepted");
+        }
+        catch (const std::invalid_argument&)
+        {
+        }
+        statistics.Finalize(1'000'000'000);
+        statistics.Finalize(1'000'000'000);
+        const auto finalizedRaw = statistics.m_phyRecorder->BuildOverallAccumulator(stationNodeId);
+        NS_TEST_ASSERT_MSG_EQ(
+            finalizedRaw.contentionNs,
+            997'000'000,
+            "DCF or pre-start callback contributed, or pending wait closed at the wrong end");
+
+        statistics.NotifyAccessRequested(stationNodeId, AC_BE, 0);
+        statistics.Finalize(1'000'000'000);
+        NS_TEST_ASSERT_MSG_EQ(
+            statistics.m_phyRecorder->BuildOverallAccumulator(stationNodeId).contentionNs,
+            finalizedRaw.contentionNs,
+            "Post-finalization callback or repeated finalization changed raw state");
     }
 
-    statistics.NotifyAccessRequested(stationNodeId, AC_BE, 0);
-    statistics.NotifyTxopGranted(stationNodeId, AC_BE, MilliSeconds(2), MilliSeconds(1), 0);
-    statistics.m_accessWaitTrackers.at(stationNodeId)
-        ->NotifyRequest(AC_BE, 0, MilliSeconds(5).GetNanoSeconds());
+    const auto stationMac = DynamicCast<BenchmarkStatsStaWifiMacProbe>(stationDevice->GetMac());
+    uint32_t survivingObserverCount = 0;
+    stationMac->TraceConnectWithoutContext(
+        "AccessRequested",
+        MakeBoundCallback(&CountAccessRequest, &survivingObserverCount));
+    stationMac->InvokeNotifyRequestAccess(stationMac->GetQosTxop(AC_BE), 0);
+    NS_TEST_ASSERT_MSG_EQ(survivingObserverCount,
+                          1,
+                          "Station device did not outlive and emit after statistics destruction");
+    stationMac->TraceDisconnectWithoutContext("AccessRequested", savedAccessCallback);
 
-    try
-    {
-        statistics.Finalize(999'999'999);
-        NS_TEST_ASSERT_MSG_EQ(true, false, "Non-one-second endpoint was accepted");
-    }
-    catch (const std::invalid_argument&)
-    {
-    }
-    statistics.Finalize(1'000'000'000);
-    statistics.Finalize(1'000'000'000);
-    const auto finalizedRaw = statistics.m_phyRecorder->BuildOverallAccumulator(stationNodeId);
-    NS_TEST_ASSERT_MSG_EQ(finalizedRaw.contentionNs,
-                          997'000'000,
-                          "Pre-start callback contributed or pending wait closed at the wrong end");
+    auto reusedOwnerNode = CreateObject<Node>();
+    auto oldOwnerDevice = MakeStationDevice(reusedOwnerNode, Mac48Address("00:00:00:00:00:05"));
+    auto replacementOwnerDevice =
+        MakeStationDevice(reusedOwnerNode, Mac48Address("00:00:00:00:00:06"));
+    alignas(SaturatedTcpStatistics) std::array<std::byte, sizeof(SaturatedTcpStatistics)>
+        ownerStorage{};
+    auto* oldOwner =
+        std::construct_at(reinterpret_cast<SaturatedTcpStatistics*>(ownerStorage.data()), 10);
+    oldOwner->RegisterAccessPoint(0, 910, "AP0", "10.10.0.1");
+    oldOwner->RegisterStation(0, 0, reusedOwnerNode->GetId(), "AP0/STA0", "10.10.0.2");
+    oldOwner->ConnectStation(oldOwnerDevice);
+    std::destroy_at(oldOwner);
 
-    statistics.NotifyAccessRequested(stationNodeId, AC_BE, 0);
-    statistics.Finalize(1'000'000'000);
+    auto* replacementOwner =
+        std::construct_at(reinterpret_cast<SaturatedTcpStatistics*>(ownerStorage.data()), 10);
+    replacementOwner->RegisterAccessPoint(0, 910, "AP0", "10.10.0.1");
+    replacementOwner->RegisterStation(0, 0, reusedOwnerNode->GetId(), "AP0/STA0", "10.10.0.2");
+    replacementOwner->ConnectStation(replacementOwnerDevice);
+    replacementOwner->Start(0);
+    const auto oldOwnerMac = DynamicCast<BenchmarkStatsStaWifiMacProbe>(oldOwnerDevice->GetMac());
+    oldOwnerMac->InvokeNotifyRequestAccess(oldOwnerMac->GetQosTxop(AC_BE), 0);
+    replacementOwner->Finalize(1'000'000'000);
     NS_TEST_ASSERT_MSG_EQ(
-        statistics.m_phyRecorder->BuildOverallAccumulator(stationNodeId).contentionNs,
-        finalizedRaw.contentionNs,
-        "Post-finalization callback or repeated finalization changed raw state");
+        replacementOwner->m_phyRecorder->BuildOverallAccumulator(reusedOwnerNode->GetId())
+            .contentionNs,
+        0,
+        "Destroyed owner callback reached a replacement statistics object at the same address");
+    std::destroy_at(replacementOwner);
+    oldOwnerDevice->Dispose();
+    replacementOwnerDevice->Dispose();
+
+    auto partialNode = CreateObject<Node>();
+    auto partialDevice = MakeStationDevice(partialNode, Mac48Address("00:00:00:00:00:03"), true);
+    {
+        SaturatedTcpStatistics partialStatistics(10);
+        partialStatistics.RegisterAccessPoint(0, 900, "AP0", "10.9.0.1");
+        partialStatistics.RegisterStation(0, 0, partialNode->GetId(), "AP0/STA0", "10.9.0.2");
+        try
+        {
+            partialStatistics.ConnectStation(partialDevice);
+            NS_TEST_ASSERT_MSG_EQ(true, false, "Missing late PHY did not fail trace connection");
+        }
+        catch (const std::invalid_argument&)
+        {
+        }
+
+        auto repairedDevice = MakeStationDevice(partialNode, Mac48Address("00:00:00:00:00:04"));
+        partialStatistics.ConnectStation(repairedDevice);
+        partialStatistics.Start(0);
+        const auto partialMac = DynamicCast<BenchmarkStatsStaWifiMacProbe>(partialDevice->GetMac());
+        partialMac->InvokeNotifyRequestAccess(partialMac->GetQosTxop(AC_BE), 0);
+        partialStatistics.Finalize(1'000'000'000);
+        NS_TEST_ASSERT_MSG_EQ(
+            partialStatistics.m_phyRecorder->BuildOverallAccumulator(partialNode->GetId())
+                .contentionNs,
+            0,
+            "Failed connection leaked an access callback into the repaired station owner");
+        repairedDevice->Dispose();
+    }
 
     accessPointDevice->Dispose();
     stationDevice->Dispose();
+    partialDevice->Dispose();
     Simulator::Destroy();
 }
 
@@ -748,6 +962,106 @@ SaturatedTcpBenchmarkJsonTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(std::filesystem::exists(invalidPath),
                           false,
                           "Invalid summary created an output file before rejection");
+
+    auto nonDefaultCategory = summary;
+    nonDefaultCategory.overall.stations.at(0).statistics.appStats.uplink.acceptedSendCount = 1;
+    try
+    {
+        std::ostringstream rejected;
+        WriteSaturatedTcpExperimentJson(rejected, nonDefaultCategory, config);
+        NS_TEST_ASSERT_MSG_EQ(true, false, "Non-default benchmark category was accepted");
+    }
+    catch (const std::invalid_argument&)
+    {
+    }
+
+    auto nonFiniteUnrelatedField = summary;
+    nonFiniteUnrelatedField.windows.at(0)
+        .stations.at(0)
+        .statistics.phyStats.channelUtilizationPercent = std::numeric_limits<double>::quiet_NaN();
+    try
+    {
+        std::ostringstream rejected;
+        WriteSaturatedTcpExperimentJson(rejected, nonFiniteUnrelatedField, config);
+        NS_TEST_ASSERT_MSG_EQ(true,
+                              false,
+                              "Present non-finite unrelated benchmark field was accepted");
+    }
+    catch (const std::invalid_argument&)
+    {
+    }
+
+    auto emptyWindow = summary;
+    emptyWindow.windows.push_back({1, 10.0, 10.0, {}, {}});
+    try
+    {
+        std::ostringstream rejected;
+        WriteSaturatedTcpExperimentJson(rejected, emptyWindow, config);
+        NS_TEST_ASSERT_MSG_EQ(true, false, "Empty sparse benchmark window was accepted");
+    }
+    catch (const std::invalid_argument&)
+    {
+    }
+
+    auto overallWithoutWindows = summary;
+    overallWithoutWindows.windows.clear();
+    try
+    {
+        std::ostringstream rejected;
+        WriteSaturatedTcpExperimentJson(rejected, overallWithoutWindows, config);
+        NS_TEST_ASSERT_MSG_EQ(true,
+                              false,
+                              "Nonzero overall benchmark output without windows was accepted");
+    }
+    catch (const std::invalid_argument&)
+    {
+    }
+
+    auto inconsistentOverall = summary;
+    inconsistentOverall.overall.stations.at(0).statistics.phyStats.contentionFraction = 0.002;
+    inconsistentOverall.overall.accessPoints.at(0).statistics.phyStats.contentionFraction = 0.002;
+    try
+    {
+        std::ostringstream rejected;
+        WriteSaturatedTcpExperimentJson(rejected, inconsistentOverall, config);
+        NS_TEST_ASSERT_MSG_EQ(true,
+                              false,
+                              "Overall contention inconsistent with sparse windows was accepted");
+    }
+    catch (const std::invalid_argument&)
+    {
+    }
+
+    const std::filesystem::path partialPath =
+        CreateTempDirFilename("llm-saturated-partial-output.json");
+    try
+    {
+        saturated_tcp_internal::WriteExclusiveJsonFile(partialPath.string(),
+                                                       [](std::ostream& output) {
+                                                           output << "partial";
+                                                           output.setstate(std::ios::badbit);
+                                                       });
+        NS_TEST_ASSERT_MSG_EQ(true, false, "Injected output failure was ignored");
+    }
+    catch (const std::runtime_error& error)
+    {
+        NS_TEST_ASSERT_MSG_NE(std::string(error.what()).find(partialPath.string()),
+                              std::string::npos,
+                              "Injected output error lacks its path");
+    }
+    NS_TEST_ASSERT_MSG_EQ(std::filesystem::exists(partialPath),
+                          false,
+                          "Failed owned output path retained a partial file");
+
+    saturated_tcp_internal::WriteExclusiveJsonFile(partialPath.string(), [](std::ostream& output) {
+        output << "retry succeeded\n";
+    });
+    std::ifstream retryInput(partialPath);
+    const std::string retryText((std::istreambuf_iterator<char>(retryInput)),
+                                std::istreambuf_iterator<char>());
+    NS_TEST_ASSERT_MSG_EQ(retryText,
+                          "retry succeeded\n",
+                          "Retry after owned-file cleanup did not create complete output");
 }
 
 } // namespace

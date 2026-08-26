@@ -4,10 +4,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -106,6 +108,70 @@ ValidateMetricFields(const PhyCategoryOutput& phy, bool requireRates, const char
             std::string(entity) + " contention fraction is outside [0, 1]");
 }
 
+/** Serialize entity statistics after removing the four benchmark fields. */
+std::string
+SerializeNonBenchmarkStatistics(EntityStatisticsOutput statistics)
+{
+    statistics.phyStats.averageTheoreticalPhyRateMbps.reset();
+    statistics.phyStats.averagePracticalPhyRateMbps.reset();
+    statistics.phyStats.channelEfficiency.reset();
+    statistics.phyStats.contentionFraction.reset();
+    std::ostringstream output;
+    JsonWriter writer(output);
+    writer.BeginObject();
+    WriteEntityStatisticsJson(writer, statistics);
+    writer.EndObject();
+    writer.Finish();
+    return output.str();
+}
+
+/** Determine whether a default sample distribution has any derived value present. */
+bool
+HasDerivedValue(const SampleDistributionOutput& distribution)
+{
+    return distribution.averageUs || distribution.standardDeviationUs || distribution.minimumUs ||
+           distribution.maximumUs;
+}
+
+/** Determine whether unrelated top-level optional fields are present. */
+bool
+HasUnrelatedOptionalValue(const EntityStatisticsOutput& statistics)
+{
+    const auto hasGeneral = [](const GeneralDirectionOutput& direction) {
+        return direction.averageTransmissionDurationUs ||
+               direction.transmissionDurationStandardDeviationUs ||
+               direction.minimumTransmissionDurationUs || direction.maximumTransmissionDurationUs ||
+               direction.effectiveThroughputMbps ||
+               HasDerivedValue(direction.applicationToPhyDelay);
+    };
+    const auto hasApp = [](const AppDirectionOutput& direction) {
+        return direction.acceptedThroughputMbps || direction.receivedThroughputMbps ||
+               HasDerivedValue(direction.receiveInterArrivalTime);
+    };
+    const auto hasMac = [](const MacDirectionOutput& direction) {
+        return direction.estimatedTransmitThroughputMbps ||
+               direction.estimatedReceiveThroughputMbps;
+    };
+    const auto hasPhy = [](const PhyDirectionOutput& direction) {
+        return direction.averageDataRateMbps || direction.throughputMbps;
+    };
+    return hasGeneral(statistics.generalStats.uplink) ||
+           hasGeneral(statistics.generalStats.downlink) || hasApp(statistics.appStats.uplink) ||
+           hasApp(statistics.appStats.downlink) || hasMac(statistics.macStats.uplink) ||
+           hasMac(statistics.macStats.downlink) || statistics.phyStats.channelUtilizationPercent ||
+           hasPhy(statistics.phyStats.uplink) || hasPhy(statistics.phyStats.downlink);
+}
+
+/** Require every non-benchmark entity category and PHY field to remain default. */
+void
+ValidateDefaultCategories(const EntityStatisticsOutput& statistics, const char* entity)
+{
+    static const std::string defaults = SerializeNonBenchmarkStatistics({});
+    Require(!HasUnrelatedOptionalValue(statistics) &&
+                SerializeNonBenchmarkStatistics(statistics) == defaults,
+            std::string(entity) + " contains non-default unrelated statistics");
+}
+
 /** Compare optional metric values exactly within public output tolerance. */
 void
 RequireOptionalEqual(const std::optional<double>& actual,
@@ -177,6 +243,7 @@ ValidateAccessPointMetrics(const AccessPointStatisticsOutput& accessPoint,
                            std::size_t stationCount,
                            bool requireRates)
 {
+    ValidateDefaultCategories(accessPoint.statistics, "AP");
     ValidateMetricFields(accessPoint.statistics.phyStats, requireRates, "AP");
     const auto expected = BuildExpectedAccessPointMetrics(stations, stationCount);
     const auto& actual = accessPoint.statistics.phyStats;
@@ -303,6 +370,7 @@ ValidateWindow(const ExperimentWindowOutput& window,
                 "window stations are duplicated or out of order");
         previousStation = key;
         ValidateStationIdentity(station, *identity->second);
+        ValidateDefaultCategories(station.statistics, "window station");
         ValidateMetricFields(station.statistics.phyStats, false, "window station");
         Require(station.statistics.phyStats.averageTheoreticalPhyRateMbps.has_value() ||
                     *station.statistics.phyStats.contentionFraction > 0.0,
@@ -349,6 +417,7 @@ ValidateOverall(const UnifiedExperimentSummary& summary,
         ValidateStationIdentity(station, identity);
         Require(stationInventory.contains({station.accessPointId, station.stationIndex}),
                 "overall station is absent from inventory");
+        ValidateDefaultCategories(station.statistics, "overall station");
         ValidateMetricFields(station.statistics.phyStats, true, "overall station");
         stationsByAccessPoint[station.accessPointId].push_back(&station);
     }
@@ -364,6 +433,77 @@ ValidateOverall(const UnifiedExperimentSummary& summary,
     }
 }
 
+/** Validate public overall values against the sparse station windows. */
+void
+ValidateOverallAgainstWindows(const UnifiedExperimentSummary& summary)
+{
+    using StationKey = std::pair<uint32_t, uint32_t>;
+
+    struct WindowMetric
+    {
+        double durationMs;              ///< Window duration in milliseconds.
+        const PhyCategoryOutput* value; ///< Station PHY fields in that window.
+    };
+
+    std::map<StationKey, std::vector<WindowMetric>> metricsByStation;
+    for (const auto& window : summary.windows)
+    {
+        for (const auto& station : window.stations)
+        {
+            metricsByStation[{station.accessPointId, station.stationIndex}].push_back(
+                {window.windowDurationMs, &station.statistics.phyStats});
+        }
+    }
+
+    for (const auto& station : summary.overall.stations)
+    {
+        const StationKey key{station.accessPointId, station.stationIndex};
+        const auto windows = metricsByStation.find(key);
+        Require(windows != metricsByStation.end(),
+                "nonzero overall station has no sparse-window activity");
+
+        long double expectedContention = 0.0L;
+        std::optional<double> minimumTheoretical;
+        std::optional<double> maximumTheoretical;
+        std::optional<double> minimumPractical;
+        std::optional<double> maximumPractical;
+        for (const auto& window : windows->second)
+        {
+            expectedContention += *window.value->contentionFraction * window.durationMs / 1000.0L;
+            if (window.value->averageTheoreticalPhyRateMbps)
+            {
+                const double theoretical = *window.value->averageTheoreticalPhyRateMbps;
+                const double practical = *window.value->averagePracticalPhyRateMbps;
+                minimumTheoretical =
+                    minimumTheoretical ? std::min(*minimumTheoretical, theoretical) : theoretical;
+                maximumTheoretical =
+                    maximumTheoretical ? std::max(*maximumTheoretical, theoretical) : theoretical;
+                minimumPractical =
+                    minimumPractical ? std::min(*minimumPractical, practical) : practical;
+                maximumPractical =
+                    maximumPractical ? std::max(*maximumPractical, practical) : practical;
+            }
+        }
+
+        const auto& overall = station.statistics.phyStats;
+        Require(minimumTheoretical.has_value(),
+                "overall station rates have no window PPDU observations");
+        Require(*overall.averageTheoreticalPhyRateMbps >=
+                        *minimumTheoretical -
+                            METRIC_TOLERANCE * std::max(1.0, *minimumTheoretical) &&
+                    *overall.averageTheoreticalPhyRateMbps <=
+                        *maximumTheoretical + METRIC_TOLERANCE * std::max(1.0, *maximumTheoretical),
+                "overall theoretical PHY rate is outside its window range");
+        Require(*overall.averagePracticalPhyRateMbps >=
+                        *minimumPractical - METRIC_TOLERANCE * std::max(1.0, *minimumPractical) &&
+                    *overall.averagePracticalPhyRateMbps <=
+                        *maximumPractical + METRIC_TOLERANCE * std::max(1.0, *maximumPractical),
+                "overall practical PHY rate is outside its window range");
+        Require(NearlyEqual(*overall.contentionFraction, static_cast<double>(expectedContention)),
+                "overall contention does not reproduce sparse windows");
+    }
+}
+
 /** Validate the complete benchmark summary before any output begins. */
 void
 ValidateBenchmarkSummary(const UnifiedExperimentSummary& summary, const SaturatedTcpConfig& config)
@@ -371,7 +511,6 @@ ValidateBenchmarkSummary(const UnifiedExperimentSummary& summary, const Saturate
     ValidateSaturatedTcpConfig(config);
     Require(summary.statisticsWindowMs == config.statistics.windowMs,
             "statistics_window_ms does not match effective configuration");
-    ValidateFlags(summary.validation);
     const auto stationInventory = ValidateInventory(summary, config);
 
     std::optional<uint64_t> previousWindowIndex;
@@ -383,9 +522,90 @@ ValidateBenchmarkSummary(const UnifiedExperimentSummary& summary, const Saturate
         ValidateWindow(window, summary, config, stationInventory);
     }
     ValidateOverall(summary, config, stationInventory);
+    ValidateOverallAgainstWindows(summary);
+    ValidateFlags(summary.validation);
+}
+
+/** Remove a newly created partial output and throw its original failure. */
+[[noreturn]] void
+CleanupOwnedOutputAndThrow(std::ofstream& output,
+                           const std::string& outputPath,
+                           const std::string& failure)
+{
+    if (output.is_open())
+    {
+        output.clear();
+        output.close();
+    }
+    std::error_code cleanupError;
+    std::filesystem::remove(outputPath, cleanupError);
+    if (cleanupError)
+    {
+        throw std::runtime_error(failure + "; additionally failed to remove partial output '" +
+                                 outputPath + "': " + cleanupError.message());
+    }
+    throw std::runtime_error(failure);
 }
 
 } // namespace
+
+namespace saturated_tcp_internal
+{
+
+void
+WriteExclusiveJsonFile(const std::string& outputPath, const JsonBodyWriter& writeBody)
+{
+    if (!writeBody)
+    {
+        throw std::invalid_argument("saturated TCP JSON body writer must be set");
+    }
+    std::ofstream output(outputPath, std::ios::out | std::ios::noreplace);
+    if (!output.is_open())
+    {
+        throw std::runtime_error("cannot exclusively create saturated TCP output: '" + outputPath +
+                                 "'");
+    }
+
+    try
+    {
+        writeBody(output);
+    }
+    catch (const std::exception& error)
+    {
+        CleanupOwnedOutputAndThrow(output,
+                                   outputPath,
+                                   "failed to write saturated TCP output: '" + outputPath +
+                                       "': " + error.what());
+    }
+    catch (...)
+    {
+        CleanupOwnedOutputAndThrow(output,
+                                   outputPath,
+                                   "failed to write saturated TCP output: '" + outputPath + "'");
+    }
+    if (!output)
+    {
+        CleanupOwnedOutputAndThrow(output,
+                                   outputPath,
+                                   "failed to write saturated TCP output: '" + outputPath + "'");
+    }
+    output.flush();
+    if (!output)
+    {
+        CleanupOwnedOutputAndThrow(output,
+                                   outputPath,
+                                   "failed to flush saturated TCP output: '" + outputPath + "'");
+    }
+    output.close();
+    if (output.fail())
+    {
+        CleanupOwnedOutputAndThrow(output,
+                                   outputPath,
+                                   "failed to close saturated TCP output: '" + outputPath + "'");
+    }
+}
+
+} // namespace saturated_tcp_internal
 
 void
 WriteSaturatedMeasurementSemantics(JsonWriter& writer)
@@ -433,34 +653,17 @@ WriteSaturatedTcpExperimentJson(const std::string& outputPath,
                                 const SaturatedTcpConfig& config)
 {
     ValidateBenchmarkSummary(summary, config);
-    std::ofstream output(outputPath, std::ios::out | std::ios::noreplace);
-    if (!output.is_open())
-    {
-        throw std::runtime_error("cannot exclusively create saturated TCP output: '" + outputPath +
-                                 "'");
-    }
-
     const ExperimentJsonSections sections{
         WriteSaturatedMeasurementSemantics,
         [&config](JsonWriter& writer) {
             WriteEffectiveSaturatedTcpConfigurationJson(writer, config);
         },
     };
-    WriteExperimentHierarchyJson(output, summary, sections);
-    if (!output)
-    {
-        throw std::runtime_error("failed to write saturated TCP output: '" + outputPath + "'");
-    }
-    output.flush();
-    if (!output)
-    {
-        throw std::runtime_error("failed to flush saturated TCP output: '" + outputPath + "'");
-    }
-    output.close();
-    if (output.fail())
-    {
-        throw std::runtime_error("failed to close saturated TCP output: '" + outputPath + "'");
-    }
+    saturated_tcp_internal::WriteExclusiveJsonFile(
+        outputPath,
+        [&summary, &sections](std::ostream& output) {
+            WriteExperimentHierarchyJson(output, summary, sections);
+        });
 }
 
 } // namespace ns3
