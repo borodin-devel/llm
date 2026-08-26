@@ -66,6 +66,7 @@ set(test_sources
     test/saturated-tcp/propagation-test-suite.cc
     test/saturated-tcp/access-wait-test-suite.cc
     test/saturated-tcp/sta-phy-metrics-test-suite.cc
+    test/saturated-tcp/benchmark-output-test-suite.cc
     test/runtime/scenario-logging-test-suite.cc
     test/runtime/scenario-topology-test-suite.cc
     test/runtime/traffic-coordinator-test-suite.cc
@@ -95,6 +96,8 @@ set(test_sources
     examples/saturated-tcp/access-tracking-sta-wifi-mac.cc
     examples/saturated-tcp/access-wait-tracker.cc
     examples/saturated-tcp/sta-phy-metrics.cc
+    examples/saturated-tcp/benchmark-statistics.cc
+    examples/saturated-tcp/output.cc
     examples/runtime/log.cc
     examples/runtime/topology.cc
     examples/runtime/traffic-coordinator.cc
