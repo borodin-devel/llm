@@ -83,8 +83,9 @@ IsKnownLogLevel(std::string_view level)
 /**
  * Parse an ns-3 data-rate spelling without invoking the unsafe stream extractor.
  *
- * This mirrors the private DataRate::DoParse grammar while requiring numeric
- * extraction to succeed before assigning the initialized result.
+ * This preserves the private DataRate::DoParse unit spellings and boundaries
+ * while requiring complete numeric extraction and an integral result before
+ * assigning the initialized destination.
  *
  * @param text Data-rate spelling to parse.
  * @param rate Parsed bit rate destination.
@@ -94,14 +95,25 @@ bool
 ParseDataRate(std::string_view text, uint64_t* rate)
 {
     const auto suffixStart = text.find_first_not_of("0123456789. ");
-    if (suffixStart == std::string_view::npos)
+    const auto numeric = text.substr(0, suffixStart);
+    std::istringstream input{std::string(numeric)};
+    double quantity{};
+    input >> quantity;
+    if (input.fail())
     {
-        std::istringstream input{std::string(text)};
-        input >> *rate;
-        return !input.fail();
+        return false;
+    }
+    input >> std::ws;
+    if (!input.eof())
+    {
+        return false;
     }
 
-    static constexpr std::array<std::pair<std::string_view, long double>, 26> units{{
+    const std::string_view suffix =
+        suffixStart == std::string_view::npos ? std::string_view{} : text.substr(suffixStart);
+
+    static constexpr std::array<std::pair<std::string_view, long double>, 27> units{{
+        {"", 1.0L},
         {"bps", 1.0L},
         {"b/s", 1.0L},
         {"Bps", 8.0L},
@@ -129,7 +141,6 @@ ParseDataRate(std::string_view text, uint64_t* rate)
         {"Gib/s", 1073741824.0L},
         {"GiB/s", 8589934592.0L},
     }};
-    const auto suffix = text.substr(suffixStart);
     for (const auto& [name, multiplier] : units)
     {
         if (suffix != name)
@@ -137,12 +148,10 @@ ParseDataRate(std::string_view text, uint64_t* rate)
             continue;
         }
 
-        std::istringstream input{std::string(text.substr(0, suffixStart))};
-        double quantity{};
-        input >> quantity;
         const long double bitsPerSecond = static_cast<long double>(quantity) * multiplier;
-        if (input.fail() || !std::isfinite(quantity) || bitsPerSecond < 0.0L ||
-            bitsPerSecond > static_cast<long double>(std::numeric_limits<uint64_t>::max()))
+        if (!std::isfinite(quantity) || !std::isfinite(bitsPerSecond) || bitsPerSecond <= 0.0L ||
+            bitsPerSecond > static_cast<long double>(std::numeric_limits<uint64_t>::max()) ||
+            std::floor(bitsPerSecond) != bitsPerSecond)
         {
             return false;
         }

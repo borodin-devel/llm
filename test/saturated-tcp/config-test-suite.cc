@@ -438,11 +438,16 @@ SaturatedTcpConfigValidationTestCase::DoRun()
     CheckFailure([](auto& c) { c.tcp.wiredRate = "Gbps"; }, "tcp.wired_rate");
     CheckFailure([](auto& c) { c.tcp.wiredRate = "0Gbps"; }, "tcp.wired_rate");
     CheckFailure([](auto& c) { c.tcp.wiredRate = "1e3Gbps"; }, "tcp.wired_rate");
+    CheckFailure([](auto& c) { c.tcp.wiredRate = "1..2Gbps"; }, "tcp.wired_rate");
+    CheckFailure([](auto& c) { c.tcp.wiredRate = "1 2Gbps"; }, "tcp.wired_rate");
+    CheckFailure([](auto& c) { c.tcp.wiredRate = "1.5bps"; }, "tcp.wired_rate");
+    CheckFailure([](auto& c) { c.tcp.wiredRate = "1.5"; }, "tcp.wired_rate");
     CheckFailure([](auto& c) { c.tcp.wiredDelay = "soon"; }, "tcp.wired_delay");
     CheckFailure([](auto& c) { c.tcp.wiredDelay = "0ms"; }, "tcp.wired_delay");
     CheckFailure([](auto& c) { c.tcp.wiredDelay = "1 ms"; }, "tcp.wired_delay");
     CheckValid([](auto& c) { c.tcp.wiredRate = "1Gib/s"; }, "1Gib/s");
     CheckValid([](auto& c) { c.tcp.wiredRate = "1GiB/s"; }, "1GiB/s");
+    CheckValid([](auto& c) { c.tcp.wiredRate = "1.5Kbps"; }, "1.5Kbps");
     CheckValid([](auto& c) { c.tcp.wiredDelay = "+0.1ms"; }, "+0.1ms");
     CheckValid([](auto& c) { c.tcp.wiredDelay = "1y"; }, "1y");
     CheckFailure([](auto& c) { c.statistics.windowMs = 0; }, "statistics.window_ms");
