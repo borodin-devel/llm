@@ -94,6 +94,12 @@ class LiveTraceRunnerTest(unittest.TestCase):
         self.trace = "contrib/llm/traces/1W_high_load_1s.json"
         self.source = Path("/tmp/fake/output.json")
 
+    def test_resolves_outer_root_from_relocated_package(self):
+        self.assertEqual(
+            runner._outer_root(),
+            Path(runner.__file__).resolve().parents[4],
+        )
+
     def test_policy_coverage_accepts_exact_set(self):
         directory = Path("/workspace/contrib/llm/traces")
         discovered = [directory / name for name in reversed(POLICY)]

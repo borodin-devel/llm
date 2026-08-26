@@ -20,6 +20,11 @@ from live_verification.schema import load_output_document
 TERM_GRACE_SECONDS = 0.2
 
 
+def _outer_root():
+    """Return the outer ns-3 repository root for this packaged module."""
+    return Path(__file__).resolve().parents[4]
+
+
 def _signal_process_group(process, signal_number):
     """Signal the dedicated process group, tolerating an already-empty group."""
     try:
@@ -164,7 +169,7 @@ def run_one_trace(
 
 def run_live_matrix():
     """Run every policy trace sequentially exactly once."""
-    outer_root = Path(__file__).resolve().parents[3]
+    outer_root = _outer_root()
     trace_directory = outer_root / "contrib/llm/traces"
     discovered = sorted(trace_directory.glob("*.json"))
     names = validate_policy_coverage(discovered, trace_directory)
