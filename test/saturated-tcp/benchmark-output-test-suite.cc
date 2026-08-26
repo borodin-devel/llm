@@ -18,6 +18,7 @@
 #include "ns3/yans-wifi-phy.h"
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -538,6 +539,22 @@ SaturatedTcpBenchmarkSummaryTestCase::DoRun()
         0.002,
         1e-12,
         "Overall DTO was not derived from the independent one-window recorder");
+
+    auto splitRoundingOverall = MergeRawWindows(rawWindows);
+    auto& roundedBits = splitRoundingOverall.at(10).psduBits;
+    roundedBits = std::nextafter(roundedBits, std::numeric_limits<long double>::infinity());
+    const auto splitRoundingSummary =
+        statistics.BuildSummaryFromRaw(rawWindows, splitRoundingOverall);
+    NS_TEST_ASSERT_MSG_EQ(splitRoundingSummary.validation.overallMatchesWindows,
+                          true,
+                          "One-ULP window-split rounding failed overall reconstruction");
+
+    splitRoundingOverall.at(10).psduBits += 1.0L;
+    const auto materialMismatchSummary =
+        statistics.BuildSummaryFromRaw(rawWindows, splitRoundingOverall);
+    NS_TEST_ASSERT_MSG_EQ(materialMismatchSummary.validation.overallMatchesWindows,
+                          false,
+                          "Material independent-overall bit mismatch passed validation");
 
     SaturatedTcpStatistics invalidInventory(10);
     invalidInventory.RegisterAccessPoint(0, 500, "AP0", "10.2.0.1");

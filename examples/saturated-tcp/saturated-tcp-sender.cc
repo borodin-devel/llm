@@ -1,12 +1,16 @@
 #include "saturated-tcp-sender.h"
 
 #include "ns3/inet-socket-address.h"
-#include "ns3/log.h"
 #include "ns3/node.h"
 #include "ns3/packet.h"
 #include "ns3/socket.h"
 #include "ns3/tcp-socket-factory.h"
 #include "ns3/uinteger.h"
+
+// The private scenario header shares this core header's basename.
+// clang-format off
+#include "ns3/log.h"
+// clang-format on
 
 #include <utility>
 

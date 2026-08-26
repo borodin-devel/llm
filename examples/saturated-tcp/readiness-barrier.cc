@@ -4,11 +4,15 @@
 
 #include "ns3/address.h"
 #include "ns3/application.h"
-#include "ns3/log.h"
 #include "ns3/nstime.h"
 #include "ns3/packet-sink.h"
 #include "ns3/simulator.h"
 #include "ns3/socket.h"
+
+// The private scenario header shares this core header's basename.
+// clang-format off
+#include "ns3/log.h"
+// clang-format on
 
 #include <algorithm>
 #include <limits>

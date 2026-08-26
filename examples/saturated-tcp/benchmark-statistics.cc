@@ -126,11 +126,36 @@ MakeAccessPointOutput(const ExperimentEntityIdentity& identity,
     return output;
 }
 
-/** Compare exact raw station accumulator state. */
+/**
+ * Compare a raw floating accumulator across independent window allocations.
+ *
+ * @param left Independent overall value.
+ * @param right Sum of configured-window values.
+ * @return True when values differ only by long-double arithmetic rounding.
+ */
+bool
+RawFloatingEqual(long double left, long double right)
+{
+    if (left == right)
+    {
+        return true;
+    }
+    if (!std::isfinite(left) || !std::isfinite(right))
+    {
+        return false;
+    }
+    constexpr long double ulpFactor = 128.0L;
+    const long double scale = std::max({1.0L, std::abs(left), std::abs(right)});
+    return std::abs(left - right) <=
+           ulpFactor * std::numeric_limits<long double>::epsilon() * scale;
+}
+
+/** Compare reconstructed raw station accumulator state. */
 bool
 RawMetricsEqual(const StationPhyMetricAccumulator& left, const StationPhyMetricAccumulator& right)
 {
-    return left.nominalRateBpsNs == right.nominalRateBpsNs && left.psduBits == right.psduBits &&
+    return RawFloatingEqual(left.nominalRateBpsNs, right.nominalRateBpsNs) &&
+           RawFloatingEqual(left.psduBits, right.psduBits) &&
            left.ppduAirtimeNs == right.ppduAirtimeNs && left.contentionNs == right.contentionNs;
 }
 
