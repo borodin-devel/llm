@@ -44,14 +44,19 @@ def _read_test_process_identity(process_id):
     return process_id, int(fields[19])
 
 
+def _read_stored_test_process_identity(identity_path):
+    fields = identity_path.read_text(encoding="utf-8").split()
+    if len(fields) != 2:
+        raise RuntimeError(f"invalid stored process identity in {identity_path}")
+    return int(fields[0]), int(fields[1])
+
+
 def _kill_test_process(
     process_identity,
     *,
     identity_reader=_read_test_process_identity,
     signal_process=os.kill,
 ):
-    if process_identity is None:
-        return
     process_id, _ = process_identity
     current_identity = identity_reader(process_id)
     if current_identity is None:
@@ -126,17 +131,26 @@ class LiveTraceRunnerTest(unittest.TestCase):
         with self.subTest("signals"):
             signal_group.assert_called_once_with(process, signal.SIGTERM)
 
-    def test_cleanup_refuses_reused_pid_without_signaling(self):
-        process_identity = (123, 456)
-        identity_reader = mock.Mock(return_value=(123, 789))
+    def test_cleanup_refuses_pid_reused_after_identity_was_recorded(self):
+        identity_reader = mock.Mock(
+            side_effect=((123, 789), (123, 789), None)
+        )
         signal_process = mock.Mock()
-        with self.subTest("identity mismatch"):
-            with self.assertRaisesRegex(RuntimeError, "identity changed"):
-                _kill_test_process(
-                    process_identity,
-                    identity_reader=identity_reader,
-                    signal_process=signal_process,
-                )
+        with tempfile.TemporaryDirectory() as directory:
+            identity_path = Path(directory) / "grandchild.identity"
+            identity_path.write_text("123 456", encoding="utf-8")
+            module = sys.modules[__name__]
+            with mock.patch.object(
+                module, "_read_test_process_identity", identity_reader
+            ):
+                stored_identity = _read_stored_test_process_identity(identity_path)
+            with self.subTest("identity mismatch"):
+                with self.assertRaisesRegex(RuntimeError, "identity changed"):
+                    _kill_test_process(
+                        stored_identity,
+                        identity_reader=identity_reader,
+                        signal_process=signal_process,
+                    )
         with self.subTest("no signal"):
             signal_process.assert_not_called()
 
@@ -221,12 +235,14 @@ class LiveTraceRunnerTest(unittest.TestCase):
     def test_timeout_terminates_grandchild_process_group_and_closes_pipe(self):
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
-            pid_path = temporary / "grandchild.pid"
+            identity_path = temporary / "grandchild.identity"
             marker_path = temporary / "survived.marker"
             grandchild = (
                 "import os,signal,time,pathlib;"
                 "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
-                f"pathlib.Path({str(pid_path)!r}).write_text(str(os.getpid()));"
+                "stat_fields=pathlib.Path('/proc/self/stat').read_text().rpartition(') ')[2].split();"
+                f"pathlib.Path({str(identity_path)!r}).write_text("
+                "str(os.getpid())+' '+stat_fields[19]);"
                 "time.sleep(0.6);"
                 f"pathlib.Path({str(marker_path)!r}).write_text('survived');"
                 "time.sleep(0.4)"
@@ -247,10 +263,11 @@ class LiveTraceRunnerTest(unittest.TestCase):
                 )
             elapsed = time.monotonic() - started
             self.assertLess(elapsed, 0.8, "inherited output pipe stayed open")
-            self.assertTrue(pid_path.exists(), "grandchild did not start")
+            self.assertTrue(identity_path.exists(), "grandchild did not start")
+            grandchild_identity = _read_stored_test_process_identity(identity_path)
+            grandchild_pid, _ = grandchild_identity
             time.sleep(0.6)
             self.assertFalse(marker_path.exists(), "grandchild survived timeout cleanup")
-            grandchild_pid = int(pid_path.read_text(encoding="utf-8"))
             status_path = Path(f"/proc/{grandchild_pid}/stat")
             reap_deadline = time.monotonic() + 1.0
             while status_path.exists() and time.monotonic() < reap_deadline:
@@ -262,12 +279,14 @@ class LiveTraceRunnerTest(unittest.TestCase):
     def test_timeout_kills_grandchild_after_leader_closes_pipe(self):
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
-            pid_path = temporary / "grandchild.pid"
+            identity_path = temporary / "grandchild.identity"
             marker_path = temporary / "survived.marker"
             grandchild = (
                 "import os,signal,time,pathlib;"
                 "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
-                f"pathlib.Path({str(pid_path)!r}).write_text(str(os.getpid()));"
+                "stat_fields=pathlib.Path('/proc/self/stat').read_text().rpartition(') ')[2].split();"
+                f"pathlib.Path({str(identity_path)!r}).write_text("
+                "str(os.getpid())+' '+stat_fields[19]);"
                 "time.sleep(0.6);"
                 f"pathlib.Path({str(marker_path)!r}).write_text('survived');"
                 "time.sleep(30)"
@@ -289,9 +308,9 @@ class LiveTraceRunnerTest(unittest.TestCase):
                 )
             elapsed = time.monotonic() - started
             self.assertLess(elapsed, 0.8, "timeout cleanup did not return promptly")
-            self.assertTrue(pid_path.exists(), "grandchild did not start")
-            grandchild_pid = int(pid_path.read_text(encoding="utf-8"))
-            grandchild_identity = _read_test_process_identity(grandchild_pid)
+            self.assertTrue(identity_path.exists(), "grandchild did not start")
+            grandchild_identity = _read_stored_test_process_identity(identity_path)
+            grandchild_pid, _ = grandchild_identity
             try:
                 time.sleep(0.6)
                 with self.subTest("survival marker"):

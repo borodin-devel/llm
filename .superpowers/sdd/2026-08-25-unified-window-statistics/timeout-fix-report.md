@@ -113,3 +113,40 @@ git diff --check                                no issues
 ```
 
 Both real grandchild cases remain green. The real trace matrix was not rerun.
+
+## Fix round 2: record identity before cleanup races
+
+Review found that the closed-pipe fixture still derived its expected starttime
+from `/proc/<pid>/stat` after `_run_captured` returned. A reused PID could
+therefore make the unrelated process's current identity become the expected
+identity. The inherited-open-pipe fixture recorded only the PID.
+
+The focused regression stores `123 456`, simulates current `/proc` identity
+`123 789` after run completion, and requires mismatch refusal with no signal.
+The extracted old caller instead adopted `(123,789)` as expected and signaled
+that PID:
+
+```text
+Ran 1 test in 0.001s
+FAILED (failures=2)
+```
+
+Both real grandchild programs now read their own `/proc/self/stat` field 22
+and write `PID starttime` to an identity file immediately after installing the
+TERM handler and before sleeping. Parent tests parse that stored tuple. The
+cleanup helper receives only the stored expected tuple and rechecks the
+current `/proc` tuple before any signal; it never derives expected identity
+after `_run_captured` returns.
+
+Both deterministic reuse coverage and the real open-/closed-pipe cases passed
+together. Final verification remained:
+
+```text
+LiveTraceRunnerTest                             12/12 passed
+live_test_traces.py --self-test                 43/43 passed
+./ns3 build llm-test llm_sample                 exit 0
+./test.py -s llm                                1/1 passed
+./test.py -e 'llm_sample*'                      1/1 passed
+```
+
+Syntax, style, and diff checks passed. The real trace matrix was not rerun.
