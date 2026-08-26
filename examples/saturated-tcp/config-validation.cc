@@ -5,6 +5,7 @@
 #include "ns3/type-id.h"
 #include "ns3/wifi-remote-station-manager.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -14,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace ns3
 {
@@ -84,8 +86,8 @@ IsKnownLogLevel(std::string_view level)
  * Parse an ns-3 data-rate spelling without invoking the unsafe stream extractor.
  *
  * This preserves the private DataRate::DoParse unit spellings and boundaries
- * while requiring complete numeric extraction and an integral result before
- * assigning the initialized destination.
+ * while scaling the decimal token exactly, requiring complete consumption and
+ * an integral result before assigning the initialized destination.
  *
  * @param text Data-rate spelling to parse.
  * @param rate Parsed bit rate destination.
@@ -94,71 +96,136 @@ IsKnownLogLevel(std::string_view level)
 bool
 ParseDataRate(std::string_view text, uint64_t* rate)
 {
+    *rate = 0;
     const auto suffixStart = text.find_first_not_of("0123456789. ");
-    const auto numeric = text.substr(0, suffixStart);
-    std::istringstream input{std::string(numeric)};
-    double quantity{};
-    input >> quantity;
-    if (input.fail())
-    {
-        return false;
-    }
-    input >> std::ws;
-    if (!input.eof())
-    {
-        return false;
-    }
-
+    auto numeric = text.substr(0, suffixStart);
     const std::string_view suffix =
         suffixStart == std::string_view::npos ? std::string_view{} : text.substr(suffixStart);
 
-    static constexpr std::array<std::pair<std::string_view, long double>, 27> units{{
-        {"", 1.0L},
-        {"bps", 1.0L},
-        {"b/s", 1.0L},
-        {"Bps", 8.0L},
-        {"B/s", 8.0L},
-        {"kbps", 1000.0L},
-        {"kb/s", 1000.0L},
-        {"Kbps", 1000.0L},
-        {"Kb/s", 1000.0L},
-        {"kBps", 8000.0L},
-        {"kB/s", 8000.0L},
-        {"KBps", 8000.0L},
-        {"KB/s", 8000.0L},
-        {"Kib/s", 1024.0L},
-        {"KiB/s", 8192.0L},
-        {"Mbps", 1000000.0L},
-        {"Mb/s", 1000000.0L},
-        {"MBps", 8000000.0L},
-        {"MB/s", 8000000.0L},
-        {"Mib/s", 1048576.0L},
-        {"MiB/s", 8388608.0L},
-        {"Gbps", 1000000000.0L},
-        {"Gb/s", 1000000000.0L},
-        {"GBps", 8000000000.0L},
-        {"GB/s", 8000000000.0L},
-        {"Gib/s", 1073741824.0L},
-        {"GiB/s", 8589934592.0L},
+    static constexpr std::array<std::pair<std::string_view, uint64_t>, 26> units{{
+        {"bps", 1},
+        {"b/s", 1},
+        {"Bps", 8},
+        {"B/s", 8},
+        {"kbps", 1000},
+        {"kb/s", 1000},
+        {"Kbps", 1000},
+        {"Kb/s", 1000},
+        {"kBps", 8000},
+        {"kB/s", 8000},
+        {"KBps", 8000},
+        {"KB/s", 8000},
+        {"Kib/s", 1024},
+        {"KiB/s", 8192},
+        {"Mbps", 1000000},
+        {"Mb/s", 1000000},
+        {"MBps", 8000000},
+        {"MB/s", 8000000},
+        {"Mib/s", 1048576},
+        {"MiB/s", 8388608},
+        {"Gbps", 1000000000},
+        {"Gb/s", 1000000000},
+        {"GBps", 8000000000},
+        {"GB/s", 8000000000},
+        {"Gib/s", 1073741824},
+        {"GiB/s", 8589934592},
     }};
-    for (const auto& [name, multiplier] : units)
+
+    uint64_t multiplier = 1;
+    bool knownUnit = suffix.empty();
+    for (const auto& [name, candidate] : units)
     {
-        if (suffix != name)
+        if (suffix == name)
         {
+            multiplier = candidate;
+            knownUnit = true;
+            break;
+        }
+    }
+    if (!knownUnit)
+    {
+        return false;
+    }
+
+    const auto firstDigit = numeric.find_first_not_of(' ');
+    if (firstDigit == std::string_view::npos)
+    {
+        return false;
+    }
+    const auto lastDigit = numeric.find_last_not_of(' ');
+    numeric = numeric.substr(firstDigit, lastDigit - firstDigit + 1);
+
+    std::vector<uint8_t> digits;
+    digits.reserve(numeric.size() + 10);
+    std::size_t fractionalDigits = 0;
+    bool decimalPointSeen = false;
+    for (const char character : numeric)
+    {
+        if (character == '.')
+        {
+            if (decimalPointSeen)
+            {
+                return false;
+            }
+            decimalPointSeen = true;
             continue;
         }
-
-        const long double bitsPerSecond = static_cast<long double>(quantity) * multiplier;
-        if (!std::isfinite(quantity) || !std::isfinite(bitsPerSecond) || bitsPerSecond <= 0.0L ||
-            bitsPerSecond > static_cast<long double>(std::numeric_limits<uint64_t>::max()) ||
-            std::floor(bitsPerSecond) != bitsPerSecond)
+        if (character < '0' || character > '9')
         {
             return false;
         }
-        *rate = static_cast<uint64_t>(bitsPerSecond);
-        return true;
+        digits.push_back(static_cast<uint8_t>(character - '0'));
+        fractionalDigits += decimalPointSeen;
     }
-    return false;
+    if (digits.empty())
+    {
+        return false;
+    }
+
+    // Multiply little-endian decimal digits to avoid binary floating-point rounding.
+    std::reverse(digits.begin(), digits.end());
+    uint64_t carry = 0;
+    for (auto& digit : digits)
+    {
+        const uint64_t product = static_cast<uint64_t>(digit) * multiplier + carry;
+        digit = static_cast<uint8_t>(product % 10);
+        carry = product / 10;
+    }
+    while (carry > 0)
+    {
+        digits.push_back(static_cast<uint8_t>(carry % 10));
+        carry /= 10;
+    }
+
+    // Decimal scaling is integral only when every discarded product digit is zero.
+    if (fractionalDigits > digits.size())
+    {
+        return false;
+    }
+    for (std::size_t i = 0; i < fractionalDigits; ++i)
+    {
+        if (digits[i] != 0)
+        {
+            return false;
+        }
+    }
+
+    uint64_t bitsPerSecond = 0;
+    for (std::size_t i = digits.size(); i > fractionalDigits; --i)
+    {
+        const uint64_t digit = digits[i - 1];
+        if (bitsPerSecond > (std::numeric_limits<uint64_t>::max() - digit) / 10)
+        {
+            return false;
+        }
+        bitsPerSecond = bitsPerSecond * 10 + digit;
+    }
+    if (bitsPerSecond == 0)
+    {
+        return false;
+    }
+    *rate = bitsPerSecond;
+    return true;
 }
 
 bool

@@ -442,12 +442,23 @@ SaturatedTcpConfigValidationTestCase::DoRun()
     CheckFailure([](auto& c) { c.tcp.wiredRate = "1 2Gbps"; }, "tcp.wired_rate");
     CheckFailure([](auto& c) { c.tcp.wiredRate = "1.5bps"; }, "tcp.wired_rate");
     CheckFailure([](auto& c) { c.tcp.wiredRate = "1.5"; }, "tcp.wired_rate");
+    CheckFailure([](auto& c) { c.tcp.wiredRate = "0.1Kib/s"; }, "tcp.wired_rate");
     CheckFailure([](auto& c) { c.tcp.wiredDelay = "soon"; }, "tcp.wired_delay");
     CheckFailure([](auto& c) { c.tcp.wiredDelay = "0ms"; }, "tcp.wired_delay");
     CheckFailure([](auto& c) { c.tcp.wiredDelay = "1 ms"; }, "tcp.wired_delay");
     CheckValid([](auto& c) { c.tcp.wiredRate = "1Gib/s"; }, "1Gib/s");
     CheckValid([](auto& c) { c.tcp.wiredRate = "1GiB/s"; }, "1GiB/s");
+    CheckValid([](auto& c) { c.tcp.wiredRate = "1.1Kbps"; }, "1.1Kbps");
     CheckValid([](auto& c) { c.tcp.wiredRate = "1.5Kbps"; }, "1.5Kbps");
+    CheckValid([](auto& c) { c.tcp.wiredRate = "0.001Mbps"; }, "0.001Mbps");
+    CheckValid([](auto& c) { c.tcp.wiredRate = "0.125Kib/s"; }, "0.125Kib/s");
+    for (const std::string_view suffix :
+         {"bps",   "b/s",   "Bps",  "B/s",   "kbps",  "kb/s", "Kbps",  "Kb/s", "kBps",
+          "kB/s",  "KBps",  "KB/s", "Kib/s", "KiB/s", "Mbps", "Mb/s",  "MBps", "MB/s",
+          "Mib/s", "MiB/s", "Gbps", "Gb/s",  "GBps",  "GB/s", "Gib/s", "GiB/s"})
+    {
+        CheckValid([suffix](auto& c) { c.tcp.wiredRate = "1" + std::string(suffix); }, suffix);
+    }
     CheckValid([](auto& c) { c.tcp.wiredDelay = "+0.1ms"; }, "+0.1ms");
     CheckValid([](auto& c) { c.tcp.wiredDelay = "1y"; }, "1y");
     CheckFailure([](auto& c) { c.statistics.windowMs = 0; }, "statistics.window_ms");
