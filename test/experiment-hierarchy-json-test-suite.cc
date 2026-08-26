@@ -1,6 +1,6 @@
-#include "../examples/statistics/json/writer.h"
 #include "../examples/experiment-window-output.h"
 #include "../examples/scenario-config.h"
+#include "../examples/statistics/json/writer.h"
 #include "llm-test-suite.h"
 
 #include "ns3/json.hpp"
@@ -202,8 +202,15 @@ ExperimentHierarchyJsonTestCase::DoRun()
     config.general.runFolder.reset();
     std::ostringstream output;
     WriteExperimentHierarchyJson(output, MakeLiteralSummary(), config);
-    const std::string raw = output.str();
-    const auto document = nlohmann::json::parse(raw);
+    const std::string text = output.str();
+    NS_TEST_ASSERT_MSG_EQ(text.starts_with("{\n  \"schema_version\": 1,"),
+                          true,
+                          "Root is not two-space formatted");
+    NS_TEST_ASSERT_MSG_EQ(text.ends_with("\n}\n"), true, "Document lacks one final newline");
+    NS_TEST_ASSERT_MSG_EQ(text.find("\n    \"measurement_semantics\""),
+                          std::string::npos,
+                          "Root member has the wrong indentation");
+    const auto document = nlohmann::json::parse(text);
 
     constexpr std::array<std::string_view, 7> roots{"schema_version",
                                                     "measurement_semantics",
@@ -216,7 +223,7 @@ ExperimentHierarchyJsonTestCase::DoRun()
     std::size_t prior = 0;
     for (const auto root : roots)
     {
-        const auto position = raw.find('"' + std::string(root) + '"', prior);
+        const auto position = text.find('"' + std::string(root) + '"', prior);
         NS_TEST_ASSERT_MSG_NE(position, std::string::npos, "Missing ordered root " << root);
         NS_TEST_ASSERT_MSG_EQ(position >= prior, true, "Wrong physical root order for " << root);
         prior = position;

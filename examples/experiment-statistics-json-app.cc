@@ -1,7 +1,5 @@
 #include "statistics/json/writer.h"
 
-#include <ostream>
-
 namespace ns3
 {
 
@@ -9,95 +7,152 @@ namespace
 {
 
 void
-WriteAgentJson(std::ostream& output, const AppAgentOutput& agent)
+WriteAgentJson(JsonWriter& writer, const AppAgentOutput& agent)
 {
-    output << "{\"agent_key\":";
-    WriteJsonScalar(output, agent.agentKey);
-    output << ",\"accepted_send_count\":";
-    WriteJsonScalar(output, agent.acceptedSendCount);
-    output << ",\"accepted_payload_bytes\":";
-    WriteJsonScalar(output, agent.acceptedPayloadBytes);
-    output << ",\"accepted_throughput_mbps\":";
-    WriteJsonScalar(output, agent.acceptedThroughputMbps);
-    output << ",\"accepted_bandwidth_share_percent\":";
-    WriteJsonScalar(output, agent.acceptedBandwidthSharePercent);
-    output << ",\"drop_event_count\":";
-    WriteJsonScalar(output, agent.dropEventCount);
-    output << ",\"dropped_payload_bytes\":";
-    WriteJsonScalar(output, agent.droppedPayloadBytes);
-    output << '}';
+    writer.BeginObject();
+    writer.Key("agent_key");
+    writer.Value(agent.agentKey);
+    writer.Key("accepted_send_count");
+    writer.Value(agent.acceptedSendCount);
+    writer.Key("accepted_payload_bytes");
+    writer.Value(agent.acceptedPayloadBytes);
+    writer.Key("accepted_throughput_mbps");
+    if (agent.acceptedThroughputMbps)
+    {
+        writer.Value(*agent.acceptedThroughputMbps);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("accepted_bandwidth_share_percent");
+    if (agent.acceptedBandwidthSharePercent)
+    {
+        writer.Value(*agent.acceptedBandwidthSharePercent);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("drop_event_count");
+    writer.Value(agent.dropEventCount);
+    writer.Key("dropped_payload_bytes");
+    writer.Value(agent.droppedPayloadBytes);
+    writer.EndObject();
 }
 
 void
-WritePeerJson(std::ostream& output, const AppPeerOutput& peer)
+WritePeerJson(JsonWriter& writer, const AppPeerOutput& peer)
 {
-    output << "{\"peer_node_id\":";
-    WriteJsonScalar(output, peer.peerNodeId);
-    output << ",\"peer_ipv4\":";
-    WriteJsonScalar(output, peer.peerIpv4);
-    output << ",\"accepted_send_count\":";
-    WriteJsonScalar(output, peer.acceptedSendCount);
-    output << ",\"accepted_payload_bytes\":";
-    WriteJsonScalar(output, peer.acceptedPayloadBytes);
-    output << ",\"accepted_throughput_mbps\":";
-    WriteJsonScalar(output, peer.acceptedThroughputMbps);
-    output << ",\"accepted_bandwidth_share_percent\":";
-    WriteJsonScalar(output, peer.acceptedBandwidthSharePercent);
-    output << ",\"receive_event_count\":";
-    WriteJsonScalar(output, peer.receiveEventCount);
-    output << ",\"received_payload_bytes\":";
-    WriteJsonScalar(output, peer.receivedPayloadBytes);
-    output << ",\"received_throughput_mbps\":";
-    WriteJsonScalar(output, peer.receivedThroughputMbps);
-    output << ",\"received_bandwidth_share_percent\":";
-    WriteJsonScalar(output, peer.receivedBandwidthSharePercent);
-    output << ",\"drop_event_count\":";
-    WriteJsonScalar(output, peer.dropEventCount);
-    output << ",\"dropped_payload_bytes\":";
-    WriteJsonScalar(output, peer.droppedPayloadBytes);
-    output << '}';
+    writer.BeginObject();
+    writer.Key("peer_node_id");
+    writer.Value(peer.peerNodeId);
+    writer.Key("peer_ipv4");
+    writer.Value(peer.peerIpv4);
+    writer.Key("accepted_send_count");
+    writer.Value(peer.acceptedSendCount);
+    writer.Key("accepted_payload_bytes");
+    writer.Value(peer.acceptedPayloadBytes);
+    writer.Key("accepted_throughput_mbps");
+    if (peer.acceptedThroughputMbps)
+    {
+        writer.Value(*peer.acceptedThroughputMbps);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("accepted_bandwidth_share_percent");
+    if (peer.acceptedBandwidthSharePercent)
+    {
+        writer.Value(*peer.acceptedBandwidthSharePercent);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("receive_event_count");
+    writer.Value(peer.receiveEventCount);
+    writer.Key("received_payload_bytes");
+    writer.Value(peer.receivedPayloadBytes);
+    writer.Key("received_throughput_mbps");
+    if (peer.receivedThroughputMbps)
+    {
+        writer.Value(*peer.receivedThroughputMbps);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("received_bandwidth_share_percent");
+    if (peer.receivedBandwidthSharePercent)
+    {
+        writer.Value(*peer.receivedBandwidthSharePercent);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("drop_event_count");
+    writer.Value(peer.dropEventCount);
+    writer.Key("dropped_payload_bytes");
+    writer.Value(peer.droppedPayloadBytes);
+    writer.EndObject();
 }
 
 } // namespace
 
 void
-WriteAppDirectionJson(std::ostream& output, const AppDirectionOutput& direction)
+WriteAppDirectionJson(JsonWriter& writer, const AppDirectionOutput& direction)
 {
-    output << "{\"accepted_send_count\":";
-    WriteJsonScalar(output, direction.acceptedSendCount);
-    output << ",\"accepted_payload_bytes\":";
-    WriteJsonScalar(output, direction.acceptedPayloadBytes);
-    output << ",\"accepted_throughput_mbps\":";
-    WriteJsonScalar(output, direction.acceptedThroughputMbps);
-    output << ",\"receive_event_count\":";
-    WriteJsonScalar(output, direction.receiveEventCount);
-    output << ",\"received_payload_bytes\":";
-    WriteJsonScalar(output, direction.receivedPayloadBytes);
-    output << ",\"received_throughput_mbps\":";
-    WriteJsonScalar(output, direction.receivedThroughputMbps);
-    output << ",\"drop_event_count\":";
-    WriteJsonScalar(output, direction.dropEventCount);
-    output << ",\"dropped_payload_bytes\":";
-    WriteJsonScalar(output, direction.droppedPayloadBytes);
-    output << ",\"receive_interarrival_time\":";
-    WriteSampleDistributionJson(output, direction.receiveInterArrivalTime);
-    output << ",\"agents\":[";
-    bool first = true;
+    writer.BeginObject();
+    writer.Key("accepted_send_count");
+    writer.Value(direction.acceptedSendCount);
+    writer.Key("accepted_payload_bytes");
+    writer.Value(direction.acceptedPayloadBytes);
+    writer.Key("accepted_throughput_mbps");
+    if (direction.acceptedThroughputMbps)
+    {
+        writer.Value(*direction.acceptedThroughputMbps);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("receive_event_count");
+    writer.Value(direction.receiveEventCount);
+    writer.Key("received_payload_bytes");
+    writer.Value(direction.receivedPayloadBytes);
+    writer.Key("received_throughput_mbps");
+    if (direction.receivedThroughputMbps)
+    {
+        writer.Value(*direction.receivedThroughputMbps);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("drop_event_count");
+    writer.Value(direction.dropEventCount);
+    writer.Key("dropped_payload_bytes");
+    writer.Value(direction.droppedPayloadBytes);
+    writer.Key("receive_interarrival_time");
+    WriteSampleDistributionJson(writer, direction.receiveInterArrivalTime);
+    writer.Key("agents");
+    writer.BeginArray();
     for (const auto& agent : direction.agents)
     {
-        output << (first ? "" : ",");
-        WriteAgentJson(output, agent);
-        first = false;
+        WriteAgentJson(writer, agent);
     }
-    output << "],\"peers\":[";
-    first = true;
+    writer.EndArray();
+    writer.Key("peers");
+    writer.BeginArray();
     for (const auto& peer : direction.peers)
     {
-        output << (first ? "" : ",");
-        WritePeerJson(output, peer);
-        first = false;
+        WritePeerJson(writer, peer);
     }
-    output << "]}";
+    writer.EndArray();
+    writer.EndObject();
 }
 
 } // namespace ns3

@@ -1,4 +1,5 @@
 #include "../examples/scenario-config-internal.h"
+#include "../examples/statistics/json/writer.h"
 #include "llm-test-suite.h"
 
 #include "ns3/json.hpp"
@@ -45,8 +46,17 @@ ScenarioConfigJsonTestCase::DoRun()
     config.logging.sampleScenarioLevel = "debug";
 
     std::ostringstream output;
-    WriteEffectiveConfigurationJson(output, config);
-    const auto document = nlohmann::json::parse(output.str());
+    JsonWriter writer(output);
+    WriteEffectiveConfigurationJson(writer, config);
+    writer.Finish();
+    const std::string text = output.str();
+    NS_TEST_ASSERT_MSG_EQ(text.starts_with("{\n  \"general\": {"),
+                          true,
+                          "Configuration section is not two-space indented");
+    NS_TEST_ASSERT_MSG_NE(text.find("\n    \"trace_file\": "),
+                          std::string::npos,
+                          "Configuration field is not four-space indented");
+    const auto document = nlohmann::json::parse(text);
 
     NS_TEST_ASSERT_MSG_EQ(document.size(), 8, "Wrong configuration section count");
     std::size_t fieldCount = 0;

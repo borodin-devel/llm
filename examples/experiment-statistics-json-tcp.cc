@@ -1,33 +1,47 @@
 #include "statistics/json/writer.h"
 
-#include <ostream>
-
 namespace ns3
 {
 
 void
-WriteTcpDirectionJson(std::ostream& output, const TcpDirectionOutput& direction)
+WriteTcpDirectionJson(JsonWriter& writer, const TcpDirectionOutput& direction)
 {
-    output << "{\"connections\":[";
-    bool first = true;
+    writer.BeginObject();
+    writer.Key("connections");
+    writer.BeginArray();
     for (const auto& connection : direction.connections)
     {
-        output << (first ? "" : ",") << "{\"peer_node_id\":";
-        WriteJsonScalar(output, connection.peerNodeId);
-        output << ",\"peer_ipv4\":";
-        WriteJsonScalar(output, connection.peerIpv4);
-        output << ",\"congestion_window_observation_duration_us\":";
-        WriteJsonScalar(output, connection.congestionWindowObservationDurationUs);
-        output << ",\"average_congestion_window_bytes\":";
-        WriteJsonScalar(output, connection.averageCongestionWindowBytes);
-        output << ",\"last_congestion_window_bytes\":";
-        WriteJsonScalar(output, connection.lastCongestionWindowBytes);
-        output << ",\"round_trip_time\":";
-        WriteSampleDistributionJson(output, connection.roundTripTime);
-        output << '}';
-        first = false;
+        writer.BeginObject();
+        writer.Key("peer_node_id");
+        writer.Value(connection.peerNodeId);
+        writer.Key("peer_ipv4");
+        writer.Value(connection.peerIpv4);
+        writer.Key("congestion_window_observation_duration_us");
+        writer.Value(connection.congestionWindowObservationDurationUs);
+        writer.Key("average_congestion_window_bytes");
+        if (connection.averageCongestionWindowBytes)
+        {
+            writer.Value(*connection.averageCongestionWindowBytes);
+        }
+        else
+        {
+            writer.Null();
+        }
+        writer.Key("last_congestion_window_bytes");
+        if (connection.lastCongestionWindowBytes)
+        {
+            writer.Value(*connection.lastCongestionWindowBytes);
+        }
+        else
+        {
+            writer.Null();
+        }
+        writer.Key("round_trip_time");
+        WriteSampleDistributionJson(writer, connection.roundTripTime);
+        writer.EndObject();
     }
-    output << "]}";
+    writer.EndArray();
+    writer.EndObject();
 }
 
 } // namespace ns3

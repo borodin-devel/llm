@@ -1,7 +1,5 @@
 #include "statistics/json/writer.h"
 
-#include <ostream>
-
 namespace ns3
 {
 
@@ -9,94 +7,122 @@ namespace
 {
 
 void
-WriteReasonsJson(std::ostream& output, const std::vector<MacDropReasonOutput>& reasons)
+WriteReasonsJson(JsonWriter& writer, const std::vector<MacDropReasonOutput>& reasons)
 {
-    output << '[';
-    bool first = true;
+    writer.BeginArray();
     for (const auto& reason : reasons)
     {
-        output << (first ? "" : ",") << "{\"reason_code\":";
-        WriteJsonScalar(output, reason.reasonCode);
-        output << ",\"drop_count\":";
-        WriteJsonScalar(output, reason.dropCount);
-        output << '}';
-        first = false;
+        writer.BeginObject();
+        writer.Key("reason_code");
+        writer.Value(reason.reasonCode);
+        writer.Key("drop_count");
+        writer.Value(reason.dropCount);
+        writer.EndObject();
     }
-    output << ']';
+    writer.EndArray();
 }
 
 void
-WritePeerJson(std::ostream& output, const MacPeerOutput& peer)
+WritePeerJson(JsonWriter& writer, const MacPeerOutput& peer)
 {
-    output << "{\"peer_node_id\":";
-    WriteJsonScalar(output, peer.peerNodeId);
-    output << ",\"peer_ipv4\":";
-    WriteJsonScalar(output, peer.peerIpv4);
-    output << ",\"estimated_transmit_event_count\":";
-    WriteJsonScalar(output, peer.estimatedTransmitEventCount);
-    output << ",\"estimated_transmitted_tcp_payload_bytes\":";
-    WriteJsonScalar(output, peer.estimatedTransmittedTcpPayloadBytes);
-    output << ",\"estimated_transmit_throughput_mbps\":";
-    WriteJsonScalar(output, peer.estimatedTransmitThroughputMbps);
-    output << ",\"estimated_receive_event_count\":";
-    WriteJsonScalar(output, peer.estimatedReceiveEventCount);
-    output << ",\"estimated_received_tcp_payload_bytes\":";
-    WriteJsonScalar(output, peer.estimatedReceivedTcpPayloadBytes);
-    output << ",\"estimated_receive_throughput_mbps\":";
-    WriteJsonScalar(output, peer.estimatedReceiveThroughputMbps);
-    output << ",\"mpdu_drop_count\":";
-    WriteJsonScalar(output, peer.mpduDropCount);
-    output << ",\"mpdu_drop_bytes\":";
-    WriteJsonScalar(output, peer.mpduDropBytes);
-    output << ",\"data_failure_count\":";
-    WriteJsonScalar(output, peer.dataFailureCount);
-    output << ",\"final_data_failure_count\":";
-    WriteJsonScalar(output, peer.finalDataFailureCount);
-    output << ",\"mpdu_drops_by_reason\":";
-    WriteReasonsJson(output, peer.mpduDropsByReason);
-    output << '}';
+    writer.BeginObject();
+    writer.Key("peer_node_id");
+    writer.Value(peer.peerNodeId);
+    writer.Key("peer_ipv4");
+    writer.Value(peer.peerIpv4);
+    writer.Key("estimated_transmit_event_count");
+    writer.Value(peer.estimatedTransmitEventCount);
+    writer.Key("estimated_transmitted_tcp_payload_bytes");
+    writer.Value(peer.estimatedTransmittedTcpPayloadBytes);
+    writer.Key("estimated_transmit_throughput_mbps");
+    if (peer.estimatedTransmitThroughputMbps)
+    {
+        writer.Value(*peer.estimatedTransmitThroughputMbps);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("estimated_receive_event_count");
+    writer.Value(peer.estimatedReceiveEventCount);
+    writer.Key("estimated_received_tcp_payload_bytes");
+    writer.Value(peer.estimatedReceivedTcpPayloadBytes);
+    writer.Key("estimated_receive_throughput_mbps");
+    if (peer.estimatedReceiveThroughputMbps)
+    {
+        writer.Value(*peer.estimatedReceiveThroughputMbps);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("mpdu_drop_count");
+    writer.Value(peer.mpduDropCount);
+    writer.Key("mpdu_drop_bytes");
+    writer.Value(peer.mpduDropBytes);
+    writer.Key("data_failure_count");
+    writer.Value(peer.dataFailureCount);
+    writer.Key("final_data_failure_count");
+    writer.Value(peer.finalDataFailureCount);
+    writer.Key("mpdu_drops_by_reason");
+    WriteReasonsJson(writer, peer.mpduDropsByReason);
+    writer.EndObject();
 }
 
 } // namespace
 
 void
-WriteMacDirectionJson(std::ostream& output, const MacDirectionOutput& direction)
+WriteMacDirectionJson(JsonWriter& writer, const MacDirectionOutput& direction)
 {
-    output << "{\"estimated_transmit_event_count\":";
-    WriteJsonScalar(output, direction.estimatedTransmitEventCount);
-    output << ",\"estimated_transmitted_tcp_payload_bytes\":";
-    WriteJsonScalar(output, direction.estimatedTransmittedTcpPayloadBytes);
-    output << ",\"estimated_transmit_throughput_mbps\":";
-    WriteJsonScalar(output, direction.estimatedTransmitThroughputMbps);
-    output << ",\"estimated_receive_event_count\":";
-    WriteJsonScalar(output, direction.estimatedReceiveEventCount);
-    output << ",\"estimated_received_tcp_payload_bytes\":";
-    WriteJsonScalar(output, direction.estimatedReceivedTcpPayloadBytes);
-    output << ",\"estimated_receive_throughput_mbps\":";
-    WriteJsonScalar(output, direction.estimatedReceiveThroughputMbps);
-    output << ",\"transmit_drop_count\":";
-    WriteJsonScalar(output, direction.transmitDropCount);
-    output << ",\"transmit_drop_packet_bytes\":";
-    WriteJsonScalar(output, direction.transmitDropPacketBytes);
-    output << ",\"mpdu_drop_count\":";
-    WriteJsonScalar(output, direction.mpduDropCount);
-    output << ",\"mpdu_drop_bytes\":";
-    WriteJsonScalar(output, direction.mpduDropBytes);
-    output << ",\"data_failure_count\":";
-    WriteJsonScalar(output, direction.dataFailureCount);
-    output << ",\"final_data_failure_count\":";
-    WriteJsonScalar(output, direction.finalDataFailureCount);
-    output << ",\"mpdu_drops_by_reason\":";
-    WriteReasonsJson(output, direction.mpduDropsByReason);
-    output << ",\"peers\":[";
-    bool first = true;
+    writer.BeginObject();
+    writer.Key("estimated_transmit_event_count");
+    writer.Value(direction.estimatedTransmitEventCount);
+    writer.Key("estimated_transmitted_tcp_payload_bytes");
+    writer.Value(direction.estimatedTransmittedTcpPayloadBytes);
+    writer.Key("estimated_transmit_throughput_mbps");
+    if (direction.estimatedTransmitThroughputMbps)
+    {
+        writer.Value(*direction.estimatedTransmitThroughputMbps);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("estimated_receive_event_count");
+    writer.Value(direction.estimatedReceiveEventCount);
+    writer.Key("estimated_received_tcp_payload_bytes");
+    writer.Value(direction.estimatedReceivedTcpPayloadBytes);
+    writer.Key("estimated_receive_throughput_mbps");
+    if (direction.estimatedReceiveThroughputMbps)
+    {
+        writer.Value(*direction.estimatedReceiveThroughputMbps);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("transmit_drop_count");
+    writer.Value(direction.transmitDropCount);
+    writer.Key("transmit_drop_packet_bytes");
+    writer.Value(direction.transmitDropPacketBytes);
+    writer.Key("mpdu_drop_count");
+    writer.Value(direction.mpduDropCount);
+    writer.Key("mpdu_drop_bytes");
+    writer.Value(direction.mpduDropBytes);
+    writer.Key("data_failure_count");
+    writer.Value(direction.dataFailureCount);
+    writer.Key("final_data_failure_count");
+    writer.Value(direction.finalDataFailureCount);
+    writer.Key("mpdu_drops_by_reason");
+    WriteReasonsJson(writer, direction.mpduDropsByReason);
+    writer.Key("peers");
+    writer.BeginArray();
     for (const auto& peer : direction.peers)
     {
-        output << (first ? "" : ",");
-        WritePeerJson(output, peer);
-        first = false;
+        WritePeerJson(writer, peer);
     }
-    output << "]}";
+    writer.EndArray();
+    writer.EndObject();
 }
 
 } // namespace ns3

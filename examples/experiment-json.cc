@@ -1,7 +1,7 @@
-#include "statistics/json/writer.h"
 #include "experiment-statistics.h"
 #include "scenario-config-internal.h"
 #include "scenario-log.h"
+#include "statistics/json/writer.h"
 
 #include <fstream>
 #include <ostream>
@@ -17,65 +17,63 @@ namespace
 LogComponent& g_log = llm_example::GetScenarioLog();
 
 void
-WriteMeasurementSemanticsJson(std::ostream& output)
+WriteMeasurementSemanticsJson(JsonWriter& writer)
 {
-    output << "{\"access_point_role\":";
-    WriteJsonScalar(output, "BSS parent aggregate");
-    output << ",\"station_role\":";
-    WriteJsonScalar(output, "per-station child detail");
-    output << ",\"parent_child_duplication\":";
-    WriteJsonScalar(output, "intentional");
-    output << ",\"mac_tcp_payload_bytes\":";
-    WriteJsonScalar(output, "header-based estimates");
-    output << ",\"phy_tagged_payload_bytes\":";
-    WriteJsonScalar(output, "attempts and retransmissions included");
-    output << ",\"phy_unique_tagged_payload_bytes\":";
-    WriteJsonScalar(output, "first tagged MPDU transmissions only");
-    output << ",\"phy_average_data_rate\":";
-    WriteJsonScalar(output, "airtime-weighted");
-    output << ",\"congestion_window\":";
-    WriteJsonScalar(output, "time-weighted per connection");
-    output << ",\"sample_distributions\":";
-    WriteJsonScalar(output, "sample-weighted");
-    output << ",\"sparse_window_absence\":";
-    WriteJsonScalar(output, "zero activity");
-    output << ",\"undefined_derived_values\":";
-    WriteJsonScalar(output, nullptr);
-    output << '}';
+    writer.BeginObject();
+    writer.Key("access_point_role");
+    writer.Value("BSS parent aggregate");
+    writer.Key("station_role");
+    writer.Value("per-station child detail");
+    writer.Key("parent_child_duplication");
+    writer.Value("intentional");
+    writer.Key("mac_tcp_payload_bytes");
+    writer.Value("header-based estimates");
+    writer.Key("phy_tagged_payload_bytes");
+    writer.Value("attempts and retransmissions included");
+    writer.Key("phy_unique_tagged_payload_bytes");
+    writer.Value("first tagged MPDU transmissions only");
+    writer.Key("phy_average_data_rate");
+    writer.Value("airtime-weighted");
+    writer.Key("congestion_window");
+    writer.Value("time-weighted per connection");
+    writer.Key("sample_distributions");
+    writer.Value("sample-weighted");
+    writer.Key("sparse_window_absence");
+    writer.Value("zero activity");
+    writer.Key("undefined_derived_values");
+    writer.Null();
+    writer.EndObject();
 }
 
 void
-WriteIdentityJson(std::ostream& output, const ExperimentEntityIdentity& identity)
+WriteIdentityJson(JsonWriter& writer, const ExperimentEntityIdentity& identity)
 {
-    output << "{\"access_point_id\":";
-    WriteJsonScalar(output, identity.accessPointId);
+    writer.BeginObject();
+    writer.Key("access_point_id");
+    writer.Value(identity.accessPointId);
     if (identity.kind == ExperimentEntityKind::STATION)
     {
-        output << ",\"station_index\":";
-        WriteJsonScalar(output, identity.stationIndex);
+        writer.Key("station_index");
+        writer.Value(identity.stationIndex);
     }
-    output << ",\"node_id\":";
-    WriteJsonScalar(output, identity.nodeId);
-    output << ",\"node_label\":";
-    WriteJsonScalar(output, identity.nodeLabel);
-    output << ",\"ipv4\":";
-    WriteJsonScalar(output, identity.ipv4);
-    output << '}';
+    writer.Key("node_id");
+    writer.Value(identity.nodeId);
+    writer.Key("node_label");
+    writer.Value(identity.nodeLabel);
+    writer.Key("ipv4");
+    writer.Value(identity.ipv4);
+    writer.EndObject();
 }
 
 void
-WriteInventoryArrayJson(std::ostream& output,
-                        const std::vector<ExperimentEntityIdentity>& inventory)
+WriteInventoryArrayJson(JsonWriter& writer, const std::vector<ExperimentEntityIdentity>& inventory)
 {
-    output << '[';
-    bool first = true;
+    writer.BeginArray();
     for (const auto& identity : inventory)
     {
-        output << (first ? "" : ",");
-        WriteIdentityJson(output, identity);
-        first = false;
+        WriteIdentityJson(writer, identity);
     }
-    output << ']';
+    writer.EndArray();
 }
 
 } // namespace
@@ -85,23 +83,34 @@ WriteExperimentHierarchyJson(std::ostream& output,
                              const UnifiedExperimentSummary& summary,
                              const ScenarioConfig& configuration)
 {
-    output << "{\"schema_version\":1,\"measurement_semantics\":";
-    WriteMeasurementSemanticsJson(output);
-    output << ",\"statistics_window_ms\":";
-    WriteJsonScalar(output, summary.statisticsWindowMs);
-    output << ",\"windows\":";
-    WriteExperimentWindowsJson(output, summary.windows);
-    output << ",\"overall\":";
-    WriteExperimentOverallJson(output, summary.overall);
-    output << ",\"validation\":";
-    WriteExperimentValidationJson(output, summary.validation);
-    output << ",\"experiment_metadata\":{\"configuration\":";
-    WriteEffectiveConfigurationJson(output, configuration);
-    output << ",\"entity_inventory\":{\"access_points\":";
-    WriteInventoryArrayJson(output, summary.accessPointInventory);
-    output << ",\"stations\":";
-    WriteInventoryArrayJson(output, summary.stationInventory);
-    output << "}}}";
+    JsonWriter writer(output);
+    writer.BeginObject();
+    writer.Key("schema_version");
+    writer.Value(1);
+    writer.Key("measurement_semantics");
+    WriteMeasurementSemanticsJson(writer);
+    writer.Key("statistics_window_ms");
+    writer.Value(summary.statisticsWindowMs);
+    writer.Key("windows");
+    WriteExperimentWindowsJson(writer, summary.windows);
+    writer.Key("overall");
+    WriteExperimentOverallJson(writer, summary.overall);
+    writer.Key("validation");
+    WriteExperimentValidationJson(writer, summary.validation);
+    writer.Key("experiment_metadata");
+    writer.BeginObject();
+    writer.Key("configuration");
+    WriteEffectiveConfigurationJson(writer, configuration);
+    writer.Key("entity_inventory");
+    writer.BeginObject();
+    writer.Key("access_points");
+    WriteInventoryArrayJson(writer, summary.accessPointInventory);
+    writer.Key("stations");
+    WriteInventoryArrayJson(writer, summary.stationInventory);
+    writer.EndObject();
+    writer.EndObject();
+    writer.EndObject();
+    writer.Finish();
 }
 
 void
@@ -119,7 +128,6 @@ ExperimentStatistics::WriteExperimentJson(const std::string& outputPath,
     }
 
     WriteExperimentHierarchyJson(output, summary, configuration);
-    output << '\n';
     if (!output)
     {
         throw std::runtime_error("failed to write experiment output: '" + outputPath + "'");

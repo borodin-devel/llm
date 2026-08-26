@@ -1,7 +1,5 @@
 #include "statistics/json/writer.h"
 
-#include <ostream>
-
 namespace ns3
 {
 
@@ -9,75 +7,112 @@ namespace
 {
 
 void
-WritePeerJson(std::ostream& output, const PhyPeerOutput& peer)
+WritePeerJson(JsonWriter& writer, const PhyPeerOutput& peer)
 {
-    output << "{\"peer_node_id\":";
-    WriteJsonScalar(output, peer.peerNodeId);
-    output << ",\"peer_ipv4\":";
-    WriteJsonScalar(output, peer.peerIpv4);
-    output << ",\"tagged_payload_bytes\":";
-    WriteJsonScalar(output, peer.taggedPayloadBytes);
-    output << ",\"unique_tagged_payload_bytes\":";
-    WriteJsonScalar(output, peer.uniqueTaggedPayloadBytes);
-    output << ",\"transmission_attempt_count\":";
-    WriteJsonScalar(output, peer.transmissionAttemptCount);
-    output << ",\"retransmission_count\":";
-    WriteJsonScalar(output, peer.retransmissionCount);
-    output << ",\"transmission_airtime_us\":";
-    WriteJsonScalar(output, peer.transmissionAirtimeUs);
-    output << ",\"average_data_rate_mbps\":";
-    WriteJsonScalar(output, peer.averageDataRateMbps);
-    output << ",\"throughput_mbps\":";
-    WriteJsonScalar(output, peer.throughputMbps);
-    output << '}';
+    writer.BeginObject();
+    writer.Key("peer_node_id");
+    writer.Value(peer.peerNodeId);
+    writer.Key("peer_ipv4");
+    writer.Value(peer.peerIpv4);
+    writer.Key("tagged_payload_bytes");
+    writer.Value(peer.taggedPayloadBytes);
+    writer.Key("unique_tagged_payload_bytes");
+    writer.Value(peer.uniqueTaggedPayloadBytes);
+    writer.Key("transmission_attempt_count");
+    writer.Value(peer.transmissionAttemptCount);
+    writer.Key("retransmission_count");
+    writer.Value(peer.retransmissionCount);
+    writer.Key("transmission_airtime_us");
+    writer.Value(peer.transmissionAirtimeUs);
+    writer.Key("average_data_rate_mbps");
+    if (peer.averageDataRateMbps)
+    {
+        writer.Value(*peer.averageDataRateMbps);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("throughput_mbps");
+    if (peer.throughputMbps)
+    {
+        writer.Value(*peer.throughputMbps);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.EndObject();
 }
 
 void
-WriteDirectionJson(std::ostream& output, const PhyDirectionOutput& direction)
+WriteDirectionJson(JsonWriter& writer, const PhyDirectionOutput& direction)
 {
-    output << "{\"tagged_payload_bytes\":";
-    WriteJsonScalar(output, direction.taggedPayloadBytes);
-    output << ",\"unique_tagged_payload_bytes\":";
-    WriteJsonScalar(output, direction.uniqueTaggedPayloadBytes);
-    output << ",\"tagged_mpdu_count\":";
-    WriteJsonScalar(output, direction.taggedMpduCount);
-    output << ",\"complete_tagged_mpdu_bytes\":";
-    WriteJsonScalar(output, direction.completeTaggedMpduBytes);
-    output << ",\"transmission_attempt_count\":";
-    WriteJsonScalar(output, direction.transmissionAttemptCount);
-    output << ",\"retransmission_count\":";
-    WriteJsonScalar(output, direction.retransmissionCount);
-    output << ",\"transmission_airtime_us\":";
-    WriteJsonScalar(output, direction.transmissionAirtimeUs);
-    output << ",\"average_data_rate_mbps\":";
-    WriteJsonScalar(output, direction.averageDataRateMbps);
-    output << ",\"throughput_mbps\":";
-    WriteJsonScalar(output, direction.throughputMbps);
-    output << ",\"peers\":[";
-    bool first = true;
+    writer.BeginObject();
+    writer.Key("tagged_payload_bytes");
+    writer.Value(direction.taggedPayloadBytes);
+    writer.Key("unique_tagged_payload_bytes");
+    writer.Value(direction.uniqueTaggedPayloadBytes);
+    writer.Key("tagged_mpdu_count");
+    writer.Value(direction.taggedMpduCount);
+    writer.Key("complete_tagged_mpdu_bytes");
+    writer.Value(direction.completeTaggedMpduBytes);
+    writer.Key("transmission_attempt_count");
+    writer.Value(direction.transmissionAttemptCount);
+    writer.Key("retransmission_count");
+    writer.Value(direction.retransmissionCount);
+    writer.Key("transmission_airtime_us");
+    writer.Value(direction.transmissionAirtimeUs);
+    writer.Key("average_data_rate_mbps");
+    if (direction.averageDataRateMbps)
+    {
+        writer.Value(*direction.averageDataRateMbps);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("throughput_mbps");
+    if (direction.throughputMbps)
+    {
+        writer.Value(*direction.throughputMbps);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("peers");
+    writer.BeginArray();
     for (const auto& peer : direction.peers)
     {
-        output << (first ? "" : ",");
-        WritePeerJson(output, peer);
-        first = false;
+        WritePeerJson(writer, peer);
     }
-    output << "]}";
+    writer.EndArray();
+    writer.EndObject();
 }
 
 } // namespace
 
 void
-WritePhyCategoryJson(std::ostream& output, const PhyCategoryOutput& category)
+WritePhyCategoryJson(JsonWriter& writer, const PhyCategoryOutput& category)
 {
-    output << "{\"busy_time_us\":";
-    WriteJsonScalar(output, category.busyTimeUs);
-    output << ",\"channel_utilization_percent\":";
-    WriteJsonScalar(output, category.channelUtilizationPercent);
-    output << ",\"uplink\":";
-    WriteDirectionJson(output, category.uplink);
-    output << ",\"downlink\":";
-    WriteDirectionJson(output, category.downlink);
-    output << '}';
+    writer.BeginObject();
+    writer.Key("busy_time_us");
+    writer.Value(category.busyTimeUs);
+    writer.Key("channel_utilization_percent");
+    if (category.channelUtilizationPercent)
+    {
+        writer.Value(*category.channelUtilizationPercent);
+    }
+    else
+    {
+        writer.Null();
+    }
+    writer.Key("uplink");
+    WriteDirectionJson(writer, category.uplink);
+    writer.Key("downlink");
+    WriteDirectionJson(writer, category.downlink);
+    writer.EndObject();
 }
 
 } // namespace ns3

@@ -1,81 +1,87 @@
 #include "statistics/json/writer.h"
 
-#include <ostream>
-
 namespace ns3
 {
 
 void
-WriteEntityStatisticsJson(std::ostream& output, const EntityStatisticsOutput& statistics)
+WriteEntityStatisticsJson(JsonWriter& writer, const EntityStatisticsOutput& statistics)
 {
-    output << "\"general_stats\":{\"uplink\":";
-    WriteGeneralDirectionJson(output, statistics.generalStats.uplink);
-    output << ",\"downlink\":";
-    WriteGeneralDirectionJson(output, statistics.generalStats.downlink);
-    output << "},\"app_stats\":{\"uplink\":";
-    WriteAppDirectionJson(output, statistics.appStats.uplink);
-    output << ",\"downlink\":";
-    WriteAppDirectionJson(output, statistics.appStats.downlink);
-    output << "},\"tcp_stats\":{\"uplink\":";
-    WriteTcpDirectionJson(output, statistics.tcpStats.uplink);
-    output << ",\"downlink\":";
-    WriteTcpDirectionJson(output, statistics.tcpStats.downlink);
-    output << "},\"mac_stats\":{\"uplink\":";
-    WriteMacDirectionJson(output, statistics.macStats.uplink);
-    output << ",\"downlink\":";
-    WriteMacDirectionJson(output, statistics.macStats.downlink);
-    output << "},\"phy_stats\":";
-    WritePhyCategoryJson(output, statistics.phyStats);
+    writer.Key("general_stats");
+    writer.BeginObject();
+    writer.Key("uplink");
+    WriteGeneralDirectionJson(writer, statistics.generalStats.uplink);
+    writer.Key("downlink");
+    WriteGeneralDirectionJson(writer, statistics.generalStats.downlink);
+    writer.EndObject();
+    writer.Key("app_stats");
+    writer.BeginObject();
+    writer.Key("uplink");
+    WriteAppDirectionJson(writer, statistics.appStats.uplink);
+    writer.Key("downlink");
+    WriteAppDirectionJson(writer, statistics.appStats.downlink);
+    writer.EndObject();
+    writer.Key("tcp_stats");
+    writer.BeginObject();
+    writer.Key("uplink");
+    WriteTcpDirectionJson(writer, statistics.tcpStats.uplink);
+    writer.Key("downlink");
+    WriteTcpDirectionJson(writer, statistics.tcpStats.downlink);
+    writer.EndObject();
+    writer.Key("mac_stats");
+    writer.BeginObject();
+    writer.Key("uplink");
+    WriteMacDirectionJson(writer, statistics.macStats.uplink);
+    writer.Key("downlink");
+    WriteMacDirectionJson(writer, statistics.macStats.downlink);
+    writer.EndObject();
+    writer.Key("phy_stats");
+    WritePhyCategoryJson(writer, statistics.phyStats);
 }
 
 void
-WriteAccessPointStatisticsArrayJson(std::ostream& output,
+WriteAccessPointStatisticsArrayJson(JsonWriter& writer,
                                     const std::vector<AccessPointStatisticsOutput>& entities)
 {
-    output << '[';
-    bool first = true;
+    writer.BeginArray();
     for (const auto& entity : entities)
     {
-        output << (first ? "" : ",") << "{\"access_point_id\":";
-        WriteJsonScalar(output, entity.accessPointId);
-        output << ",\"node_id\":";
-        WriteJsonScalar(output, entity.nodeId);
-        output << ",\"node_label\":";
-        WriteJsonScalar(output, entity.nodeLabel);
-        output << ",\"ipv4\":";
-        WriteJsonScalar(output, entity.ipv4);
-        output << ',';
-        WriteEntityStatisticsJson(output, entity.statistics);
-        output << '}';
-        first = false;
+        writer.BeginObject();
+        writer.Key("access_point_id");
+        writer.Value(entity.accessPointId);
+        writer.Key("node_id");
+        writer.Value(entity.nodeId);
+        writer.Key("node_label");
+        writer.Value(entity.nodeLabel);
+        writer.Key("ipv4");
+        writer.Value(entity.ipv4);
+        WriteEntityStatisticsJson(writer, entity.statistics);
+        writer.EndObject();
     }
-    output << ']';
+    writer.EndArray();
 }
 
 void
-WriteStationStatisticsArrayJson(std::ostream& output,
+WriteStationStatisticsArrayJson(JsonWriter& writer,
                                 const std::vector<StationStatisticsOutput>& entities)
 {
-    output << '[';
-    bool first = true;
+    writer.BeginArray();
     for (const auto& entity : entities)
     {
-        output << (first ? "" : ",") << "{\"access_point_id\":";
-        WriteJsonScalar(output, entity.accessPointId);
-        output << ",\"station_index\":";
-        WriteJsonScalar(output, entity.stationIndex);
-        output << ",\"node_id\":";
-        WriteJsonScalar(output, entity.nodeId);
-        output << ",\"node_label\":";
-        WriteJsonScalar(output, entity.nodeLabel);
-        output << ",\"ipv4\":";
-        WriteJsonScalar(output, entity.ipv4);
-        output << ',';
-        WriteEntityStatisticsJson(output, entity.statistics);
-        output << '}';
-        first = false;
+        writer.BeginObject();
+        writer.Key("access_point_id");
+        writer.Value(entity.accessPointId);
+        writer.Key("station_index");
+        writer.Value(entity.stationIndex);
+        writer.Key("node_id");
+        writer.Value(entity.nodeId);
+        writer.Key("node_label");
+        writer.Value(entity.nodeLabel);
+        writer.Key("ipv4");
+        writer.Value(entity.ipv4);
+        WriteEntityStatisticsJson(writer, entity.statistics);
+        writer.EndObject();
     }
-    output << ']';
+    writer.EndArray();
 }
 
 } // namespace ns3

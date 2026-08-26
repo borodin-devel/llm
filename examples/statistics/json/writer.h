@@ -67,6 +67,14 @@ class JsonWriter
         CompleteScalarValue();
     }
 
+    /**
+     * Write a scalar or null JSON value.
+     *
+     * @param value JSON value to encode.
+     * @throws std::logic_error If value is an array or object.
+     */
+    void Value(const nlohmann::json& value);
+
     /** Write a JSON null value. */
     void Null();
 
@@ -194,6 +202,18 @@ JsonWriter::Null()
 }
 
 inline void
+JsonWriter::Value(const nlohmann::json& value)
+{
+    if (!value.is_primitive())
+    {
+        throw std::logic_error("JsonWriter::Value requires a scalar or null JSON value");
+    }
+    BeginValue();
+    m_output << value.dump();
+    CompleteScalarValue();
+}
+
+inline void
 JsonWriter::Finish()
 {
     if (m_finished || !m_rootStarted || !m_rootComplete || !m_containers.empty())
@@ -292,80 +312,44 @@ JsonWriter::ThrowStateError(std::string_view operation) const
     throw std::logic_error("JsonWriter::" + std::string(operation) + " called in an invalid state");
 }
 
-/**
- * Write one JSON scalar to a stream.
- *
- * @tparam T Scalar value type.
- * @param output Destination stream.
- * @param value Scalar value to encode.
- */
-template <typename T>
-void
-WriteJsonScalar(std::ostream& output, const T& value)
-{
-    output << nlohmann::json(value).dump();
-}
+/** @param writer JSON writer. @param distribution Distribution to serialize. */
+void WriteSampleDistributionJson(JsonWriter& writer, const SampleDistributionOutput& distribution);
 
-/**
- * Write one optional JSON scalar as its value or null.
- *
- * @tparam T Scalar value type.
- * @param output Destination stream.
- * @param value Optional scalar to encode.
- */
-template <typename T>
-void
-WriteJsonScalar(std::ostream& output, const std::optional<T>& value)
-{
-    if (value)
-    {
-        WriteJsonScalar(output, *value);
-    }
-    else
-    {
-        output << "null";
-    }
-}
+/** @param writer JSON writer. @param direction General direction to serialize. */
+void WriteGeneralDirectionJson(JsonWriter& writer, const GeneralDirectionOutput& direction);
 
-/** @param output Destination stream. @param distribution Distribution to serialize. */
-void WriteSampleDistributionJson(std::ostream& output,
-                                 const SampleDistributionOutput& distribution);
+/** @param writer JSON writer. @param direction Application direction to serialize. */
+void WriteAppDirectionJson(JsonWriter& writer, const AppDirectionOutput& direction);
 
-/** @param output Destination stream. @param direction General direction to serialize. */
-void WriteGeneralDirectionJson(std::ostream& output, const GeneralDirectionOutput& direction);
+/** @param writer JSON writer. @param direction TCP direction to serialize. */
+void WriteTcpDirectionJson(JsonWriter& writer, const TcpDirectionOutput& direction);
 
-/** @param output Destination stream. @param direction Application direction to serialize. */
-void WriteAppDirectionJson(std::ostream& output, const AppDirectionOutput& direction);
+/** @param writer JSON writer. @param direction MAC direction to serialize. */
+void WriteMacDirectionJson(JsonWriter& writer, const MacDirectionOutput& direction);
 
-/** @param output Destination stream. @param direction TCP direction to serialize. */
-void WriteTcpDirectionJson(std::ostream& output, const TcpDirectionOutput& direction);
+/** @param writer JSON writer. @param category PHY category to serialize. */
+void WritePhyCategoryJson(JsonWriter& writer, const PhyCategoryOutput& category);
 
-/** @param output Destination stream. @param direction MAC direction to serialize. */
-void WriteMacDirectionJson(std::ostream& output, const MacDirectionOutput& direction);
+/** @param writer JSON writer. @param statistics Entity statistics to serialize. */
+void WriteEntityStatisticsJson(JsonWriter& writer, const EntityStatisticsOutput& statistics);
 
-/** @param output Destination stream. @param category PHY category to serialize. */
-void WritePhyCategoryJson(std::ostream& output, const PhyCategoryOutput& category);
-
-/** @param output Destination stream. @param statistics Entity statistics to serialize. */
-void WriteEntityStatisticsJson(std::ostream& output, const EntityStatisticsOutput& statistics);
-
-/** @param output Destination stream. @param entities AP records to serialize. */
-void WriteAccessPointStatisticsArrayJson(std::ostream& output,
+/** @param writer JSON writer. @param entities AP records to serialize. */
+void WriteAccessPointStatisticsArrayJson(JsonWriter& writer,
                                          const std::vector<AccessPointStatisticsOutput>& entities);
 
-/** @param output Destination stream. @param entities station records to serialize. */
-void WriteStationStatisticsArrayJson(std::ostream& output,
+/** @param writer JSON writer. @param entities station records to serialize. */
+void WriteStationStatisticsArrayJson(JsonWriter& writer,
                                      const std::vector<StationStatisticsOutput>& entities);
 
-/** @param output Destination stream. @param windows sparse windows to serialize. */
-void WriteExperimentWindowsJson(std::ostream& output,
+/** @param writer JSON writer. @param windows sparse windows to serialize. */
+void WriteExperimentWindowsJson(JsonWriter& writer,
                                 const std::vector<ExperimentWindowOutput>& windows);
 
-/** @param output Destination stream. @param overall dense overall values to serialize. */
-void WriteExperimentOverallJson(std::ostream& output, const ExperimentOverallOutput& overall);
+/** @param writer JSON writer. @param overall dense overall values to serialize. */
+void WriteExperimentOverallJson(JsonWriter& writer, const ExperimentOverallOutput& overall);
 
-/** @param output Destination stream. @param validation validation flags to serialize. */
-void WriteExperimentValidationJson(std::ostream& output,
+/** @param writer JSON writer. @param validation validation flags to serialize. */
+void WriteExperimentValidationJson(JsonWriter& writer,
                                    const ExperimentValidationOutput& validation);
 
 /**

@@ -1,63 +1,62 @@
 #include "statistics/json/writer.h"
 
-#include <ostream>
-
 namespace ns3
 {
 
 void
-WriteExperimentWindowsJson(std::ostream& output, const std::vector<ExperimentWindowOutput>& windows)
+WriteExperimentWindowsJson(JsonWriter& writer, const std::vector<ExperimentWindowOutput>& windows)
 {
-    output << '[';
-    bool first = true;
+    writer.BeginArray();
     for (const auto& window : windows)
     {
-        output << (first ? "" : ",") << "{\"window_index\":";
-        WriteJsonScalar(output, window.windowIndex);
-        output << ",\"window_start_ms\":";
-        WriteJsonScalar(output, window.windowStartMs);
-        output << ",\"window_duration_ms\":";
-        WriteJsonScalar(output, window.windowDurationMs);
-        output << ",\"access_points\":";
-        WriteAccessPointStatisticsArrayJson(output, window.accessPoints);
-        output << ",\"stations\":";
-        WriteStationStatisticsArrayJson(output, window.stations);
-        output << '}';
-        first = false;
+        writer.BeginObject();
+        writer.Key("window_index");
+        writer.Value(window.windowIndex);
+        writer.Key("window_start_ms");
+        writer.Value(window.windowStartMs);
+        writer.Key("window_duration_ms");
+        writer.Value(window.windowDurationMs);
+        writer.Key("access_points");
+        WriteAccessPointStatisticsArrayJson(writer, window.accessPoints);
+        writer.Key("stations");
+        WriteStationStatisticsArrayJson(writer, window.stations);
+        writer.EndObject();
     }
-    output << ']';
+    writer.EndArray();
 }
 
 void
-WriteExperimentOverallJson(std::ostream& output, const ExperimentOverallOutput& overall)
+WriteExperimentOverallJson(JsonWriter& writer, const ExperimentOverallOutput& overall)
 {
-    output << "{\"access_points\":";
-    WriteAccessPointStatisticsArrayJson(output, overall.accessPoints);
-    output << ",\"stations\":";
-    WriteStationStatisticsArrayJson(output, overall.stations);
-    output << '}';
+    writer.BeginObject();
+    writer.Key("access_points");
+    WriteAccessPointStatisticsArrayJson(writer, overall.accessPoints);
+    writer.Key("stations");
+    WriteStationStatisticsArrayJson(writer, overall.stations);
+    writer.EndObject();
 }
 
 void
-WriteExperimentValidationJson(std::ostream& output, const ExperimentValidationOutput& validation)
+WriteExperimentValidationJson(JsonWriter& writer, const ExperimentValidationOutput& validation)
 {
-    output << "{\"entity_inventory_references_valid\":";
-    WriteJsonScalar(output, validation.entityInventoryReferencesValid);
-    output << ",\"app_agent_totals_consistent\":";
-    WriteJsonScalar(output, validation.appAgentTotalsConsistent);
-    output << ",\"app_peer_totals_consistent\":";
-    WriteJsonScalar(output, validation.appPeerTotalsConsistent);
-    output << ",\"mac_peer_totals_consistent\":";
-    WriteJsonScalar(output, validation.macPeerTotalsConsistent);
-    output << ",\"phy_peer_totals_consistent\":";
-    WriteJsonScalar(output, validation.phyPeerTotalsConsistent);
-    output << ",\"ap_station_sender_totals_consistent\":";
-    WriteJsonScalar(output, validation.apStationSenderTotalsConsistent);
-    output << ",\"overall_matches_windows\":";
-    WriteJsonScalar(output, validation.overallMatchesWindows);
-    output << ",\"unique_phy_payload_within_tagged_payload\":";
-    WriteJsonScalar(output, validation.uniquePhyPayloadWithinTaggedPayload);
-    output << '}';
+    writer.BeginObject();
+    writer.Key("entity_inventory_references_valid");
+    writer.Value(validation.entityInventoryReferencesValid);
+    writer.Key("app_agent_totals_consistent");
+    writer.Value(validation.appAgentTotalsConsistent);
+    writer.Key("app_peer_totals_consistent");
+    writer.Value(validation.appPeerTotalsConsistent);
+    writer.Key("mac_peer_totals_consistent");
+    writer.Value(validation.macPeerTotalsConsistent);
+    writer.Key("phy_peer_totals_consistent");
+    writer.Value(validation.phyPeerTotalsConsistent);
+    writer.Key("ap_station_sender_totals_consistent");
+    writer.Value(validation.apStationSenderTotalsConsistent);
+    writer.Key("overall_matches_windows");
+    writer.Value(validation.overallMatchesWindows);
+    writer.Key("unique_phy_payload_within_tagged_payload");
+    writer.Value(validation.uniquePhyPayloadWithinTaggedPayload);
+    writer.EndObject();
 }
 
 } // namespace ns3

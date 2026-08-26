@@ -46,11 +46,39 @@ std::pair<std::string_view, std::string_view> SplitScenarioConfigPath(std::strin
 /**
  * Write the effective scenario configuration as a JSON object.
  *
- * @param output Destination stream.
+ * @tparam Writer Structured JSON writer type.
+ * @param writer JSON writer.
  * @param configuration Effective scenario configuration.
  * @throws ScenarioConfigError if an option path is malformed.
  */
-void WriteEffectiveConfigurationJson(std::ostream& output, const ScenarioConfig& configuration);
+template <typename Writer>
+void
+WriteEffectiveConfigurationJson(Writer& writer, const ScenarioConfig& configuration)
+{
+    writer.BeginObject();
+    std::string_view activeSection;
+    for (const auto& option : GetScenarioConfigOptions())
+    {
+        const auto [section, field] = SplitScenarioConfigPath(option.tomlPath);
+        if (section != activeSection)
+        {
+            if (!activeSection.empty())
+            {
+                writer.EndObject();
+            }
+            writer.Key(section);
+            writer.BeginObject();
+            activeSection = section;
+        }
+        writer.Key(field);
+        writer.Value(option.readJson(configuration));
+    }
+    if (!activeSection.empty())
+    {
+        writer.EndObject();
+    }
+    writer.EndObject();
+}
 
 /**
  * Get the diagnostic name of a configuration scalar category.
