@@ -151,6 +151,59 @@ IncreasingLossModel::DoAssignStreams(int64_t stream)
     return 0;
 }
 
+/** Native loss model recording exact power and stream delegation. */
+class RecordingLossModel : public PropagationLossModel
+{
+  public:
+    /**
+     * Get the object TypeId.
+     *
+     * @return The object TypeId.
+     */
+    static TypeId GetTypeId();
+
+    mutable uint32_t powerCalls{0}; ///< Number of received-power calculations.
+    uint32_t streamCalls{0};        ///< Number of stream assignments.
+    int64_t lastStream{-1};         ///< Most recent stream offset.
+    double lossDb{0.0};             ///< Deterministic loss applied in dB.
+    int64_t streamCount{0};         ///< Number of streams claimed by this model.
+
+  private:
+    double DoCalcRxPower(double txPowerDbm,
+                         Ptr<MobilityModel> sender,
+                         Ptr<MobilityModel> receiver) const override;
+    int64_t DoAssignStreams(int64_t stream) override;
+};
+
+NS_OBJECT_ENSURE_REGISTERED(RecordingLossModel);
+
+TypeId
+RecordingLossModel::GetTypeId()
+{
+    static TypeId tid = TypeId("ns3::RecordingLossModel")
+                            .SetParent<PropagationLossModel>()
+                            .SetGroupName("Llm")
+                            .AddConstructor<RecordingLossModel>();
+    return tid;
+}
+
+double
+RecordingLossModel::DoCalcRxPower(double txPowerDbm,
+                                  Ptr<MobilityModel> sender,
+                                  Ptr<MobilityModel> receiver) const
+{
+    ++powerCalls;
+    return txPowerDbm - lossDb;
+}
+
+int64_t
+RecordingLossModel::DoAssignStreams(int64_t stream)
+{
+    ++streamCalls;
+    lastStream = stream;
+    return streamCount;
+}
+
 /**
  * Capture the standard-exception diagnostic from an operation.
  *
@@ -380,6 +433,118 @@ SaturatedTcpRssiPlacementTestCase::DoRun()
                           "Increasing native model has wrong diagnostic: " << diagnostic);
 }
 
+/** Verify native-only chain ownership and exact stream delegation. */
+class SaturatedTcpPropagationChainTestCase : public TestCase
+{
+  public:
+    /** Construct the propagation-chain test. */
+    SaturatedTcpPropagationChainTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+SaturatedTcpPropagationChainTestCase::SaturatedTcpPropagationChainTestCase()
+    : TestCase("saturated TCP native-only propagation chain")
+{
+}
+
+void
+SaturatedTcpPropagationChainTestCase::DoRun()
+{
+    auto accessPoint = CreateObject<ConstantPositionMobilityModel>();
+    auto sameBssStation = CreateObject<ConstantPositionMobilityModel>();
+    auto otherBssStation = CreateObject<ConstantPositionMobilityModel>();
+    accessPoint->SetPosition(Vector(0.0, 0.0, 0.0));
+    sameBssStation->SetPosition(Vector(1.0, 0.0, 0.0));
+    otherBssStation->SetPosition(Vector(2.0, 0.0, 0.0));
+
+    auto nativeHead = CreateObject<RecordingLossModel>();
+    nativeHead->lossDb = 2.0;
+    nativeHead->streamCount = 2;
+    auto nativeTail = CreateObject<RecordingLossModel>();
+    nativeTail->lossDb = 3.0;
+    nativeTail->streamCount = 3;
+    nativeHead->SetNext(nativeTail);
+
+    auto filter = CreateObject<BssLinkFilterPropagationLossModel>();
+    filter->SetNativeLossModel(nativeHead);
+    filter->RegisterRadio(accessPoint, 0, SaturatedRadioRole::ACCESS_POINT);
+    filter->RegisterRadio(sameBssStation, 0, SaturatedRadioRole::STATION);
+    filter->RegisterRadio(otherBssStation, 1, SaturatedRadioRole::STATION);
+
+    const double received = filter->CalcRxPower(20.0, accessPoint, sameBssStation);
+    NS_TEST_ASSERT_MSG_EQ_TOL(received,
+                              15.0,
+                              1e-12,
+                              "Native internal chain did not apply exactly once");
+    NS_TEST_ASSERT_MSG_EQ(nativeHead->powerCalls, 1, "Native head power call count differs");
+    NS_TEST_ASSERT_MSG_EQ(nativeTail->powerCalls, 1, "Native tail power call count differs");
+
+    constexpr int64_t streamOffset = 41;
+    NS_TEST_ASSERT_MSG_EQ(filter->AssignStreams(streamOffset),
+                          5,
+                          "Native chain stream count was not returned");
+    NS_TEST_ASSERT_MSG_EQ(nativeHead->streamCalls, 1, "Native head stream call count differs");
+    NS_TEST_ASSERT_MSG_EQ(nativeHead->lastStream,
+                          streamOffset,
+                          "Native head received the wrong stream offset");
+    NS_TEST_ASSERT_MSG_EQ(nativeTail->streamCalls, 1, "Native tail stream call count differs");
+    NS_TEST_ASSERT_MSG_EQ(nativeTail->lastStream,
+                          streamOffset + nativeHead->streamCount,
+                          "Native tail received the wrong stream offset");
+
+    auto outer = CreateObject<FixedRssLossModel>();
+    outer->SetRss(-12.0);
+    filter->SetNext(outer);
+    auto diagnostic =
+        CaptureFailure([&] { filter->CalcRxPower(20.0, accessPoint, otherBssStation); });
+    NS_TEST_ASSERT_MSG_NE(diagnostic.find("outer propagation loss chain"),
+                          std::string::npos,
+                          "Outer power chain was not rejected before use: " << diagnostic);
+    diagnostic = CaptureFailure([&] { filter->CalcRxPower(20.0, accessPoint, sameBssStation); });
+    NS_TEST_ASSERT_MSG_NE(diagnostic.find("outer propagation loss chain"),
+                          std::string::npos,
+                          "Outer allowed-link chain was not rejected before use: " << diagnostic);
+    NS_TEST_ASSERT_MSG_EQ(nativeHead->powerCalls,
+                          1,
+                          "Rejected outer chain still delegated power calculation");
+    diagnostic = CaptureFailure([&] { filter->AssignStreams(100); });
+    NS_TEST_ASSERT_MSG_NE(diagnostic.find("outer propagation loss chain"),
+                          std::string::npos,
+                          "Outer stream chain was not rejected before use: " << diagnostic);
+    NS_TEST_ASSERT_MSG_EQ(nativeHead->streamCalls,
+                          1,
+                          "Rejected outer chain still delegated stream assignment");
+
+    auto missingNative = CreateObject<BssLinkFilterPropagationLossModel>();
+    const auto missingPowerDiagnostic =
+        CaptureFailure([&] { missingNative->CalcRxPower(20.0, accessPoint, sameBssStation); });
+    const auto missingStreamDiagnostic =
+        CaptureFailure([&] { missingNative->AssignStreams(streamOffset); });
+    NS_TEST_ASSERT_MSG_NE(
+        missingStreamDiagnostic.find("native loss model"),
+        std::string::npos,
+        "Missing native stream model has wrong diagnostic: " << missingStreamDiagnostic);
+    NS_TEST_ASSERT_MSG_EQ(missingStreamDiagnostic,
+                          missingPowerDiagnostic,
+                          "Power and stream missing-native diagnostics differ");
+
+    auto directCycle = CreateObject<BssLinkFilterPropagationLossModel>();
+    diagnostic = CaptureFailure([&] { directCycle->SetNativeLossModel(directCycle); });
+    NS_TEST_ASSERT_MSG_NE(diagnostic.find("cycle"),
+                          std::string::npos,
+                          "Direct native self-cycle was accepted: " << diagnostic);
+
+    auto indirectCycle = CreateObject<BssLinkFilterPropagationLossModel>();
+    auto cycleHead = CreateObject<RecordingLossModel>();
+    cycleHead->SetNext(indirectCycle);
+    diagnostic = CaptureFailure([&] { indirectCycle->SetNativeLossModel(cycleHead); });
+    NS_TEST_ASSERT_MSG_NE(diagnostic.find("cycle"),
+                          std::string::npos,
+                          "Indirect native self-cycle was accepted: " << diagnostic);
+}
+
 } // namespace
 
 std::vector<TestCase*>
@@ -388,5 +553,6 @@ CreateSaturatedTcpPropagationTestCases()
     return {
         new SaturatedTcpLinkPolicyTestCase(),
         new SaturatedTcpRssiPlacementTestCase(),
+        new SaturatedTcpPropagationChainTestCase(),
     };
 }

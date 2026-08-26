@@ -4,6 +4,7 @@
 #include "ns3/node.h"
 
 #include <limits>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -57,6 +58,15 @@ BssLinkFilterPropagationLossModel::SetNativeLossModel(Ptr<PropagationLossModel> 
     {
         throw std::invalid_argument("native loss model must not be null");
     }
+
+    std::set<Ptr<PropagationLossModel>> visited;
+    for (auto current = nativeLoss; current; current = current->GetNext())
+    {
+        if (PeekPointer(current) == this || !visited.insert(current).second)
+        {
+            throw std::invalid_argument("native loss model chain contains a cycle");
+        }
+    }
     m_nativeLoss = nativeLoss;
 }
 
@@ -81,6 +91,10 @@ BssLinkFilterPropagationLossModel::DoCalcRxPower(double txPowerDbm,
                                                  Ptr<MobilityModel> sender,
                                                  Ptr<MobilityModel> receiver) const
 {
+    if (const_cast<BssLinkFilterPropagationLossModel*>(this)->GetNext())
+    {
+        throw std::runtime_error("BSS link filter has an outer propagation loss chain");
+    }
     if (!m_nativeLoss)
     {
         throw std::runtime_error("BSS link filter has no native loss model");
@@ -110,7 +124,15 @@ BssLinkFilterPropagationLossModel::DoCalcRxPower(double txPowerDbm,
 int64_t
 BssLinkFilterPropagationLossModel::DoAssignStreams(int64_t stream)
 {
-    return m_nativeLoss ? m_nativeLoss->AssignStreams(stream) : 0;
+    if (GetNext())
+    {
+        throw std::runtime_error("BSS link filter has an outer propagation loss chain");
+    }
+    if (!m_nativeLoss)
+    {
+        throw std::runtime_error("BSS link filter has no native loss model");
+    }
+    return m_nativeLoss->AssignStreams(stream);
 }
 
 } // namespace ns3
