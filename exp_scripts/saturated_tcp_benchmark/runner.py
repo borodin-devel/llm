@@ -32,6 +32,16 @@ from .matrix import (
     build_matrix,
     iter_experiment_attempts,
 )
+from .resources import (
+    ProcessTreeResourceMonitor,
+    ResourceCapability,
+    ResourceError,
+    ResourceMeasurement,
+    build_attempt_resource_record,
+    build_sequential_resource_summary,
+    detect_resource_capability,
+    publish_json_exclusive,
+)
 from .validation import OutputValidationError, load_output_document
 
 
@@ -354,6 +364,9 @@ def _run_process(
     stdout: BinaryIO,
     stderr: BinaryIO,
     timeout_seconds: float,
+    *,
+    resource_capability: ResourceCapability | None = None,
+    resource_callback: Callable[[ResourceMeasurement], None] | None = None,
 ) -> int:
     """Run one command in a dedicated group and leave no live descendants."""
     process = process_factory(
@@ -365,6 +378,17 @@ def _run_process(
     )
     process_group_id = process.pid
     group_observed_absent = False
+    resource_monitor = None
+    if resource_capability is not None:
+        resource_monitor = ProcessTreeResourceMonitor(
+            process.pid,
+            resource_capability,
+        )
+        try:
+            resource_monitor.start()
+        except ResourceError as error:
+            _terminate_process_group(process, process_group_id)
+            raise RunnerError(f"cannot start process resource monitor: {error}") from error
     try:
         try:
             return_code = process.wait(timeout=timeout_seconds)
@@ -386,6 +410,17 @@ def _run_process(
         if not group_observed_absent:
             _terminate_process_group(process, process_group_id)
         raise
+    finally:
+        if resource_monitor is not None:
+            exit_code = process.returncode
+            if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+                raise RunnerError("benchmark process ended without an integer exit code")
+            try:
+                measurement = resource_monitor.finish(exit_code)
+                if resource_callback is not None:
+                    resource_callback(measurement)
+            except (OSError, ResourceError) as error:
+                raise RunnerError(f"cannot retain process resource usage: {error}") from error
 
 
 def _resolved_contained(path: Path, container: Path, description: str) -> Path:
@@ -591,6 +626,58 @@ def _child_failure(
     return RunnerError("\n".join(details))
 
 
+def _publish_resource_document(
+    path: Path,
+    document: dict[str, object],
+    description: str,
+) -> None:
+    try:
+        publish_json_exclusive(path, document)
+    except FileExistsError as error:
+        raise RunnerError(f"{description} already exists: {path}") from error
+    except (OSError, ValueError) as error:
+        raise RunnerError(f"cannot publish {description} {path}: {error}") from error
+
+
+@contextmanager
+def _retain_resource_summary(
+    *,
+    root: Path,
+    run_parent: Path,
+    run_directory: Path,
+    run_parent_identity: _ObjectIdentity,
+    run_directory_identity: _ObjectIdentity,
+    requested_experiment_ids: tuple[int, ...],
+    complete_matrix: bool,
+    attempt_records: list[dict[str, object]],
+) -> Iterator[None]:
+    try:
+        yield
+    finally:
+        _require_directory_no_follow(
+            run_parent,
+            root,
+            "benchmark run parent",
+            run_parent_identity,
+        )
+        _require_directory_no_follow(
+            run_directory,
+            run_parent,
+            "benchmark timestamp directory",
+            run_directory_identity,
+        )
+        summary = build_sequential_resource_summary(
+            requested_experiment_ids,
+            complete_matrix,
+            attempt_records,
+        )
+        _publish_resource_document(
+            run_directory / "resource_summary.json",
+            summary,
+            "benchmark resource summary",
+        )
+
+
 def run_benchmark(
     *,
     ns3_root: str | Path,
@@ -598,6 +685,7 @@ def run_benchmark(
     timestamp: str | None = None,
     configurations: Iterable[ExperimentConfiguration] | None = None,
     process_factory: Callable[..., object] = subprocess.Popen,
+    resource_capability: ResourceCapability | None = None,
     output: TextIO | None = None,
 ) -> Path:
     """Run configurations sequentially and retain every created artifact."""
@@ -615,6 +703,13 @@ def run_benchmark(
     loaded = load_runner_configuration(resolved_config)
     requested = tuple(configurations) if configurations is not None else build_matrix()
     _validate_requested_configurations(requested)
+    resource_capability = (
+        resource_capability
+        if resource_capability is not None
+        else detect_resource_capability()
+    )
+    if resource_capability.sequential_only:
+        print(f"resource: {resource_capability.diagnostic}", file=output, flush=True)
 
     timestamp = timestamp if timestamp is not None else _timestamp_now()
     if (
@@ -634,6 +729,7 @@ def run_benchmark(
     completed = 0
     baselines: dict[BaselineKey, float] = {}
     experiment_identities: dict[int, _ObjectIdentity] = {}
+    resource_records: list[dict[str, object]] = []
     try:
         csv_output = ExcelCsvWriter(run_directory / "results.csv")
     except FileExistsError as error:
@@ -643,7 +739,21 @@ def run_benchmark(
     except OSError as error:
         raise RunnerError(f"cannot create benchmark CSV: {error}") from error
 
-    with csv_output:
+    with (
+        _retain_resource_summary(
+            root=root,
+            run_parent=run_parent,
+            run_directory=run_directory,
+            run_parent_identity=run_parent_identity,
+            run_directory_identity=run_directory_identity,
+            requested_experiment_ids=tuple(
+                configuration.experiment_id for configuration in requested
+            ),
+            complete_matrix=requested == build_matrix(),
+            attempt_records=resource_records,
+        ),
+        csv_output,
+    ):
         results_path = run_directory / "results.csv"
         results_identity = _ObjectIdentity(*csv_output.identity())
         _require_regular_file_no_follow(
@@ -705,6 +815,7 @@ def run_benchmark(
                 raise RunnerError(f"benchmark output already exists: {output_path}")
             stdout_path = attempt_directory / "stdout.log"
             stderr_path = attempt_directory / "stderr.log"
+            resource_usage_path = attempt_directory / "resource_usage.json"
 
             command = build_ns3_command(
                 ns3,
@@ -761,6 +872,33 @@ def run_benchmark(
                             stderr_identity,
                             stderr_log.fileno(),
                         )
+
+                        def retain_attempt_resource(
+                            measurement: ResourceMeasurement,
+                        ) -> None:
+                            record = build_attempt_resource_record(
+                                configuration.experiment_id,
+                                attempt.repetition_attempt,
+                                measurement,
+                            )
+                            resource_records.append(record)
+                            _require_attempt_hierarchy(
+                                root,
+                                run_parent,
+                                run_directory,
+                                experiment_directory,
+                                attempt_directory,
+                                run_parent_identity,
+                                run_directory_identity,
+                                experiment_identity,
+                                attempt_identity,
+                            )
+                            _publish_resource_document(
+                                resource_usage_path,
+                                record,
+                                "attempt resource usage",
+                            )
+
                         return_code = _run_process(
                             process_factory,
                             command,
@@ -768,6 +906,8 @@ def run_benchmark(
                             stdout_log,
                             stderr_log,
                             PROCESS_TIMEOUT_SECONDS,
+                            resource_capability=resource_capability,
+                            resource_callback=retain_attempt_resource,
                         )
                     finally:
                         _require_attempt_hierarchy(
@@ -1008,6 +1148,7 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     process_factory: Callable[..., object] = subprocess.Popen,
+    resource_capability: ResourceCapability | None = None,
     timestamp_factory: Callable[[], str] = _timestamp_now,
     output: TextIO | None = None,
     error: TextIO | None = None,
@@ -1023,6 +1164,7 @@ def main(
             config_path=arguments.config,
             timestamp=timestamp_factory(),
             process_factory=process_factory,
+            resource_capability=resource_capability,
             output=output,
         )
     except KeyboardInterrupt:

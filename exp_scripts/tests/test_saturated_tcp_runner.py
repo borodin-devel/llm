@@ -28,6 +28,7 @@ from saturated_tcp_benchmark.runner import (
     main,
     run_benchmark,
 )
+from saturated_tcp_benchmark.resources import detect_resource_capability
 from tests.test_saturated_tcp_validation import make_output_document
 
 
@@ -156,6 +157,20 @@ def read_csv(path: Path) -> list[list[str]]:
     """Read the semicolon CSV using its published encoding."""
     with path.open("r", encoding="utf-8-sig", newline="") as input_file:
         return list(csv.reader(input_file, delimiter=";"))
+
+
+def read_json(path: Path) -> dict[str, object]:
+    """Read one retained resource document without changing key order."""
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def fallback_resource_capability(directory: str | Path):
+    """Return deterministic no-proc capability for fake-process runner tests."""
+    missing = Path(directory) / "missing-proc"
+    return detect_resource_capability(
+        proc_root=missing,
+        meminfo_path=missing / "meminfo",
+    )
 
 
 class SaturatedTcpRunnerTest(unittest.TestCase):
@@ -325,6 +340,215 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                     "child stderr\n",
                 )
             self.assertEqual(list(run_directory.rglob("*.csv")), [run_directory / "results.csv"])
+
+    def test_retains_exact_ordered_attempt_records_and_sequential_root_summary(self) -> None:
+        configurations = tuple(reversed(build_matrix()[:2]))
+        timestamp = "resources_success"
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            run_directory = root / "run" / f"scripted_exp_{timestamp}"
+            calls = 0
+
+            def fake_process(command, **kwargs):
+                nonlocal calls
+                configuration = configurations[calls]
+                calls += 1
+                attempt_directory = (
+                    run_directory
+                    / f"experiment_{configuration.experiment_id:03d}/attempt_1"
+                )
+                write_valid_output(
+                    attempt_directory / "output.json",
+                    configuration,
+                    attempt_directory,
+                )
+                return _FakeProcess(0)
+
+            run_benchmark(
+                ns3_root=root,
+                config_path=DEFAULT_CONFIG,
+                timestamp=timestamp,
+                configurations=configurations,
+                process_factory=fake_process,
+                resource_capability=fallback_resource_capability(directory),
+                output=StringIO(),
+            )
+
+            attempt_records = []
+            expected_attempt_keys = [
+                "schema_version",
+                "experiment_id",
+                "repetition_attempt",
+                "sample_interval_ms",
+                "peak_rss_bytes",
+                "minimum_mem_available_bytes",
+                "minimum_mem_available_percent",
+                "wall_time_seconds",
+                "exit_code",
+                "monitor_mode",
+            ]
+            for experiment_id in (1, 2):
+                record = read_json(
+                    run_directory
+                    / f"experiment_{experiment_id:03d}/attempt_1/resource_usage.json"
+                )
+                self.assertEqual(list(record), expected_attempt_keys)
+                self.assertEqual(
+                    {
+                        key: record[key]
+                        for key in expected_attempt_keys
+                        if key != "wall_time_seconds"
+                    },
+                    {
+                        "schema_version": 1,
+                        "experiment_id": experiment_id,
+                        "repetition_attempt": 1,
+                        "sample_interval_ms": 100,
+                        "peak_rss_bytes": None,
+                        "minimum_mem_available_bytes": None,
+                        "minimum_mem_available_percent": None,
+                        "exit_code": 0,
+                        "monitor_mode": "sequential_fallback",
+                    },
+                )
+                self.assertGreaterEqual(record["wall_time_seconds"], 0.0)
+                attempt_records.append(record)
+
+            summary = read_json(run_directory / "resource_summary.json")
+            self.assertEqual(
+                list(summary),
+                [
+                    "schema_version",
+                    "complete_matrix",
+                    "requested_experiment_ids",
+                    "executed_experiment_ids",
+                    "auto_included_baseline_ids",
+                    "memory_reserve_percent",
+                    "calibrated_peak_rss_bytes",
+                    "worker_peak_estimate_bytes",
+                    "maximum_parallel_workers",
+                    "minimum_mem_available_bytes",
+                    "minimum_mem_available_percent",
+                    "attempts",
+                ],
+            )
+            self.assertEqual(
+                {key: summary[key] for key in summary if key != "attempts"},
+                {
+                    "schema_version": 1,
+                    "complete_matrix": False,
+                    "requested_experiment_ids": [2, 1],
+                    "executed_experiment_ids": [2, 1],
+                    "auto_included_baseline_ids": [],
+                    "memory_reserve_percent": 20,
+                    "calibrated_peak_rss_bytes": None,
+                    "worker_peak_estimate_bytes": None,
+                    "maximum_parallel_workers": 1,
+                    "minimum_mem_available_bytes": None,
+                    "minimum_mem_available_percent": None,
+                },
+            )
+            self.assertEqual(summary["attempts"], attempt_records)
+
+    def test_retains_resource_records_and_partial_summary_on_process_failures(self) -> None:
+        configuration = build_matrix()[0]
+        cases = (
+            ("nonzero", _FakeProcess(9), 9, "return code 9"),
+            (
+                "timeout",
+                _FakeProcess(
+                    -signal.SIGTERM,
+                    wait_effects=(
+                        subprocess.TimeoutExpired(["fake"], PROCESS_TIMEOUT_SECONDS),
+                    ),
+                ),
+                -signal.SIGTERM,
+                "timed out",
+            ),
+        )
+        for case, process, expected_exit_code, diagnostic in cases:
+            with self.subTest(case=case), TemporaryDirectory() as directory:
+                root = create_fake_ns3_root(directory)
+                run_directory = root / "run" / f"scripted_exp_resource_{case}"
+                with self.assertRaisesRegex(RunnerError, diagnostic):
+                    run_benchmark(
+                        ns3_root=root,
+                        config_path=DEFAULT_CONFIG,
+                        timestamp=f"resource_{case}",
+                        configurations=(configuration,),
+                        process_factory=lambda command, **kwargs: process,
+                        resource_capability=fallback_resource_capability(directory),
+                        output=StringIO(),
+                    )
+
+                attempt_record = read_json(
+                    run_directory / "experiment_001/attempt_1/resource_usage.json"
+                )
+                self.assertEqual(attempt_record["exit_code"], expected_exit_code)
+                self.assertEqual(attempt_record["monitor_mode"], "sequential_fallback")
+                summary = read_json(run_directory / "resource_summary.json")
+                self.assertEqual(summary["attempts"], [attempt_record])
+
+    def test_interrupt_retains_attempt_resource_and_partial_summary(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            error = StringIO()
+            status = main(
+                ["--ns3-root", str(root), "--config", str(DEFAULT_CONFIG)],
+                process_factory=lambda command, **kwargs: _FakeProcess(
+                    -signal.SIGTERM,
+                    wait_effects=(KeyboardInterrupt(),),
+                ),
+                resource_capability=fallback_resource_capability(directory),
+                timestamp_factory=lambda: "resource_interrupt",
+                output=StringIO(),
+                error=error,
+            )
+            run_directory = root / "run/scripted_exp_resource_interrupt"
+            attempt_record = read_json(
+                run_directory / "experiment_001/attempt_1/resource_usage.json"
+            )
+            summary = read_json(run_directory / "resource_summary.json")
+
+            self.assertEqual(status, 130)
+            self.assertEqual(attempt_record["exit_code"], -signal.SIGTERM)
+            self.assertEqual(summary["attempts"], [attempt_record])
+
+    def test_resource_symlink_collisions_never_touch_outside_targets(self) -> None:
+        configuration = build_matrix()[0]
+        for resource_name in ("resource_usage.json", "resource_summary.json"):
+            with self.subTest(resource_name=resource_name), TemporaryDirectory() as directory:
+                root = create_fake_ns3_root(directory)
+                run_directory = root / "run/scripted_exp_resource_symlink"
+                attempt_directory = run_directory / "experiment_001/attempt_1"
+                outside = Path(directory) / "outside.json"
+                outside.write_text('{"sentinel":true}', encoding="ascii")
+
+                def fake_process(command, **kwargs):
+                    collision_parent = (
+                        attempt_directory
+                        if resource_name == "resource_usage.json"
+                        else run_directory
+                    )
+                    (collision_parent / resource_name).symlink_to(outside)
+                    write_valid_output(
+                        attempt_directory / "output.json",
+                        configuration,
+                        attempt_directory,
+                    )
+                    return _FakeProcess(0)
+
+                with self.assertRaisesRegex(RunnerError, "resource.*exists|exists.*resource"):
+                    run_benchmark(
+                        ns3_root=root,
+                        config_path=DEFAULT_CONFIG,
+                        timestamp="resource_symlink",
+                        configurations=(configuration,),
+                        process_factory=fake_process,
+                        resource_capability=fallback_resource_capability(directory),
+                        output=StringIO(),
+                    )
+                self.assertEqual(outside.read_text(encoding="ascii"), '{"sentinel":true}')
 
     def test_process_failures_stop_with_no_rows_for_failed_attempt(self) -> None:
         configuration = build_matrix()[0]
