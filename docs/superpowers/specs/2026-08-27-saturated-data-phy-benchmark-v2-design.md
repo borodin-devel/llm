@@ -240,6 +240,11 @@ validation additionally enforces data-profile ordering, sums, derived
 formulas, entity roles, dense overall inventory, and overall/window raw
 reconstruction.
 
+Windows remain sparse, but activity is now data-only: a station without a
+qualifying data profile is absent from that window, an AP/BSS without an
+active station is absent, and a completely inactive window is absent.
+`overall` remains dense and contains every configured AP and STA.
+
 The removed benchmark fields are:
 
 ```text
@@ -387,6 +392,62 @@ CLI controls are:
 
 A subset run records `complete_matrix=false` and its selected IDs. No filter
 means the complete matrix.
+
+Subset selection automatically includes every matching one-STA baseline
+needed by a requested non-baseline ID. The run manifest separately records
+`requested_experiment_ids`, `executed_experiment_ids`, and
+`auto_included_baseline_ids`, so dependencies cannot be mistaken for user
+selection.
+
+`resource_usage.json` has ordered fields:
+
+```text
+schema_version
+experiment_id
+repetition_attempt
+sample_interval_ms
+peak_rss_bytes
+minimum_mem_available_bytes
+minimum_mem_available_percent
+wall_time_seconds
+exit_code
+monitor_mode
+```
+
+`resource_summary.json` has ordered fields:
+
+```text
+schema_version
+complete_matrix
+requested_experiment_ids
+executed_experiment_ids
+auto_included_baseline_ids
+memory_reserve_percent
+calibrated_peak_rss_bytes
+worker_peak_estimate_bytes
+maximum_parallel_workers
+minimum_mem_available_bytes
+minimum_mem_available_percent
+attempts
+```
+
+Both resource schema versions are integer `1`. Attempt records are ordered by
+experiment ID and repetition attempt. `monitor_mode` is `linux_proc` or
+`sequential_fallback`.
+
+Admission uses the exact inequality:
+
+```text
+MemAvailable
+- sum(max(0, worker_peak_estimate - current_active_worker_rss))
+- worker_peak_estimate
+>= ceil(MemTotal * memory_reserve_percent / 100)
+```
+
+The 15 percent value is an acceptance floor, not a second admission formula.
+If runtime use drops below it, the controller pauses new admissions, lets
+active attempts finish, records the breach, and makes a complete run fail
+acceptance. It does not kill otherwise healthy attempts solely to reclaim RAM.
 
 ### Parallel ordering and failure
 
