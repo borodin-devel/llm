@@ -20,6 +20,8 @@ namespace
 
 constexpr uint16_t FIRST_SOURCE_PORT = 10000;
 constexpr uint16_t FIRST_DESTINATION_PORT = 20000;
+constexpr int64_t FIRST_TCP_SETUP_MS = 1000;
+constexpr int64_t TCP_SETUP_SPACING_MS = 10;
 
 /**
  * Install one independently bound sender/sink pair.
@@ -31,6 +33,7 @@ constexpr uint16_t FIRST_DESTINATION_PORT = 20000;
  * @param destination Destination node and address.
  * @param sourcePort Dedicated source port.
  * @param destinationPort Dedicated destination port.
+ * @param setupStart Time at which this sender starts TCP connection setup.
  * @param sendSize Application packet size in bytes.
  * @param barrier Common readiness barrier.
  * @return Installed flow metadata and applications.
@@ -43,6 +46,7 @@ InstallFlow(uint32_t bssIndex,
             const SaturatedTcpEndpoint& destination,
             uint16_t sourcePort,
             uint16_t destinationPort,
+            Time setupStart,
             uint32_t sendSize,
             SaturatedReadinessBarrier& barrier)
 {
@@ -60,7 +64,7 @@ InstallFlow(uint32_t bssIndex,
     sender->SetRemote(InetSocketAddress(destination.address, destinationPort));
     sender->SetAttribute("SendSize", UintegerValue(sendSize));
     source.node->AddApplication(sender);
-    sender->SetStartTime(NanoSeconds(1));
+    sender->SetStartTime(setupStart);
 
     const Callback<void> readyCallback =
         barrier.RegisterSender(sender,
@@ -102,6 +106,8 @@ InstallSaturatedTcpTraffic(const std::array<SaturatedTcpBssEndpoints, 3>& endpoi
                 const auto sourcePort = static_cast<uint16_t>(FIRST_SOURCE_PORT + flowIndex);
                 const auto destinationPort =
                     static_cast<uint16_t>(FIRST_DESTINATION_PORT + flowIndex);
+                const Time setupStart =
+                    MilliSeconds(FIRST_TCP_SETUP_MS + TCP_SETUP_SPACING_MS * flowIndex);
                 installation.flows.push_back(InstallFlow(bssIndex,
                                                          stationIndex,
                                                          direction,
@@ -109,6 +115,7 @@ InstallSaturatedTcpTraffic(const std::array<SaturatedTcpBssEndpoints, 3>& endpoi
                                                          destination,
                                                          sourcePort,
                                                          destinationPort,
+                                                         setupStart,
                                                          config.tcp.segmentSizeBytes,
                                                          barrier));
                 ++flowIndex;

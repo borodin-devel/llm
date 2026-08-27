@@ -1190,6 +1190,60 @@ BuildTrafficEndpoints(uint32_t stationCount)
 /**
  * @ingroup tests
  *
+ * Verify that maximum-matrix TCP setup starts after association without one synchronized burst.
+ */
+class SaturatedTcpFlowStartScheduleTestCase : public TestCase
+{
+  public:
+    /** Construct the deterministic setup-schedule test. */
+    SaturatedTcpFlowStartScheduleTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+SaturatedTcpFlowStartScheduleTestCase::SaturatedTcpFlowStartScheduleTestCase()
+    : TestCase("stage maximum saturated TCP flow setup after association")
+{
+}
+
+void
+SaturatedTcpFlowStartScheduleTestCase::DoRun()
+{
+    Simulator::Destroy();
+    constexpr uint32_t stationCount = 30;
+    auto endpoints = BuildTrafficEndpoints(stationCount);
+    SaturatedTcpConfig config;
+    config.benchmark.stationCountPerBss = stationCount;
+    config.benchmark.trafficMode = SaturatedTrafficMode::UL_DL;
+
+    BarrierRecorder recorder;
+    SaturatedReadinessBarrier barrier(
+        MakeCallback(&BarrierRecorder::StartStatistics, &recorder),
+        MakeCallback(&BarrierRecorder::FinalizeStatistics, &recorder));
+    const auto installation = InstallSaturatedTcpTraffic(endpoints, config, barrier);
+
+    NS_TEST_ASSERT_MSG_EQ(installation.flows.size(), 180, "Wrong maximum-matrix flow count");
+    for (uint32_t flowIndex = 0; flowIndex < installation.flows.size(); ++flowIndex)
+    {
+        TimeValue senderStart;
+        installation.flows[flowIndex].sender->GetAttribute("StartTime", senderStart);
+        NS_TEST_ASSERT_MSG_EQ(senderStart.Get(),
+                              Seconds(1) + MilliSeconds(10 * flowIndex),
+                              "Sender setup start was not deterministically staged");
+
+        TimeValue sinkStart;
+        installation.flows[flowIndex].sink->GetAttribute("StartTime", sinkStart);
+        NS_TEST_ASSERT_MSG_EQ(sinkStart.Get(),
+                              Seconds(0),
+                              "Sink did not listen throughout staged TCP setup");
+    }
+    Simulator::Destroy();
+}
+
+/**
+ * @ingroup tests
+ *
  * Verify UL, DL, and bidirectional flow matrices across all three BSSs.
  */
 class SaturatedTcpFlowMatrixTestCase : public TestCase
@@ -1368,5 +1422,6 @@ CreateSaturatedTcpTrafficTestCases()
             new SaturatedReadinessBarrierDuplicateTestCase,
             new SaturatedReadinessBarrierDelayedReadyTestCase,
             new SaturatedReadinessBarrierTimeoutTestCase,
+            new SaturatedTcpFlowStartScheduleTestCase,
             new SaturatedTcpFlowMatrixTestCase};
 }
