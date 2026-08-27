@@ -53,10 +53,14 @@ VALIDATION_KEYS = (
 REQUIRED_SEMANTICS = {
     "access_point_role": "station-derived BSS aggregate",
     "station_role": "per-station transmitted data PPDU detail",
+    "parent_child_duplication": "intentional",
     "phy_observation_scope": "qualifying station-transmitted unicast data PPDUs",
+    "phy_rate_source": "actual fixed-invariant WifiTxVector NSS and MCS",
     "effective_phy_rate": "transmitted data PSDU bits per data PPDU airtime",
     "data_tx_rate_over_interval": "transmitted data PSDU bits per statistics interval",
     "data_tx_opportunity_gap": "time outside station data PPDU airtime",
+    "sparse_window_absence": "zero station data profile activity",
+    "undefined_derived_values": None,
 }
 
 
@@ -157,7 +161,8 @@ def validate_and_cleanup(output_path: pathlib.Path) -> None:
         assert document.get("statistics_window_ms") == 10
         semantics = document.get("measurement_semantics")
         assert isinstance(semantics, dict)
-        assert all(semantics.get(key) == value for key, value in REQUIRED_SEMANTICS.items())
+        assert tuple(semantics) == tuple(REQUIRED_SEMANTICS)
+        assert semantics == REQUIRED_SEMANTICS
 
         metadata = document.get("experiment_metadata")
         inventory = metadata.get("entity_inventory")

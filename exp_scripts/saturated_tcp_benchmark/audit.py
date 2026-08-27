@@ -24,6 +24,28 @@ _ROOT_KEYS = (
     "validation",
     "experiment_metadata",
 )
+_MEASUREMENT_SEMANTICS = {
+    "access_point_role": "station-derived BSS aggregate",
+    "station_role": "per-station transmitted data PPDU detail",
+    "parent_child_duplication": "intentional",
+    "phy_observation_scope": "qualifying station-transmitted unicast data PPDUs",
+    "phy_rate_source": "actual fixed-invariant WifiTxVector NSS and MCS",
+    "effective_phy_rate": "transmitted data PSDU bits per data PPDU airtime",
+    "data_tx_rate_over_interval": "transmitted data PSDU bits per statistics interval",
+    "data_tx_opportunity_gap": "time outside station data PPDU airtime",
+    "sparse_window_absence": "zero station data profile activity",
+    "undefined_derived_values": None,
+}
+_VALIDATION_KEYS = (
+    "entity_inventory_references_valid",
+    "app_agent_totals_consistent",
+    "app_peer_totals_consistent",
+    "mac_peer_totals_consistent",
+    "phy_peer_totals_consistent",
+    "ap_station_sender_totals_consistent",
+    "overall_matches_windows",
+    "unique_phy_payload_within_tagged_payload",
+)
 _PROFILE_KEYS = (
     "channel_width_mhz",
     "nss",
@@ -391,25 +413,22 @@ def _parse_attempt(
     if root["schema_version"] != 2:
         _fail(path, "schema_version must be integer 2")
     semantics = root["measurement_semantics"]
-    if type(semantics) is not dict:
-        _fail(path, "measurement_semantics must be an object")
-    required_semantics = {
-        "access_point_role": "station-derived BSS aggregate",
-        "station_role": "per-station transmitted data PPDU detail",
-        "phy_observation_scope": "qualifying station-transmitted unicast data PPDUs",
-        "effective_phy_rate": "transmitted data PSDU bits per data PPDU airtime",
-        "data_tx_rate_over_interval": "transmitted data PSDU bits per statistics interval",
-        "data_tx_opportunity_gap": "time outside station data PPDU airtime",
-    }
-    for key, value in required_semantics.items():
-        if semantics.get(key) != value:
-            _fail(path, f"measurement semantics mismatch for {key}")
+    if (
+        type(semantics) is not dict
+        or tuple(semantics) != tuple(_MEASUREMENT_SEMANTICS)
+        or semantics != _MEASUREMENT_SEMANTICS
+    ):
+        _fail(path, "measurement semantics keys/order/values are not exact")
     window_ms = _integer(root["statistics_window_ms"], path, "statistics_window_ms", minimum=1)
     if 1000 % window_ms:
         _fail(path, "statistics_window_ms must divide one second")
     validation = root["validation"]
-    if type(validation) is not dict or not validation or any(value is not True for value in validation.values()):
-        _fail(path, "validation flags must all be true Booleans")
+    if (
+        type(validation) is not dict
+        or tuple(validation) != _VALIDATION_KEYS
+        or any(validation[key] is not True for key in _VALIDATION_KEYS)
+    ):
+        _fail(path, "validation must contain the exact eight ordered true flags")
     metadata = root["experiment_metadata"]
     if type(metadata) is not dict:
         _fail(path, "experiment_metadata must be an object")
@@ -679,7 +698,8 @@ def _read_csv(path: Path) -> tuple[list[list[str]], list[str]]:
         payload = raw
     else:
         payload = raw[3:]
-    if not payload.endswith(b"\r\n") or payload.replace(b"\r\n", b"").find(b"\n") >= 0:
+    residual = payload.replace(b"\r\n", b"")
+    if not payload.endswith(b"\r\n") or b"\r" in residual or b"\n" in residual:
         errors.append(f"{path}: CSV transport is not exact CRLF")
     try:
         text = payload.decode("utf-8")
@@ -710,9 +730,22 @@ def _resource_selection(
     assert isinstance(automatic, list) and isinstance(attempts, list)
     matrix = build_matrix()
     by_id = {item.experiment_id: item for item in matrix}
-    if any(type(value) is not int or value not in by_id for value in executed):
-        discrepancies.append(f"{path}: resource manifest executed IDs are invalid")
-        return [], [item for item in attempts if type(item) is dict]
+    selection_valid = True
+    for name, values, allow_empty in (
+        ("requested_experiment_ids", requested, False),
+        ("executed_experiment_ids", executed, False),
+        ("auto_included_baseline_ids", automatic, True),
+    ):
+        if not allow_empty and not values:
+            discrepancies.append(f"{path}: resource manifest {name} must be nonempty")
+            selection_valid = False
+        if any(type(value) is not int or value not in by_id for value in values):
+            discrepancies.append(f"{path}: resource manifest {name} contains an invalid ID")
+            selection_valid = False
+        if len(values) != len(set(values)):
+            discrepancies.append(f"{path}: resource manifest {name} must be unique")
+            selection_valid = False
+
     expected_automatic = set()
     baseline_ids = {
         (item.rssi_range, item.interference_mode, item.traffic_mode, item.mimo_mode): item.experiment_id
@@ -721,19 +754,154 @@ def _resource_selection(
     }
     for experiment_id in requested:
         if type(experiment_id) is not int or experiment_id not in by_id:
-            discrepancies.append(f"{path}: resource manifest requested IDs are invalid")
             continue
         item = by_id[experiment_id]
         if item.sta_count_per_bss > 1:
             baseline_id = baseline_ids[(item.rssi_range, item.interference_mode, item.traffic_mode, item.mimo_mode)]
             if baseline_id not in requested:
                 expected_automatic.add(baseline_id)
-    if executed != sorted(set(requested) | expected_automatic) or automatic != sorted(expected_automatic):
+    if selection_valid and (
+        executed != sorted(set(requested) | expected_automatic)
+        or automatic != sorted(expected_automatic)
+    ):
         discrepancies.append(f"{path}: resource manifest subset dependency expansion is invalid")
     complete = summary.get("complete_matrix")
-    if type(complete) is not bool or (complete and executed != list(range(1, 127))):
+    if type(complete) is not bool:
         discrepancies.append(f"{path}: resource manifest complete_matrix marker is invalid")
-    return executed, [item for item in attempts if type(item) is dict]
+    elif complete and (
+        requested != list(range(1, 127))
+        or executed != list(range(1, 127))
+        or automatic
+    ):
+        discrepancies.append(f"{path}: complete resource manifest selection is invalid")
+
+    attempt_records = [item for item in attempts if type(item) is dict]
+    if len(attempt_records) != len(attempts):
+        discrepancies.append(f"{path}: resource manifest attempt entries must be objects")
+    attempt_keys = []
+    for record in attempt_records:
+        experiment_id = record.get("experiment_id")
+        repetition_attempt = record.get("repetition_attempt")
+        if (
+            type(experiment_id) is not int
+            or experiment_id not in executed
+            or type(repetition_attempt) is not int
+            or repetition_attempt <= 0
+        ):
+            discrepancies.append(f"{path}: resource manifest attempt identity is invalid")
+            continue
+        attempt_keys.append((experiment_id, repetition_attempt))
+    if len(attempt_keys) != len(set(attempt_keys)):
+        discrepancies.append(f"{path}: resource manifest attempt keys must be unique")
+    repetitions = sorted({key[1] for key in attempt_keys})
+    expected_repetitions = list(range(1, max(repetitions, default=0) + 1))
+    expected_lattice = [
+        (experiment_id, repetition_attempt)
+        for experiment_id in executed
+        for repetition_attempt in expected_repetitions
+    ]
+    if not repetitions or repetitions != expected_repetitions or attempt_keys != expected_lattice:
+        discrepancies.append(
+            f"{path}: resource manifest attempts do not form the exact executed-ID/repetition lattice"
+        )
+    return executed, attempt_records
+
+
+def _validate_resource_summary_aggregates(
+    summary: dict[str, object],
+    usage_records: list[dict[str, object]],
+    path: Path,
+    discrepancies: list[str],
+) -> None:
+    reserve = summary.get("memory_reserve_percent")
+    if type(reserve) is not int or not 15 <= reserve <= 50:
+        discrepancies.append(
+            f"{path}: memory_reserve_percent must be an integer in [15, 50]"
+        )
+
+    by_key = {
+        (record["experiment_id"], record["repetition_attempt"]): record
+        for record in usage_records
+    }
+    if summary.get("complete_matrix") is True:
+        calibration_key = (126, 1)
+    else:
+        calibration_key = min(by_key, default=None)
+    expected_calibrated_peak = (
+        by_key[calibration_key]["peak_rss_bytes"]
+        if calibration_key in by_key
+        else None
+    )
+    calibrated_peak = summary.get("calibrated_peak_rss_bytes")
+    if calibrated_peak != expected_calibrated_peak or (
+        calibrated_peak is not None
+        and (type(calibrated_peak) is not int or calibrated_peak < 0)
+    ):
+        discrepancies.append(
+            f"{path}: calibrated_peak_rss_bytes does not match the calibration attempt"
+        )
+
+    peaks = [
+        record["peak_rss_bytes"]
+        for record in usage_records
+        if record.get("peak_rss_bytes") is not None
+    ]
+    worker_estimate = summary.get("worker_peak_estimate_bytes")
+    if peaks:
+        required_estimate = (max(peaks) * 5 + 3) // 4
+        if (
+            type(worker_estimate) is not int
+            or worker_estimate < required_estimate
+        ):
+            discrepancies.append(
+                f"{path}: worker_peak_estimate_bytes is below the observed 1.25 margin"
+            )
+    elif worker_estimate is not None:
+        discrepancies.append(
+            f"{path}: worker_peak_estimate_bytes must be null without RSS measurements"
+        )
+
+    minimum_bytes_values = [
+        record["minimum_mem_available_bytes"]
+        for record in usage_records
+        if record.get("minimum_mem_available_bytes") is not None
+    ]
+    summary_minimum_bytes = summary.get("minimum_mem_available_bytes")
+    if minimum_bytes_values:
+        if (
+            type(summary_minimum_bytes) is not int
+            or summary_minimum_bytes < 0
+            or summary_minimum_bytes > min(minimum_bytes_values)
+        ):
+            discrepancies.append(
+                f"{path}: minimum_mem_available_bytes is not a valid run minimum"
+            )
+    elif summary_minimum_bytes is not None:
+        discrepancies.append(
+            f"{path}: minimum_mem_available_bytes must be null without memory measurements"
+        )
+
+    minimum_percent_values = [
+        float(record["minimum_mem_available_percent"])
+        for record in usage_records
+        if record.get("minimum_mem_available_percent") is not None
+    ]
+    summary_minimum_percent = summary.get("minimum_mem_available_percent")
+    if minimum_percent_values:
+        if (
+            isinstance(summary_minimum_percent, bool)
+            or not isinstance(summary_minimum_percent, (int, float))
+            or not math.isfinite(float(summary_minimum_percent))
+            or not 0.0 <= float(summary_minimum_percent) <= 100.0
+            or float(summary_minimum_percent) > min(minimum_percent_values) + _TOLERANCE
+        ):
+            discrepancies.append(
+                f"{path}: minimum_mem_available_percent is not a valid run minimum"
+            )
+    elif summary_minimum_percent is not None:
+        discrepancies.append(
+            f"{path}: minimum_mem_available_percent must be null without memory measurements"
+        )
 
 
 def audit_run_directory(run_directory: str | Path) -> AuditReport:
@@ -822,6 +990,12 @@ def audit_run_directory(run_directory: str | Path) -> AuditReport:
     )
     if summary_attempt_records != expected_resource_order:
         discrepancies.append(f"{summary_path}: resource manifest attempts do not exactly reproduce usage files")
+    _validate_resource_summary_aggregates(
+        summary,
+        usage_records,
+        summary_path,
+        discrepancies,
+    )
     if len(parsed_attempts) == expected_attempt_count:
         parsed_attempts.sort(key=lambda item: (item.configuration.experiment_id, item.repetition_attempt))
     baseline_values: list[float] = []

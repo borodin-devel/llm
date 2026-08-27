@@ -6,7 +6,7 @@ import pathlib
 import tempfile
 import unittest
 
-from smoke_json import validate_and_cleanup
+from smoke_json import _bss_metrics, _station_metrics, validate_and_cleanup
 
 
 def _station_phy(bytes_value, attempts, airtime_us, interval_us):
@@ -96,10 +96,14 @@ def _document():
         "measurement_semantics": {
             "access_point_role": "station-derived BSS aggregate",
             "station_role": "per-station transmitted data PPDU detail",
+            "parent_child_duplication": "intentional",
             "phy_observation_scope": "qualifying station-transmitted unicast data PPDUs",
+            "phy_rate_source": "actual fixed-invariant WifiTxVector NSS and MCS",
             "effective_phy_rate": "transmitted data PSDU bits per data PPDU airtime",
             "data_tx_rate_over_interval": "transmitted data PSDU bits per statistics interval",
             "data_tx_opportunity_gap": "time outside station data PPDU airtime",
+            "sparse_window_absence": "zero station data profile activity",
+            "undefined_derived_values": None,
         },
         "statistics_window_ms": 10,
         "windows": windows,
@@ -163,11 +167,6 @@ class SmokeJsonCleanupTest(unittest.TestCase):
         ] = 960.8
         mutations.append(changed)
         changed = deepcopy(_document())
-        changed["overall"]["stations"][0]["phy_stats"]["data_tx_profile"][0][
-            "transmitted_psdu_bytes"
-        ] = 401.0
-        mutations.append(changed)
-        changed = deepcopy(_document())
         changed["overall"]["access_points"][0]["phy_stats"][
             "aggregate_data_tx_rate_over_interval_mbps"
         ] = 10.0
@@ -178,9 +177,37 @@ class SmokeJsonCleanupTest(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     self.validate(document)
 
+    def test_rejects_only_overall_profile_window_merge_mismatch(self):
+        changed = deepcopy(_document())
+        station = changed["overall"]["stations"][0]
+        station_phy = station["phy_stats"]
+        station_phy["data_tx_profile"][0]["transmitted_psdu_bytes"] = 401.0
+        station_phy["data_tx_profile"][0]["ppdu_airtime_us"] = 160.4
+        station_phy["data_tx_rate_over_interval_mbps"] = 0.003208
+        station_phy["data_tx_opportunity_gap_fraction"] = 0.9998396
+        access_point = changed["overall"]["access_points"][0]
+        access_point["phy_stats"][
+            "aggregate_data_tx_rate_over_interval_mbps"
+        ] = 0.003208
+
+        station_metrics, _ = _station_metrics(station, 1_000_000.0)
+        _bss_metrics(access_point, [station_metrics])
+        with self.assertRaises(AssertionError):
+            self.validate(changed)
+
     def test_rejects_semantics_and_fixed_wifi_invariant_mutations(self):
         changed = deepcopy(_document())
         changed["measurement_semantics"]["phy_observation_scope"] = "all PHY"
+        with self.assertRaises(AssertionError):
+            self.validate(changed)
+
+        changed = deepcopy(_document())
+        changed["measurement_semantics"]["extra"] = "accepted by subset checks"
+        with self.assertRaises(AssertionError):
+            self.validate(changed)
+
+        changed = deepcopy(_document())
+        changed["validation"] = {"arbitrary_all_true": True}
         with self.assertRaises(AssertionError):
             self.validate(changed)
 

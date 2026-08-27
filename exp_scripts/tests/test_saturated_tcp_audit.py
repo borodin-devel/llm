@@ -132,10 +132,14 @@ def _output_document(experiment_id: int, station_count: int) -> dict[str, object
         "measurement_semantics": {
             "access_point_role": "station-derived BSS aggregate",
             "station_role": "per-station transmitted data PPDU detail",
+            "parent_child_duplication": "intentional",
             "phy_observation_scope": "qualifying station-transmitted unicast data PPDUs",
+            "phy_rate_source": "actual fixed-invariant WifiTxVector NSS and MCS",
             "effective_phy_rate": "transmitted data PSDU bits per data PPDU airtime",
             "data_tx_rate_over_interval": "transmitted data PSDU bits per statistics interval",
             "data_tx_opportunity_gap": "time outside station data PPDU airtime",
+            "sparse_window_absence": "zero station data profile activity",
+            "undefined_derived_values": None,
         },
         "statistics_window_ms": 10,
         "windows": [
@@ -340,7 +344,7 @@ def _write_mini_run(run_directory: Path) -> None:
         "executed_experiment_ids": [1, 19],
         "auto_included_baseline_ids": [1],
         "memory_reserve_percent": 20,
-        "calibrated_peak_rss_bytes": None,
+        "calibrated_peak_rss_bytes": 100_000_000,
         "worker_peak_estimate_bytes": 275_000_000,
         "maximum_parallel_workers": 2,
         "minimum_mem_available_bytes": 640_000,
@@ -409,10 +413,15 @@ class SaturatedTcpAuditTest(unittest.TestCase):
         cases.append(("dominant_data_phy_rate_mbps", changed))
 
         changed = deepcopy(original)
-        changed["overall"]["stations"][0]["phy_stats"]["data_tx_profile"][0][
-            "transmitted_psdu_bytes"
-        ] = 301.0
-        cases.append(("profile", changed))
+        station_phy = changed["overall"]["stations"][0]["phy_stats"]
+        station_phy["data_tx_profile"][0]["transmitted_psdu_bytes"] = 301.0
+        station_phy["data_tx_profile"][0]["ppdu_airtime_us"] = 120.4
+        station_phy["data_tx_rate_over_interval_mbps"] = 0.002408
+        station_phy["data_tx_opportunity_gap_fraction"] = 0.9998796
+        changed["overall"]["access_points"][0]["phy_stats"][
+            "aggregate_data_tx_rate_over_interval_mbps"
+        ] = 0.012008
+        cases.append(("reproduce windows", changed))
 
         changed = deepcopy(original)
         changed["overall"]["access_points"][0]["phy_stats"][
@@ -449,6 +458,7 @@ class SaturatedTcpAuditTest(unittest.TestCase):
         cases.append(("header", _encode_rows(changed)))
         cases.append(("UTF-8 BOM", original[3:]))
         cases.append(("CRLF", original.replace(b"\r\n", b"\n")))
+        cases.append(("CRLF", original.replace(b";", b";\r", 1)))
 
         for expected, content in cases:
             with self.subTest(expected=expected):
@@ -503,6 +513,77 @@ class SaturatedTcpAuditTest(unittest.TestCase):
             any("non-standard JSON number" in item for item in self.audit().discrepancies)
         )
 
+    def test_requires_exact_semantics_and_validation_contracts(self) -> None:
+        output_path = self.run_directory / "experiment_001/attempt_1/output.json"
+        original = json.loads(output_path.read_text(encoding="utf-8"))
+
+        changed = deepcopy(original)
+        changed["measurement_semantics"]["extra"] = "accepted by subset checks"
+        output_path.write_text(json.dumps(changed), encoding="utf-8")
+        self.assertTrue(any("semantics" in item for item in self.audit().discrepancies))
+
+        changed = deepcopy(original)
+        changed["validation"] = {"arbitrary_all_true": True}
+        output_path.write_text(json.dumps(changed), encoding="utf-8")
+        self.assertTrue(any("validation" in item for item in self.audit().discrepancies))
+
+    def test_manifest_requires_complete_unique_attempt_lattice(self) -> None:
+        dependent = self.run_directory / "experiment_019"
+        for path in sorted(dependent.rglob("*"), reverse=True):
+            if path.is_file():
+                path.unlink()
+            else:
+                path.rmdir()
+        dependent.rmdir()
+
+        summary_path = self.run_directory / "resource_summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary["attempts"] = summary["attempts"][:1]
+        summary_path.write_text(json.dumps(summary), encoding="utf-8")
+        csv_path = self.run_directory / "results.csv"
+        rows = list(csv.reader(csv_path.read_text(encoding="utf-8-sig").splitlines(), delimiter=";"))
+        csv_path.write_bytes(_encode_rows(rows[:4]))
+
+        self.assertTrue(any("lattice" in item for item in self.audit().discrepancies))
+
+    def test_manifest_rejects_empty_and_duplicate_selection_or_attempt_keys(self) -> None:
+        summary_path = self.run_directory / "resource_summary.json"
+        original = json.loads(summary_path.read_text(encoding="utf-8"))
+        mutations = []
+        changed = deepcopy(original)
+        changed["requested_experiment_ids"] = []
+        mutations.append(("requested_experiment_ids must be nonempty", changed))
+        changed = deepcopy(original)
+        changed["executed_experiment_ids"] = [1, 1, 19]
+        mutations.append(("executed_experiment_ids must be unique", changed))
+        changed = deepcopy(original)
+        changed["attempts"].append(deepcopy(changed["attempts"][0]))
+        mutations.append(("attempt keys must be unique", changed))
+
+        for expected, summary in mutations:
+            with self.subTest(expected=expected):
+                summary_path.write_text(json.dumps(summary), encoding="utf-8")
+                self.assertTrue(
+                    any(expected in item for item in self.audit().discrepancies)
+                )
+
+    def test_resource_summary_aggregates_are_independently_reconstructed(self) -> None:
+        summary_path = self.run_directory / "resource_summary.json"
+        original = json.loads(summary_path.read_text(encoding="utf-8"))
+        mutations = (
+            ("memory_reserve_percent", 14),
+            ("calibrated_peak_rss_bytes", 999),
+            ("worker_peak_estimate_bytes", -1),
+            ("minimum_mem_available_bytes", 999999),
+            ("minimum_mem_available_percent", 999.0),
+        )
+        for field, value in mutations:
+            with self.subTest(field=field):
+                changed = deepcopy(original)
+                changed[field] = value
+                summary_path.write_text(json.dumps(changed), encoding="utf-8")
+                self.assertTrue(any(field in item for item in self.audit().discrepancies))
+
 
 def _encode_rows(rows: list[list[str]]) -> bytes:
     from io import StringIO
@@ -525,7 +606,7 @@ def _write_mini_run_replacing_summary(run_directory: Path) -> None:
         "executed_experiment_ids": [1, 19],
         "auto_included_baseline_ids": [1],
         "memory_reserve_percent": 20,
-        "calibrated_peak_rss_bytes": None,
+        "calibrated_peak_rss_bytes": 100_000_000,
         "worker_peak_estimate_bytes": 275_000_000,
         "maximum_parallel_workers": 2,
         "minimum_mem_available_bytes": 640_000,
