@@ -277,6 +277,20 @@ class SaturatedTcpDataTxDerivationTestCase : public TestCase
         NS_TEST_ASSERT_MSG_EQ(zero.dataTxRateOverIntervalMbps.value(), 0.0, "Zero lacks interval");
         NS_TEST_ASSERT_MSG_EQ(zero.dataTxProfile.empty(), true, "Zero has profile entries");
 
+        bool zeroMapRejected = false;
+        try
+        {
+            const DataTxProfileMap zeroMap{{{20, 1, 0}, {0.0L, 0, 0, 0.0L}}};
+            static_cast<void>(DeriveStationDataTxMetrics(zeroMap, 10'000'000));
+        }
+        catch (const std::invalid_argument&)
+        {
+            zeroMapRejected = true;
+        }
+        NS_TEST_ASSERT_MSG_EQ(zeroMapRejected,
+                              true,
+                              "Nonempty zero-only raw profile map was accepted");
+
         auto second = output;
         second.dominantDataPhyRateMbps = 500.0;
         second.effectivePhyRateMbps = 10.0;
@@ -301,6 +315,41 @@ class SaturatedTcpDataTxDerivationTestCase : public TestCase
         NS_TEST_ASSERT_MSG_EQ(idleBss.aggregateDataTxRateOverIntervalMbps.value(),
                               0.0,
                               "Idle BSS lacks numeric zero aggregate");
+
+        for (const auto& invalidStation : {
+                 [] {
+                     PhyCategoryOutput value;
+                     value.dataTxRateOverIntervalMbps = -0.1;
+                     return value;
+                 }(),
+                 [output] {
+                     auto value = output;
+                     value.dominantDataPhyRateMbps = std::numeric_limits<double>::quiet_NaN();
+                     return value;
+                 }(),
+                 [output] {
+                     auto value = output;
+                     value.effectivePhyRateMbps = std::numeric_limits<double>::infinity();
+                     return value;
+                 }(),
+                 [output] {
+                     auto value = output;
+                     value.dominantDataProfileShare.reset();
+                     return value;
+                 }(),
+             })
+        {
+            bool rejected = false;
+            try
+            {
+                static_cast<void>(DeriveBssDataTxMetrics({invalidStation}));
+            }
+            catch (const std::invalid_argument&)
+            {
+                rejected = true;
+            }
+            NS_TEST_ASSERT_MSG_EQ(rejected, true, "Invalid station role entered BSS derivation");
+        }
 
         for (const auto invalid : {
                  DataTxProfileAccumulator{-1.0L, 1, 1, 1.0L},

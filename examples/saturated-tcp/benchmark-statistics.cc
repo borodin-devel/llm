@@ -164,12 +164,12 @@ DeriveStationDataTxMetrics(const DataTxProfileMap& profiles, int64_t intervalDur
         }
     }
 
-    if (totalBytes == 0.0L)
+    if (profiles.empty())
     {
         output.dataTxRateOverIntervalMbps = 0.0;
         return output;
     }
-    if (!std::isfinite(totalBytes) || totalBytes < 0.0L || totalAirtimeNs <= 0 || !dominantKey ||
+    if (!std::isfinite(totalBytes) || totalBytes <= 0.0L || totalAirtimeNs <= 0 || !dominantKey ||
         dominantRateBps <= 0.0L)
     {
         throw std::invalid_argument("populated station data TX profile has invalid totals");
@@ -216,6 +216,37 @@ DeriveBssDataTxMetrics(const std::vector<PhyCategoryOutput>& stations)
             station.aggregateDataTxRateOverIntervalMbps || !station.dataTxRateOverIntervalMbps)
         {
             throw std::invalid_argument("BSS derivation requires station-role PHY values");
+        }
+        const bool active = !station.dataTxProfile.empty();
+        const bool completeActive =
+            station.dominantDataPhyRateMbps && station.dominantDataProfileShare &&
+            station.effectivePhyRateMbps && station.dataTxOpportunityGapFraction;
+        const bool completeIdle =
+            !station.dominantDataPhyRateMbps && !station.dominantDataProfileShare &&
+            !station.effectivePhyRateMbps && !station.dataTxOpportunityGapFraction &&
+            *station.dataTxRateOverIntervalMbps == 0.0;
+        if ((active && !completeActive) || (!active && !completeIdle))
+        {
+            throw std::invalid_argument("BSS derivation requires a complete station role");
+        }
+        const auto IsFiniteNonnegative = [](double value) {
+            return std::isfinite(value) && value >= 0.0;
+        };
+        if (!IsFiniteNonnegative(*station.dataTxRateOverIntervalMbps) ||
+            (station.dominantDataPhyRateMbps &&
+             !IsFiniteNonnegative(*station.dominantDataPhyRateMbps)) ||
+            (station.effectivePhyRateMbps && !IsFiniteNonnegative(*station.effectivePhyRateMbps)))
+        {
+            throw std::invalid_argument("BSS derivation requires finite non-negative rates");
+        }
+        if (active &&
+            (!std::isfinite(*station.dominantDataProfileShare) ||
+             *station.dominantDataProfileShare <= 0.0 || *station.dominantDataProfileShare > 1.0 ||
+             !std::isfinite(*station.dataTxOpportunityGapFraction) ||
+             *station.dataTxOpportunityGapFraction < 0.0 ||
+             *station.dataTxOpportunityGapFraction > 1.0))
+        {
+            throw std::invalid_argument("BSS derivation requires valid station fractions");
         }
         if (station.dominantDataPhyRateMbps)
         {

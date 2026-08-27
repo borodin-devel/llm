@@ -364,8 +364,15 @@ def _validate_data_tx_roles(phy, kind, source_path, phy_path):
     if phy["data_tx_profile"]:
         fail(source_path, f"{phy_path}.data_tx_profile", "BSS contains a station profile")
     aggregate = phy["aggregate_data_tx_rate_over_interval_mbps"]
-    if aggregate is None and any(phy[field] is not None for field in BSS_PHY_RATE_KEYS[:2]):
-        fail(source_path, phy_path, "BSS means exist without aggregate interval rate")
+    populated_means = sum(phy[field] is not None for field in BSS_PHY_RATE_KEYS[:2])
+    if aggregate is None:
+        if populated_means:
+            fail(source_path, phy_path, "ordinary BSS has populated means")
+    elif aggregate == 0:
+        if populated_means:
+            fail(source_path, phy_path, "idle BSS has populated means")
+    elif populated_means != 2:
+        fail(source_path, phy_path, "active BSS requires both means")
 
 
 def validate_entity_categories(record, kind, known_nodes, source_path, json_path):

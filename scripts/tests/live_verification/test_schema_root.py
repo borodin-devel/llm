@@ -234,6 +234,23 @@ class LiveTraceSchemaRootTest(unittest.TestCase):
         bss_phy["data_tx_rate_over_interval_mbps"] = 1.0
         self.assert_document_error(document, ".data_tx_rate_over_interval_mbps")
 
+    def test_rejects_partial_bss_role_population(self):
+        document = valid_document(self.trace)
+        bss_phy = document["windows"][0]["access_points"][0]["phy_stats"]
+        bss_phy["aggregate_data_tx_rate_over_interval_mbps"] = 1.0
+        self.assert_document_error(document, ".phy_stats")
+
+        document = valid_document(self.trace)
+        bss_phy = document["windows"][0]["access_points"][0]["phy_stats"]
+        bss_phy["mean_dominant_data_phy_rate_mbps"] = 960.8
+        bss_phy["aggregate_data_tx_rate_over_interval_mbps"] = 1.0
+        self.assert_document_error(document, ".phy_stats")
+
+        document = valid_document(self.trace)
+        bss_phy = document["windows"][0]["access_points"][0]["phy_stats"]
+        bss_phy["aggregate_data_tx_rate_over_interval_mbps"] = 0.0
+        validate_output_document(document, self.source, self.trace)
+
     def test_accepts_sparse_full_windows_and_last_partial_window(self):
         document = valid_document(self.trace)
         full_sparse = copy.deepcopy(document["windows"][0])
