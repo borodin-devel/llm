@@ -417,17 +417,17 @@ SaturatedTcpBenchmarkSummaryTestCase::DoRun()
     statistics.RegisterStation(0, 1, 11, "AP0/STA1", "10.1.0.3");
     statistics.RegisterStation(2, 0, 30, "AP2/STA0", "10.1.2.2");
     statistics.RegisterStation(0, 0, 10, "AP0/STA0", "10.1.0.2");
+    statistics.RegisterStation(0, 2, 12, "AP0/STA2", "10.1.0.4");
     statistics.RegisterStation(1, 0, 20, "AP1/STA0", "10.1.1.2");
 
     RawStationWindows rawWindows;
-    for (const uint32_t nodeId : {10, 11, 20, 30, 100})
+    for (const uint32_t nodeId : {10, 11, 12, 20, 30, 100})
     {
         rawWindows.emplace(nodeId, std::vector<StationPhyMetricAccumulator>(100));
     }
     SetRawWindow(rawWindows, 10, 0, 100.0, 80.0, 1'000'000);
     SetRawWindow(rawWindows, 11, 0, -1.0, 0.0, 2'000'000);
     SetRawWindow(rawWindows, 11, 1, 300.0, 150.0, 0);
-    SetRawWindow(rawWindows, 20, 0, 200.0, 100.0, 0);
     SetRawWindow(rawWindows, 30, 0, 400.0, 200.0, 5'000'000);
     SetRawWindow(rawWindows, 100, 0, 900.0, 900.0, 9'000'000);
 
@@ -437,7 +437,7 @@ SaturatedTcpBenchmarkSummaryTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(summary.windows.at(0).windowIndex, 0, "Wrong first window index");
     NS_TEST_ASSERT_MSG_EQ(summary.windows.at(1).windowIndex, 1, "Wrong second window index");
     NS_TEST_ASSERT_MSG_EQ(summary.windows.at(0).stations.size(),
-                          4,
+                          3,
                           "Active station window entries were lost");
     NS_TEST_ASSERT_MSG_EQ(summary.windows.at(1).stations.size(),
                           1,
@@ -492,14 +492,30 @@ SaturatedTcpBenchmarkSummaryTestCase::DoRun()
                               1e-12,
                               "AP efficiency is not practical divided by theoretical");
     NS_TEST_ASSERT_MSG_EQ_TOL(accessPoint0.statistics.phyStats.contentionFraction.value(),
-                              0.15,
+                              0.1,
                               1e-12,
-                              "AP contention is not the mean of every child station");
+                              "AP contention excluded an inactive child station");
 
     NS_TEST_ASSERT_MSG_EQ(summary.overall.accessPoints.size(), 3, "Overall AP output is not dense");
     NS_TEST_ASSERT_MSG_EQ(summary.overall.stations.size(),
-                          4,
+                          5,
                           "Overall station output is not dense");
+    const auto& idleMixedStation = FindStation(summary.overall.stations, 0, 2);
+    NS_TEST_ASSERT_MSG_EQ(
+        idleMixedStation.statistics.phyStats.averageTheoreticalPhyRateMbps.has_value(),
+        false,
+        "Idle overall station has a theoretical PHY rate");
+    NS_TEST_ASSERT_MSG_EQ(
+        idleMixedStation.statistics.phyStats.averagePracticalPhyRateMbps.has_value(),
+        false,
+        "Idle overall station has a practical PHY rate");
+    NS_TEST_ASSERT_MSG_EQ(idleMixedStation.statistics.phyStats.channelEfficiency.has_value(),
+                          false,
+                          "Idle overall station has an efficiency");
+    NS_TEST_ASSERT_MSG_EQ_TOL(idleMixedStation.statistics.phyStats.contentionFraction.value(),
+                              0.0,
+                              1e-12,
+                              "Idle overall station contention is not numeric zero");
     const auto& overallAccessPoint0 = FindAccessPoint(summary.overall.accessPoints, 0);
     NS_TEST_ASSERT_MSG_EQ_TOL(
         overallAccessPoint0.statistics.phyStats.averageTheoreticalPhyRateMbps.value(),
@@ -516,9 +532,26 @@ SaturatedTcpBenchmarkSummaryTestCase::DoRun()
                               1e-12,
                               "Overall AP efficiency is not the ratio of AP rates");
     NS_TEST_ASSERT_MSG_EQ_TOL(overallAccessPoint0.statistics.phyStats.contentionFraction.value(),
-                              0.0015,
+                              0.001,
                               1e-12,
-                              "Overall AP contention is not the station arithmetic mean");
+                              "Overall AP contention excluded an idle child station");
+
+    const auto& allIdleAccessPoint = FindAccessPoint(summary.overall.accessPoints, 1);
+    NS_TEST_ASSERT_MSG_EQ(
+        allIdleAccessPoint.statistics.phyStats.averageTheoreticalPhyRateMbps.has_value(),
+        false,
+        "All-idle BSS has a theoretical PHY rate");
+    NS_TEST_ASSERT_MSG_EQ(
+        allIdleAccessPoint.statistics.phyStats.averagePracticalPhyRateMbps.has_value(),
+        false,
+        "All-idle BSS has a practical PHY rate");
+    NS_TEST_ASSERT_MSG_EQ(allIdleAccessPoint.statistics.phyStats.channelEfficiency.has_value(),
+                          false,
+                          "All-idle BSS has an efficiency");
+    NS_TEST_ASSERT_MSG_EQ_TOL(allIdleAccessPoint.statistics.phyStats.contentionFraction.value(),
+                              0.0,
+                              1e-12,
+                              "All-idle BSS contention is not numeric zero");
 
     NS_TEST_ASSERT_MSG_EQ(summary.validation.entityInventoryReferencesValid,
                           true,
@@ -978,6 +1011,51 @@ SaturatedTcpBenchmarkJsonTestCase::DoRun()
     {
         NS_TEST_ASSERT_MSG_EQ(validation.at(key), true, "Validation flag is false: " << key);
     }
+
+    auto nullableSummary = summary;
+    nullableSummary.windows.at(0).stations.pop_back();
+    nullableSummary.windows.at(0).accessPoints.pop_back();
+    auto& nullableStation = nullableSummary.overall.stations.at(2).statistics.phyStats;
+    nullableStation.averageTheoreticalPhyRateMbps.reset();
+    nullableStation.averagePracticalPhyRateMbps.reset();
+    nullableStation.channelEfficiency.reset();
+    nullableStation.contentionFraction = 0.0;
+    auto& nullableAccessPoint = nullableSummary.overall.accessPoints.at(2).statistics.phyStats;
+    nullableAccessPoint.averageTheoreticalPhyRateMbps.reset();
+    nullableAccessPoint.averagePracticalPhyRateMbps.reset();
+    nullableAccessPoint.channelEfficiency.reset();
+    nullableAccessPoint.contentionFraction = 0.0;
+    std::ostringstream nullableOutput;
+    WriteSaturatedTcpExperimentJson(nullableOutput, nullableSummary, config);
+    const auto nullableDocument = nlohmann::ordered_json::parse(nullableOutput.str());
+    const auto& nullableStationPhy =
+        nullableDocument.at("overall").at("stations").at(2).at("phy_stats");
+    NS_TEST_ASSERT_MSG_EQ(nullableStationPhy.at("average_theoretical_phy_rate_mbps").is_null(),
+                          true,
+                          "Undefined overall station theoretical rate is not JSON null");
+    NS_TEST_ASSERT_MSG_EQ(nullableStationPhy.at("average_practical_phy_rate_mbps").is_null(),
+                          true,
+                          "Undefined overall station practical rate is not JSON null");
+    NS_TEST_ASSERT_MSG_EQ(nullableStationPhy.at("channel_efficiency").is_null(),
+                          true,
+                          "Undefined overall station efficiency is not JSON null");
+    NS_TEST_ASSERT_MSG_EQ(nullableStationPhy.at("contention_fraction"),
+                          0.0,
+                          "Undefined overall station contention is not numeric zero");
+    const auto& nullableAccessPointPhy =
+        nullableDocument.at("overall").at("access_points").at(2).at("phy_stats");
+    NS_TEST_ASSERT_MSG_EQ(nullableAccessPointPhy.at("average_theoretical_phy_rate_mbps").is_null(),
+                          true,
+                          "All-undefined BSS theoretical rate is not JSON null");
+    NS_TEST_ASSERT_MSG_EQ(nullableAccessPointPhy.at("average_practical_phy_rate_mbps").is_null(),
+                          true,
+                          "All-undefined BSS practical rate is not JSON null");
+    NS_TEST_ASSERT_MSG_EQ(nullableAccessPointPhy.at("channel_efficiency").is_null(),
+                          true,
+                          "All-undefined BSS efficiency is not JSON null");
+    NS_TEST_ASSERT_MSG_EQ(nullableAccessPointPhy.at("contention_fraction"),
+                          0.0,
+                          "All-undefined BSS contention is not numeric zero");
 
     RejectingStreamBuffer buffer;
     std::ostream rejectingOutput(&buffer);

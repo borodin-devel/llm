@@ -334,6 +334,77 @@ class SaturatedTcpValidationTest(unittest.TestCase):
         )
         self.assertEqual(first.stations[5:], (None,) * 25)
 
+    def test_nullable_overall_station_and_bss_rates_preserve_formulas(self) -> None:
+        document = deepcopy(self.document)
+
+        def set_undefined(entity: dict[str, object], contention: float) -> None:
+            phy = entity["phy_stats"]
+            phy["average_theoretical_phy_rate_mbps"] = None
+            phy["average_practical_phy_rate_mbps"] = None
+            phy["channel_efficiency"] = None
+            phy["contention_fraction"] = contention
+
+        window = document["windows"][0]
+        window_station = next(
+            station
+            for station in window["stations"]
+            if station["access_point_id"] == 0 and station["station_index"] == 0
+        )
+        set_undefined(window_station, 0.1)
+        window_ap0 = next(
+            access_point
+            for access_point in window["access_points"]
+            if access_point["access_point_id"] == 0
+        )
+        window_ap0_phy = window_ap0["phy_stats"]
+        window_ap0_phy["average_theoretical_phy_rate_mbps"] = 102.5
+        window_ap0_phy["average_practical_phy_rate_mbps"] = 51.25
+        window_ap0_phy["channel_efficiency"] = 0.5
+
+        overall_station = next(
+            station
+            for station in document["overall"]["stations"]
+            if station["access_point_id"] == 0 and station["station_index"] == 0
+        )
+        set_undefined(overall_station, 0.001)
+        overall_ap0 = document["overall"]["access_points"][0]
+        overall_ap0_phy = overall_ap0["phy_stats"]
+        overall_ap0_phy["average_theoretical_phy_rate_mbps"] = 102.5
+        overall_ap0_phy["average_practical_phy_rate_mbps"] = 51.25
+        overall_ap0_phy["channel_efficiency"] = 0.5
+
+        window["stations"] = [
+            station for station in window["stations"] if station["access_point_id"] != 2
+        ]
+        window["access_points"] = [
+            access_point
+            for access_point in window["access_points"]
+            if access_point["access_point_id"] != 2
+        ]
+        for station in document["overall"]["stations"]:
+            if station["access_point_id"] == 2:
+                set_undefined(station, 0.0)
+        set_undefined(document["overall"]["access_points"][2], 0.0)
+
+        rows = self.validate(document)
+        self.assertEqual(
+            rows[0].stations[0],
+            StationCsvMetrics(None, None, None, 0.001),
+        )
+        self.assertEqual(rows[0].average_theoretical_phy_rate_mbps, 102.5)
+        self.assertEqual(rows[0].average_practical_phy_rate_mbps, 51.25)
+        self.assertEqual(rows[0].efficiency, 0.5)
+        self.assertAlmostEqual(rows[0].contention_fraction, 0.0012)
+        self.assertIsNone(rows[2].average_theoretical_phy_rate_mbps)
+        self.assertIsNone(rows[2].average_practical_phy_rate_mbps)
+        self.assertIsNone(rows[2].efficiency)
+        self.assertEqual(rows[2].contention_fraction, 0.0)
+        self.assertEqual(
+            rows[2].stations[:5],
+            (StationCsvMetrics(None, None, None, 0.0),) * 5,
+        )
+        self.assertEqual(rows[2].stations[5:], (None,) * 25)
+
     def test_repetitions_are_exact_nonbool_uint32_values(self) -> None:
         maximum = (1 << 32) - 1
         valid_document = deepcopy(self.document)
@@ -521,7 +592,7 @@ class SaturatedTcpValidationTest(unittest.TestCase):
         null_overall["overall"]["stations"][0]["phy_stats"][
             "average_theoretical_phy_rate_mbps"
         ] = None
-        mutations.append(("non-null", null_overall))
+        mutations.append(("presence", null_overall))
         wrong_ap_mean = deepcopy(self.document)
         wrong_ap_mean["overall"]["access_points"][0]["phy_stats"][
             "average_theoretical_phy_rate_mbps"

@@ -146,6 +146,37 @@ class SaturatedTcpCsvTest(unittest.TestCase):
         self.assertEqual(first_row[13:17], ["41.5", "20.75", "0.5", "0.1"])
         self.assertEqual(first_row[13 + 5 * 4 :], [""] * (25 * 4))
 
+    def test_nullable_existing_metrics_use_empty_cells_but_keep_numeric_zero(self) -> None:
+        undefined = StationCsvMetrics(None, None, None, 0.0)
+        rows = [make_row(bss_id) for bss_id in range(3)]
+        rows[0] = replace(
+            rows[0],
+            stations=(undefined,) + rows[0].stations[1:],
+        )
+        rows[1] = replace(
+            rows[1],
+            average_theoretical_phy_rate_mbps=None,
+            average_practical_phy_rate_mbps=None,
+            efficiency=None,
+            contention_fraction=0.0,
+            stations=(undefined,) * 5 + (None,) * 25,
+        )
+
+        with TemporaryDirectory() as directory:
+            output_path = Path(directory) / "results.csv"
+            with ExcelCsvWriter(output_path) as output:
+                output.append_attempt(rows)
+            with output_path.open("r", encoding="utf-8-sig", newline="") as input_file:
+                parsed = list(csv.reader(input_file, delimiter=";"))
+
+        self.assertEqual(parsed[0], list(approved_header()))
+        self.assertEqual(len(parsed), 4)
+        self.assertTrue(all(len(row) == 133 for row in parsed))
+        self.assertEqual(parsed[1][13:17], ["", "", "", "0.0"])
+        self.assertEqual(parsed[2][9:13], ["", "", "", "0.0"])
+        self.assertEqual(parsed[2][13:17], ["", "", "", "0.0"])
+        self.assertEqual(parsed[2][13 + 5 * 4 : 13 + 6 * 4], ["", "", "", ""])
+
     def test_invalid_attempt_batch_adds_no_partial_rows(self) -> None:
         valid_rows = tuple(make_row(bss_id) for bss_id in range(3))
         invalid_rows = (
@@ -168,6 +199,15 @@ class SaturatedTcpCsvTest(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(ValueError, "nonexistent station"):
                     output.append_attempt((valid_rows[0], valid_rows[1], bad_columns))
+                self.assertEqual(output_path.read_bytes(), before)
+
+                partial_null = replace(
+                    valid_rows[0],
+                    stations=(StationCsvMetrics(None, 1.0, None, 0.0),)
+                    + valid_rows[0].stations[1:],
+                )
+                with self.assertRaisesRegex(ValueError, "presence"):
+                    output.append_attempt((partial_null, valid_rows[1], valid_rows[2]))
                 self.assertEqual(output_path.read_bytes(), before)
 
     def test_existing_csv_is_never_overwritten(self) -> None:

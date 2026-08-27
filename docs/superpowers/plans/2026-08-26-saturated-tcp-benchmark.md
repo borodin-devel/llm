@@ -560,7 +560,7 @@ efficiency = AP practical / AP theoretical
 contention = arithmetic mean of every station contention fraction
 ```
 
-Short-window null station rates are excluded from AP rate means; `overall` requires every saturated station rate. Assert AP-originated raw observations cannot enter these fields.
+Short-window null station rates are excluded from AP rate means. The original Task 6 acceptance assumed every saturated `overall` station rate would be defined; the Task 11 evidence amendment below supersedes that assumption without rewriting its history. Assert AP-originated raw observations cannot enter these fields.
 
 - [ ] **Step 2: Write failing JSON integration tests**
 
@@ -918,7 +918,7 @@ Assert no TCP-goodput or diagnostic column exists.
 
 - [ ] **Step 3: Write failing JSON validation/copy tests**
 
-Use a complete shared-schema fixture with 3 APs and N stations. Assert exact metadata match, target RSSI, inventory ordering, all eight validation flags, non-null overall station fields, AP fields equal station-derived formulas, and exact CSV copying. Reject duplicate/missing BSS/stations, non-finite values, practical above theoretical, wrong efficiency, contention outside `[0,1]`, and nonempty columns for nonexistent stations.
+Use a complete shared-schema fixture with 3 APs and N stations. The original Task 9 fixture asserted non-null overall station fields; the Task 11 evidence amendment below adds the approved paired-null station/BSS cases while retaining exact metadata, inventory, formulas, and CSV copying. Reject duplicate/missing BSS/stations, non-finite values, practical above theoretical, wrong efficiency, contention outside `[0,1]`, and nonempty columns for nonexistent stations.
 
 - [ ] **Step 4: Write failing runner lifecycle tests**
 
@@ -1069,7 +1069,7 @@ Assert exactly 108 experiment directories, one attempt each, 108 `output.json` f
 
 - [ ] **Step 4: Recompute every mathematical invariant independently**
 
-Using a read-only Python audit over retained JSON/CSV, recompute station efficiency, AP/BSS station means, BSS efficiency, BSS contention, finite/range checks, practical<=theoretical tolerance, metadata/inventory/RSSI targets, and exact CSV values. Require zero structural/formula discrepancies.
+Using a read-only Python audit over retained JSON/CSV, recompute station efficiency for defined rates, paired-null station semantics, AP/BSS defined-only rate means, nullable BSS efficiency, all-station numeric BSS contention, finite/range checks, practical<=theoretical tolerance, metadata/inventory/RSSI targets, and exact CSV blank-versus-zero values. Require zero structural/formula discrepancies.
 
 - [ ] **Step 5: Analyze empirical trends without forcing them**
 
@@ -1103,3 +1103,26 @@ git commit -m "llm: Fix full benchmark discrepancies"
 ```
 
 Rerun deterministic verification after the final code commit; do not rerun an already accepted final dataset when the last commit changes only documentation/evidence.
+
+#### Task 11 evidence amendment: nullable one-second overall metrics
+
+The first full-run attempts proved that TCP connection readiness does not
+guarantee every STA transmits a qualifying PPDU during the following exact
+one-second severe DL interval. The approved resolution keeps the interval and
+the dense entity arrays unchanged:
+
+- an overall STA with zero qualifying PPDU has JSON null theoretical rate,
+  practical rate, and efficiency, plus numeric contention including `0.0`;
+- BSS theoretical/practical means exclude undefined STA rates, BSS efficiency
+  is the ratio of those means, and all configured STA contention values remain
+  in the contention mean;
+- a BSS with no defined STA rate has null theoretical rate, practical rate,
+  and efficiency plus numeric contention;
+- the 133-column CSV schema, UTF-8 BOM, semicolon delimiter, CRLF, and decimal
+  dot stay fixed; undefined derived cells are empty while numeric contention
+  zero is written as `0.0`;
+- partial null triplets, nonnumeric contention, wrong formulas, and
+  overall/window presence mismatches remain hard validation failures; and
+- existing invalid run directories remain immutable evidence. A new focused
+  experiment 071 and then the complete sequential 108-run matrix are required
+  on the amended candidate.

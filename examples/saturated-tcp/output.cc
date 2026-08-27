@@ -54,19 +54,13 @@ ValidateOptionalRate(const std::optional<double>& value, const char* name)
 
 /** Validate the four benchmark PHY fields for one station or AP. */
 void
-ValidateMetricFields(const PhyCategoryOutput& phy, bool requireRates, const char* entity)
+ValidateMetricFields(const PhyCategoryOutput& phy, const char* entity)
 {
     ValidateOptionalRate(phy.averageTheoreticalPhyRateMbps, "theoretical PHY rate");
     ValidateOptionalRate(phy.averagePracticalPhyRateMbps, "practical PHY rate");
     Require(phy.averageTheoreticalPhyRateMbps.has_value() ==
                 phy.averagePracticalPhyRateMbps.has_value(),
             std::string(entity) + " theoretical and practical rate presence differs");
-    if (requireRates)
-    {
-        Require(phy.averageTheoreticalPhyRateMbps.has_value(),
-                std::string(entity) + " overall PHY rates are undefined");
-    }
-
     if (phy.averageTheoreticalPhyRateMbps)
     {
         const double theoretical = *phy.averageTheoreticalPhyRateMbps;
@@ -240,11 +234,10 @@ BuildExpectedAccessPointMetrics(const std::vector<const StationStatisticsOutput*
 void
 ValidateAccessPointMetrics(const AccessPointStatisticsOutput& accessPoint,
                            const std::vector<const StationStatisticsOutput*>& stations,
-                           std::size_t stationCount,
-                           bool requireRates)
+                           std::size_t stationCount)
 {
     ValidateDefaultCategories(accessPoint.statistics, "AP");
-    ValidateMetricFields(accessPoint.statistics.phyStats, requireRates, "AP");
+    ValidateMetricFields(accessPoint.statistics.phyStats, "AP");
     const auto expected = BuildExpectedAccessPointMetrics(stations, stationCount);
     const auto& actual = accessPoint.statistics.phyStats;
     RequireOptionalEqual(actual.averageTheoreticalPhyRateMbps,
@@ -371,7 +364,7 @@ ValidateWindow(const ExperimentWindowOutput& window,
         previousStation = key;
         ValidateStationIdentity(station, *identity->second);
         ValidateDefaultCategories(station.statistics, "window station");
-        ValidateMetricFields(station.statistics.phyStats, false, "window station");
+        ValidateMetricFields(station.statistics.phyStats, "window station");
         Require(station.statistics.phyStats.averageTheoreticalPhyRateMbps.has_value() ||
                     *station.statistics.phyStats.contentionFraction > 0.0,
                 "window emitted a station without PPDU or contention activity");
@@ -392,8 +385,7 @@ ValidateWindow(const ExperimentWindowOutput& window,
         ValidateAccessPointIdentity(accessPoint, accessPointIdentity);
         ValidateAccessPointMetrics(accessPoint,
                                    activeStations->second,
-                                   config.benchmark.stationCountPerBss,
-                                   false);
+                                   config.benchmark.stationCountPerBss);
     }
 }
 
@@ -418,7 +410,7 @@ ValidateOverall(const UnifiedExperimentSummary& summary,
         Require(stationInventory.contains({station.accessPointId, station.stationIndex}),
                 "overall station is absent from inventory");
         ValidateDefaultCategories(station.statistics, "overall station");
-        ValidateMetricFields(station.statistics.phyStats, true, "overall station");
+        ValidateMetricFields(station.statistics.phyStats, "overall station");
         stationsByAccessPoint[station.accessPointId].push_back(&station);
     }
     for (std::size_t index = 0; index < summary.overall.accessPoints.size(); ++index)
@@ -428,8 +420,7 @@ ValidateOverall(const UnifiedExperimentSummary& summary,
         ValidateAccessPointIdentity(accessPoint, identity);
         ValidateAccessPointMetrics(accessPoint,
                                    stationsByAccessPoint.at(accessPoint.accessPointId),
-                                   config.benchmark.stationCountPerBss,
-                                   true);
+                                   config.benchmark.stationCountPerBss);
     }
 }
 
@@ -459,46 +450,55 @@ ValidateOverallAgainstWindows(const UnifiedExperimentSummary& summary)
     {
         const StationKey key{station.accessPointId, station.stationIndex};
         const auto windows = metricsByStation.find(key);
-        Require(windows != metricsByStation.end(),
-                "nonzero overall station has no sparse-window activity");
 
         long double expectedContention = 0.0L;
         std::optional<double> minimumTheoretical;
         std::optional<double> maximumTheoretical;
         std::optional<double> minimumPractical;
         std::optional<double> maximumPractical;
-        for (const auto& window : windows->second)
+        if (windows != metricsByStation.end())
         {
-            expectedContention += *window.value->contentionFraction * window.durationMs / 1000.0L;
-            if (window.value->averageTheoreticalPhyRateMbps)
+            for (const auto& window : windows->second)
             {
-                const double theoretical = *window.value->averageTheoreticalPhyRateMbps;
-                const double practical = *window.value->averagePracticalPhyRateMbps;
-                minimumTheoretical =
-                    minimumTheoretical ? std::min(*minimumTheoretical, theoretical) : theoretical;
-                maximumTheoretical =
-                    maximumTheoretical ? std::max(*maximumTheoretical, theoretical) : theoretical;
-                minimumPractical =
-                    minimumPractical ? std::min(*minimumPractical, practical) : practical;
-                maximumPractical =
-                    maximumPractical ? std::max(*maximumPractical, practical) : practical;
+                expectedContention +=
+                    *window.value->contentionFraction * window.durationMs / 1000.0L;
+                if (window.value->averageTheoreticalPhyRateMbps)
+                {
+                    const double theoretical = *window.value->averageTheoreticalPhyRateMbps;
+                    const double practical = *window.value->averagePracticalPhyRateMbps;
+                    minimumTheoretical = minimumTheoretical
+                                             ? std::min(*minimumTheoretical, theoretical)
+                                             : theoretical;
+                    maximumTheoretical = maximumTheoretical
+                                             ? std::max(*maximumTheoretical, theoretical)
+                                             : theoretical;
+                    minimumPractical =
+                        minimumPractical ? std::min(*minimumPractical, practical) : practical;
+                    maximumPractical =
+                        maximumPractical ? std::max(*maximumPractical, practical) : practical;
+                }
             }
         }
 
         const auto& overall = station.statistics.phyStats;
-        Require(minimumTheoretical.has_value(),
-                "overall station rates have no window PPDU observations");
-        Require(*overall.averageTheoreticalPhyRateMbps >=
-                        *minimumTheoretical -
-                            METRIC_TOLERANCE * std::max(1.0, *minimumTheoretical) &&
-                    *overall.averageTheoreticalPhyRateMbps <=
-                        *maximumTheoretical + METRIC_TOLERANCE * std::max(1.0, *maximumTheoretical),
-                "overall theoretical PHY rate is outside its window range");
-        Require(*overall.averagePracticalPhyRateMbps >=
-                        *minimumPractical - METRIC_TOLERANCE * std::max(1.0, *minimumPractical) &&
-                    *overall.averagePracticalPhyRateMbps <=
-                        *maximumPractical + METRIC_TOLERANCE * std::max(1.0, *maximumPractical),
-                "overall practical PHY rate is outside its window range");
+        Require(overall.averageTheoreticalPhyRateMbps.has_value() == minimumTheoretical.has_value(),
+                "overall station rate presence does not match window PPDU observations");
+        if (overall.averageTheoreticalPhyRateMbps)
+        {
+            Require(*overall.averageTheoreticalPhyRateMbps >=
+                            *minimumTheoretical -
+                                METRIC_TOLERANCE * std::max(1.0, *minimumTheoretical) &&
+                        *overall.averageTheoreticalPhyRateMbps <=
+                            *maximumTheoretical +
+                                METRIC_TOLERANCE * std::max(1.0, *maximumTheoretical),
+                    "overall theoretical PHY rate is outside its window range");
+            Require(*overall.averagePracticalPhyRateMbps >=
+                            *minimumPractical -
+                                METRIC_TOLERANCE * std::max(1.0, *minimumPractical) &&
+                        *overall.averagePracticalPhyRateMbps <=
+                            *maximumPractical + METRIC_TOLERANCE * std::max(1.0, *maximumPractical),
+                    "overall practical PHY rate is outside its window range");
+        }
         Require(NearlyEqual(*overall.contentionFraction, static_cast<double>(expectedContention)),
                 "overall contention does not reproduce sparse windows");
     }

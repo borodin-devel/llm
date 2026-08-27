@@ -561,12 +561,6 @@ SaturatedTcpStatistics::BuildSummaryFromRaw(
 
         const auto metrics =
             DeriveStationPhyMetrics(rawOverall.at(station.nodeId), MEASUREMENT_DURATION_NS);
-        if (!metrics.averageTheoreticalPhyRateMbps || !metrics.averagePracticalPhyRateMbps)
-        {
-            throw std::invalid_argument(
-                "saturated overall station PHY rates are undefined for node " +
-                std::to_string(station.nodeId));
-        }
         overallMetricsByAccessPoint[station.accessPointId].push_back(metrics);
         summary.overall.stations.push_back(MakeStationOutput(station, metrics));
     }

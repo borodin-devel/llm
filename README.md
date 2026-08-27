@@ -917,17 +917,22 @@ Each active direction gives every STA an independent TCP connection:
 The benchmark-specific sender connects without sending early, then fills the
 socket send buffer without a byte or data-rate limit. TCP uses
 `ns3::TcpHighSpeed`, 1460-byte segments, and 32 MiB send and receive buffers.
-Each buffer is exactly 33554432 bytes. The start is event-driven rather than
-a fixed warm-up:
+Each buffer is exactly 33554432 bytes. The measured payload start is
+event-driven rather than a fixed traffic warm-up:
 
-1. Install sinks and start every association and TCP connection.
+1. Install sinks at time zero, allow association to settle for one second,
+   then stage TCP connection setup in stable flow order at 10 ms intervals.
 2. Wait until every STA is associated and every active sender is connected.
 3. Choose the first whole-second boundary strictly after complete readiness.
 4. Start all senders and metric collectors at that common epoch.
 5. Measure exactly one second, then stop, finalize, validate, and exit.
 
-A safety timeout makes missing readiness a failure; it never starts traffic
-early.
+An exhausted socket connection cohort is traced and retried after one second
+with a fresh socket using the same endpoints and TOS. A 400-second global
+safety timeout makes missing readiness a failure; neither retry nor the timeout
+starts payload or statistics early. At the maximum 180 flows, deterministic
+setup starts span 1.00 through 2.79 seconds, while the measured epoch is still
+selected only after complete readiness.
 
 Benchmark PHY metrics include only qualifying PPDUs transmitted by STAs. AP
 transmissions never enter station or BSS values, including in `dl` mode.
@@ -993,8 +998,13 @@ and efficiency; it is excluded from the rate means but still contributes its
 contention value. An entity with neither PPDU nor contention activity is
 absent from that sparse window, and a completely inactive window is absent.
 The dense `overall` section contains all configured STAs and requires every
-overall station rate and efficiency to be non-null. Overall values are rebuilt
-from raw accumulators rather than averages of rounded windows.
+STA contention value to be numeric, including numeric `0.0`. If a STA has no
+qualifying PPDU during the complete one-second interval, its overall
+theoretical rate, practical rate, and efficiency are JSON `null`; that STA is
+excluded from BSS rate means but still contributes its contention value. If no
+STA in a BSS has a defined rate, the BSS theoretical rate, practical rate, and
+efficiency are also `null`. Overall values are rebuilt from raw accumulators
+rather than averages of rounded windows.
 
 ### JSON contract
 
@@ -1139,8 +1149,13 @@ ascending order, so the first block starts with
 
 One row is one BSS in one repetition attempt, uniquely identified by
 `experiment_id + repetition_attempt + bss_id`. Station columns whose index is
-not present in that configuration are empty. There are no extra diagnostic
-columns; detailed diagnostics remain in each retained JSON.
+not present in that configuration are all empty. For an existing STA with no
+qualifying overall PPDU, only its theoretical-rate, practical-rate, and
+efficiency cells are empty; its contention cell remains numeric, including
+`0.0`. The three BSS rate/efficiency cells are likewise empty only when that
+BSS has no defined STA rate, while BSS contention remains numeric. There are
+no extra diagnostic columns; detailed diagnostics remain in each retained
+JSON.
 
 For direct Microsoft Excel opening, the CSV contract is semicolon delimiters,
 UTF-8 with BOM, CRLF line endings, decimal dots, and standard double-quote

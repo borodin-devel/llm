@@ -57,25 +57,25 @@ def _exclusive_nofollow_opener(path: str, flags: int) -> int:
 
 @dataclass(frozen=True)
 class StationCsvMetrics:
-    """The four exported metrics for one existing station."""
+    """Nullable rate-derived fields and numeric contention for one existing station."""
 
-    average_theoretical_phy_rate_mbps: float
-    average_practical_phy_rate_mbps: float
-    efficiency: float
+    average_theoretical_phy_rate_mbps: float | None
+    average_practical_phy_rate_mbps: float | None
+    efficiency: float | None
     contention_fraction: float
 
 
 @dataclass(frozen=True)
 class BssCsvRow:
-    """One BSS result with fixed station columns through index 29."""
+    """One nullable-rate BSS result with fixed station columns through index 29."""
 
     configuration: ExperimentConfiguration
     repetition_attempt: int
     target_rssi_dbm: float
     bss_id: int
-    average_theoretical_phy_rate_mbps: float
-    average_practical_phy_rate_mbps: float
-    efficiency: float
+    average_theoretical_phy_rate_mbps: float | None
+    average_practical_phy_rate_mbps: float | None
+    efficiency: float | None
     contention_fraction: float
     stations: tuple[StationCsvMetrics | None, ...]
 
@@ -89,17 +89,49 @@ def _writer(destination: TextIO) -> Any:
     )
 
 
+def _empty_if_none(value: object) -> object:
+    return "" if value is None else value
+
+
 def _require_finite(value: object, name: str) -> None:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ValueError(f"{name} must be a finite number")
 
 
+def _validate_rate_triplet(
+    theoretical: object,
+    practical: object,
+    efficiency: object,
+    name: str,
+) -> None:
+    for value, field in (
+        (theoretical, "theoretical rate"),
+        (practical, "practical rate"),
+        (efficiency, "efficiency"),
+    ):
+        if value is not None:
+            _require_finite(value, f"{name} {field}")
+    if (theoretical is None) != (practical is None):
+        raise ValueError(f"{name} theoretical and practical rate presence differs")
+    if theoretical is None:
+        if efficiency is not None:
+            raise ValueError(f"{name} efficiency exists without rates")
+    elif theoretical == 0.0:
+        if practical != 0.0 or efficiency is not None:
+            raise ValueError(f"{name} zero theoretical rate has invalid efficiency")
+    elif efficiency is None:
+        raise ValueError(f"{name} efficiency is missing for defined rates")
+
+
 def _validate_metric(metric: StationCsvMetrics, name: str) -> None:
     if not isinstance(metric, StationCsvMetrics):
         raise ValueError(f"{name} must contain StationCsvMetrics")
-    _require_finite(metric.average_theoretical_phy_rate_mbps, f"{name} theoretical rate")
-    _require_finite(metric.average_practical_phy_rate_mbps, f"{name} practical rate")
-    _require_finite(metric.efficiency, f"{name} efficiency")
+    _validate_rate_triplet(
+        metric.average_theoretical_phy_rate_mbps,
+        metric.average_practical_phy_rate_mbps,
+        metric.efficiency,
+        name,
+    )
     _require_finite(metric.contention_fraction, f"{name} contention")
 
 
@@ -130,15 +162,12 @@ def _validate_attempt_rows(rows: tuple[BssCsvRow, ...]) -> None:
         if not isinstance(row.stations, tuple) or len(row.stations) != 30:
             raise ValueError("each BSS row must contain exactly 30 station entries")
         _require_finite(row.target_rssi_dbm, "target_rssi_dbm")
-        _require_finite(
+        _validate_rate_triplet(
             row.average_theoretical_phy_rate_mbps,
-            "BSS average theoretical PHY rate",
-        )
-        _require_finite(
             row.average_practical_phy_rate_mbps,
-            "BSS average practical PHY rate",
+            row.efficiency,
+            "BSS",
         )
-        _require_finite(row.efficiency, "BSS efficiency")
         _require_finite(row.contention_fraction, "BSS contention")
         for station_index, metric in enumerate(row.stations):
             if station_index < station_count:
@@ -163,9 +192,9 @@ def _row_values(row: BssCsvRow) -> list[object]:
         configuration.traffic_mode,
         configuration.mimo_mode,
         row.bss_id,
-        row.average_theoretical_phy_rate_mbps,
-        row.average_practical_phy_rate_mbps,
-        row.efficiency,
+        _empty_if_none(row.average_theoretical_phy_rate_mbps),
+        _empty_if_none(row.average_practical_phy_rate_mbps),
+        _empty_if_none(row.efficiency),
         row.contention_fraction,
     ]
     for metric in row.stations:
@@ -174,9 +203,9 @@ def _row_values(row: BssCsvRow) -> list[object]:
         else:
             values.extend(
                 (
-                    metric.average_theoretical_phy_rate_mbps,
-                    metric.average_practical_phy_rate_mbps,
-                    metric.efficiency,
+                    _empty_if_none(metric.average_theoretical_phy_rate_mbps),
+                    _empty_if_none(metric.average_practical_phy_rate_mbps),
+                    _empty_if_none(metric.efficiency),
                     metric.contention_fraction,
                 )
             )

@@ -273,7 +273,11 @@ same unlimited send-buffer-filling behavior while separating connection
 readiness from payload start:
 
 - connect the TCP socket early;
+- begin setup after a one-second association interval and stage flows by 10 ms
+  in deterministic installation order;
 - report ready exactly once when connection succeeds;
+- after a socket exhausts its connection cohort, trace the failure and retry
+  after one second with a fresh socket preserving Local, Remote, and TOS;
 - send no payload before `StartTraffic()`;
 - after `StartTraffic()`, keep calling `Socket::Send()` until the send buffer
   fills, then resume from the socket send callback;
@@ -286,10 +290,11 @@ send/receive buffers.
 
 ### Event-driven measurement epoch
 
-There is no fixed warm-up interval. The benchmark follows the current
-`llm-scenario` readiness pattern:
+There is no fixed payload warm-up or fixed measurement start. Pre-measurement
+connection setup follows the current `llm-scenario` readiness pattern:
 
-1. Install sinks and create every benchmark sender/TCP connection.
+1. Install sinks at time zero, then stage sender connection setup from 1.00 s
+   in deterministic 10 ms increments.
 2. Wait for every STA association and every active BulkSend connection.
 3. Every `SaturatedTcpSender` reports ready without sending payload early.
 4. Select the first whole-second boundary strictly after complete readiness.
@@ -298,9 +303,10 @@ There is no fixed warm-up interval. The benchmark follows the current
 7. Stop applications, finalize statistics, validate output, and end the
    simulator immediately after the interval.
 
-A conservative safety stop turns missing association/connection readiness
-into a clear failure rather than an infinite simulation. The safety stop is
-not a warm-up timer and never starts measurement early.
+A 400-second conservative safety stop spans a complete fresh-socket
+replacement cohort and turns missing association/connection readiness into a
+clear failure rather than an infinite simulation. The safety stop is not a
+warm-up timer and never starts measurement early.
 
 ## Station-only measurement semantics
 
@@ -411,12 +417,12 @@ results. For N stations:
 
 ```text
 avg_all_sta_theoretical_phy_rate_mbps =
-  mean(sta_i_average_theoretical_phy_rate_mbps)
+  mean(defined sta_i_average_theoretical_phy_rate_mbps values)
 ```
 
 ```text
 avg_all_sta_practical_phy_rate_mbps =
-  mean(sta_i_average_practical_phy_rate_mbps)
+  mean(defined sta_i_average_practical_phy_rate_mbps values)
 ```
 
 ```text
@@ -432,8 +438,13 @@ bss_channel_contention_fraction =
 
 No AP-originated PPDU or AP contention value enters these calculations. A
 station with no qualifying PPDU in a short window has null rate/efficiency
-values and is excluded from rate means for that window. Saturation requires
-every station's `overall` rates to be defined; otherwise the run fails.
+values and is excluded from rate means for that window. The dense `overall`
+array still contains every configured station. A station with zero qualifying
+PPDU over the exact measured second has null theoretical rate, practical rate,
+and efficiency plus numeric contention (including numeric zero), and is
+excluded from overall BSS rate means. If a BSS has no defined station rate,
+its theoretical rate, practical rate, and efficiency are null. BSS contention
+always averages every configured station's numeric contention.
 
 ## Shared JSON schema
 
@@ -481,7 +492,8 @@ benchmark-specific validation rejects:
   floating-point tolerance at the boundary;
 - practical rate materially greater than theoretical rate;
 - AP/BSS fields that do not reproduce the station formulas;
-- missing overall station measurements under saturated traffic;
+- partial null rate triplets, nonnumeric contention, or overall rate presence
+  inconsistent with sparse-window PPDU observations;
 - inventory/configuration mismatches.
 
 ## Full experiment matrix
@@ -596,9 +608,13 @@ sta_29_contention_fraction
 ```
 
 No additional diagnostic columns are added. Station columns at indexes greater
-than or equal to `sta_count_per_bss` are empty. Existing retransmission,
-failure, drop, busy-time, and airtime diagnostics remain available only in the
-retained JSON files.
+than or equal to `sta_count_per_bss` are all empty. For an existing station
+with undefined overall rates, its theoretical, practical, and efficiency cells
+are empty while contention stays numeric, including `0.0`. The three BSS
+rate/efficiency cells follow the same rule when no station rate is defined;
+BSS contention remains numeric. Existing retransmission, failure, drop,
+busy-time, and airtime diagnostics remain available only in the retained JSON
+files.
 
 ## Failure and safety behavior
 
@@ -632,7 +648,8 @@ Focused tests cover:
 - all relevant PPDU kinds, TxVector rates, PSDU bytes, PPDU airtime, and retries;
 - access request/grant intervals, frozen backoff, multiple-AC union, and window
   splitting;
-- station formulas, nullable short windows, overall raw merge, and BSS means;
+- station formulas, nullable short windows and overall values, overall raw
+  merge, defined-only BSS rate means, and all-station BSS contention;
 - shared JSON field placement/order/nulls and unchanged ordinary scenario
   output;
 - output no-clobber and error paths.
@@ -650,7 +667,8 @@ Focused tests cover:
 - retained directory paths;
 - JSON validation and exact three-row append;
 - no append for failed attempts;
-- exact CSV header and unused station blanks;
+- exact 133-column CSV header, unused station blanks, nullable existing-rate
+  blanks, and numeric-zero contention cells;
 - semicolon, UTF-8 BOM, CRLF, quoting, and decimal-dot output.
 
 All existing llm C++, Python, live-verifier, and registered example tests must

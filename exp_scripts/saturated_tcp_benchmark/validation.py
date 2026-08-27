@@ -560,7 +560,6 @@ def _validate_entity_shape(
 def _validate_metric_fields(
     entity: dict[str, object],
     *,
-    require_rates: bool,
     source_path: str | Path,
     json_path: str,
 ) -> _MetricValues:
@@ -580,24 +579,9 @@ def _validate_metric_fields(
             "contention_fraction is outside [0, 1]",
         )
 
-    if require_rates and (
-        theoretical_value is None or practical_value is None or efficiency_value is None
-    ):
-        _fail(
-            source_path,
-            f"{json_path}.phy_stats",
-            "all four overall station fields must be non-null",
-        )
-
     if theoretical_value is None or practical_value is None:
         if theoretical_value is not None or practical_value is not None:
             _fail(source_path, f"{json_path}.phy_stats", "PHY rate presence differs")
-        if require_rates:
-            _fail(
-                source_path,
-                f"{json_path}.phy_stats.average_theoretical_phy_rate_mbps",
-                "overall station fields must be non-null",
-            )
         if efficiency_value is not None:
             _fail(
                 source_path,
@@ -635,7 +619,7 @@ def _validate_metric_fields(
             "practical rate exceeds theoretical rate",
         )
     if theoretical == 0.0:
-        if practical != 0.0 or efficiency_value is not None or require_rates:
+        if practical != 0.0 or efficiency_value is not None:
             _fail(
                 source_path,
                 f"{json_path}.phy_stats.channel_efficiency",
@@ -802,7 +786,6 @@ def _validate_windows(
             )
             metrics = _validate_metric_fields(
                 entity,
-                require_rates=False,
                 source_path=source_path,
                 json_path=station_path,
             )
@@ -839,7 +822,6 @@ def _validate_windows(
             )
             metrics = _validate_metric_fields(
                 entity,
-                require_rates=False,
                 source_path=source_path,
                 json_path=ap_path,
             )
@@ -892,7 +874,6 @@ def _validate_overall(
         )
         metrics = _validate_metric_fields(
             entity,
-            require_rates=True,
             source_path=source_path,
             json_path=station_path,
         )
@@ -911,7 +892,6 @@ def _validate_overall(
         )
         metrics = _validate_metric_fields(
             entity,
-            require_rates=True,
             source_path=source_path,
             json_path=ap_path,
         )
@@ -932,27 +912,26 @@ def _validate_overall_against_windows(
     source_path: str | Path,
 ) -> None:
     for key, overall_metrics in overall.items():
-        observed_windows = windows.get(key)
+        observed_windows = windows.get(key, [])
         path = f"$.overall.stations[{key[0]},{key[1]}]"
-        if not observed_windows:
-            _fail(source_path, path, "nonzero overall station is absent from sparse windows")
         rate_windows = [
             metrics for _, metrics in observed_windows if metrics.theoretical is not None
         ]
-        if not rate_windows:
-            _fail(source_path, path, "overall rates have no non-null window observation")
-        theoretical_values = [metrics.theoretical for metrics in rate_windows]
-        practical_values = [metrics.practical for metrics in rate_windows]
-        if (
-            overall_metrics.theoretical < min(theoretical_values) - _METRIC_TOLERANCE
-            or overall_metrics.theoretical > max(theoretical_values) + _METRIC_TOLERANCE
-        ):
-            _fail(source_path, path, "overall theoretical rate is outside its window range")
-        if (
-            overall_metrics.practical < min(practical_values) - _METRIC_TOLERANCE
-            or overall_metrics.practical > max(practical_values) + _METRIC_TOLERANCE
-        ):
-            _fail(source_path, path, "overall practical rate is outside its window range")
+        if (overall_metrics.theoretical is None) != (not rate_windows):
+            _fail(source_path, path, "overall rate presence does not match window observations")
+        if overall_metrics.theoretical is not None:
+            theoretical_values = [metrics.theoretical for metrics in rate_windows]
+            practical_values = [metrics.practical for metrics in rate_windows]
+            if (
+                overall_metrics.theoretical < min(theoretical_values) - _METRIC_TOLERANCE
+                or overall_metrics.theoretical > max(theoretical_values) + _METRIC_TOLERANCE
+            ):
+                _fail(source_path, path, "overall theoretical rate is outside its window range")
+            if (
+                overall_metrics.practical < min(practical_values) - _METRIC_TOLERANCE
+                or overall_metrics.practical > max(practical_values) + _METRIC_TOLERANCE
+            ):
+                _fail(source_path, path, "overall practical rate is outside its window range")
         expected_contention = sum(
             metrics.contention * duration_ms / 1000.0
             for duration_ms, metrics in observed_windows
