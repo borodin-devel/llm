@@ -1,1 +1,1 @@
-"""Sequential saturated TCP benchmark runner package."""
+"""Resource-aware saturated TCP benchmark runner and auditor package."""

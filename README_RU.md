@@ -891,7 +891,8 @@ TCP-трафика при заданных числе станций, RSSI по�
 проводные линии не разделяются. Все AP и STA используют 802.11ax, канал 42 в
 диапазоне 5 ГГц, ширину 80 МГц, индекс основного 20-МГц канала 0, фиксированную
 мощность 20 дБм, MinstrelHt, две антенны и не более двух пространственных
-потоков на передачу и прием. Цвета BSS у AP равны 1, 2 и 3.
+потоков на передачу и прием. Защитный интервал HE фиксирован на 3200 нс, а
+порог RTS/CTS -- на 0 байт. Цвета BSS у AP равны 1, 2 и 3.
 
 Расстояния вычисляются по тем же стандартным детерминированным моделям
 распространения ns-3, которые используются во время запуска:
@@ -968,78 +969,57 @@ TCP-соединение:
 2,79 секунды, но измеряемая эпоха по-прежнему выбирается только после полной
 готовности.
 
-PHY-метрики бенчмарка включают только подходящие PPDU, переданные STA. Передачи
-AP никогда не входят в значения STA или BSS, в том числе в режиме `dl`.
-Подходят одноадресные данные, кадры данных TCP ACK, MAC ACK и BlockAck,
-связанные с трафиком управляющие кадры, агрегация и каждая повторная попытка.
-Beacon, ассоциация/пробы, широковещательный и посторонний трафик исключаются.
+PHY-метрики бенчмарка наблюдают `PhyTxPsduBegin` только на STA. Подходящий MPDU
+является одноадресными данными, отправленными зарегистрированной STA. Сюда
+входят данные TCP, кадры данных TCP ACK, каждая попытка ретрансляции и каждый
+подходящий подкадр A-MPDU. Исключаются MAC ACK, BlockAck, RTS, CTS, управляющие,
+широковещательные/групповые и все переданные AP кадры. Поэтому результаты `dl`
+описывают валовые попытки данных TCP ACK от STA, а не емкость нисходящей линии
+AP.
 
 ### Метрики STA, null в окнах и агрегация BSS
 
-Для каждой STA сырые аккумуляторы хранят полное эфирное время подходящих PPDU,
-произведение номинальной скорости `WifiTxVector` на это время, число битов
-подходящих PSDU и объединение интервалов ожидания EDCA. Полное эфирное время
-включает преамбулу, заголовки PHY и передачу полезной нагрузки. Биты PSDU
-включают байты MAC/IP/TCP и повторные копии при ретрансляции.
+Каждая STA в каждом окне накапливает упорядоченный профиль
+`(channel_width_mhz, nss, mcs)` с полями `transmitted_psdu_bytes`,
+`ppdu_attempt_count` и `ppdu_airtime_us`. Подходящий TxVector должен быть HE SU
+с GI 3200 нс и фактически выбранной Minstrel шириной 20, 40 или 80 МГц.
+Доминирует профиль с наибольшим числом байтов; при точном равенстве выбирается
+большая номинальная скорость HE, затем возрастающий width/NSS/MCS.
 
-Четыре производных поля STA:
-
-```text
-average_theoretical_phy_rate_mbps =
-  sum(nominal_rate_bps * ppdu_airtime_seconds)
-  / sum(ppdu_airtime_seconds)
-  / 1,000,000
-
-average_practical_phy_rate_mbps =
-  sum(qualifying_psdu_bits)
-  / sum(ppdu_airtime_seconds)
-  / 1,000,000
-
-channel_efficiency =
-  average_practical_phy_rate_mbps
-  / average_theoretical_phy_rate_mbps
-
-contention_fraction =
-  union_edca_waiting_time / statistics_window_duration
-```
-
-Ожидание EDCA включает AIFS, отсчет backoff и замороженный backoff, пока есть
-хотя бы одна ожидающая очередь. Одновременные категории доступа объединяются,
-поэтому `contention_fraction` остается в `[0, 1]`. Скорости принятых байтов
-прикладного уровня не входят в эти уравнения или экспортируемые столбцы
-бенчмарка.
-
-Запись AP является агрегатом BSS, вычисленным по STA. Для настроенных STA
-одного BSS:
+Для общего числа переданных байтов PSDU данных `B`, общего эфирного времени
+PPDU данных STA `Tdata` и интервала статистики `Tinterval`:
 
 ```text
-avg_all_sta_theoretical_phy_rate_mbps =
-  mean(defined STA average_theoretical_phy_rate_mbps values)
-
-avg_all_sta_practical_phy_rate_mbps =
-  mean(defined STA average_practical_phy_rate_mbps values)
-
-bss_channel_efficiency =
-  avg_all_sta_practical_phy_rate_mbps
-  / avg_all_sta_theoretical_phy_rate_mbps
-
-bss_channel_contention_fraction =
-  mean(all configured STA contention_fraction values)
+dominant_data_phy_rate_mbps =
+  GetDataRate(dominant width/NSS/MCS, GI 3200 ns) / 1,000,000
+dominant_data_profile_share = dominant_profile_bytes / B
+effective_phy_rate_mbps = B * 8 / Tdata_seconds / 1,000,000
+data_tx_rate_over_interval_mbps = B * 8 / Tinterval_seconds / 1,000,000
+data_tx_opportunity_gap_fraction =
+  1 - data_tx_rate_over_interval_mbps / effective_phy_rate_mbps
 ```
 
-PPDU, созданные AP, и конкуренция AP не используются. Если в коротком окне у
-STA есть конкуренция, но нет подходящего PPDU, теоретическая и практическая
-скорости и эффективность равны null; STA исключается из средних скоростей, но
-ее конкуренция учитывается. Сущность без PPDU и конкуренции отсутствует в
-разреженном окне, полностью неактивное окно также отсутствует. Плотная секция
-`overall` содержит все настроенные STA и требует числовую конкуренцию каждой
-STA, включая числовое `0.0`. Если за полную измеряемую секунду STA не передала
-ни одного подходящего PPDU, ее общие теоретическая скорость, практическая
-скорость и эффективность равны JSON `null`; такая STA исключается из средних
-скоростей BSS, но ее конкуренция учитывается. Если ни одна STA BSS не имеет
-определенной скорости, теоретическая скорость, практическая скорость и
-эффективность BSS также равны `null`. Общие значения строятся заново из сырых
-аккумуляторов, а не из средних округленных окон.
+`effective_phy_rate_mbps` -- валовая скорость упаковки переданных данных за
+собственное эфирное время PPDU данных STA. В
+`data_tx_rate_over_interval_mbps` знаменателем является все окно. Разрыв
+возможности -- все время вне подходящих PPDU данных этой STA, а не чистая
+метрика EDCA, NAV, коллизий или backoff. Байты включают каждую попытку
+ретрансляции, поэтому эти поля не являются уникальной нагрузкой или TCP
+goodput.
+
+Неактивная существующая STA имеет null для dominant/share/effective/gap,
+числовое `0.0` для interval rate и пустой профиль. Разреженные окна пропускают
+неактивные STA и их родителя BSS; `overall` остается плотным. Родитель BSS
+вычисляется только по настроенным STA:
+
+```text
+mean_dominant_data_phy_rate_mbps = mean(defined station dominant rates)
+mean_effective_phy_rate_mbps = mean(defined station effective rates)
+aggregate_data_tx_rate_over_interval_mbps = sum(all station interval rates)
+```
+
+Неопределенные значения исключаются из средних; числовой ноль входит в сумму.
+PPDU точки доступа в эти значения не входят.
 
 ### Контракт JSON
 
@@ -1057,23 +1037,28 @@ validation
 experiment_metadata
 ```
 
-Каждый объект `phy_stats` AP/STA в окне и `overall` начинается с полей:
+`schema_version` строго равен `2`. Каждый объект `phy_stats` начинается с
+девяти ключей бенчмарка:
 
 ```text
-average_theoretical_phy_rate_mbps
-average_practical_phy_rate_mbps
-channel_efficiency
-contention_fraction
+dominant_data_phy_rate_mbps
+dominant_data_profile_share
+effective_phy_rate_mbps
+data_tx_rate_over_interval_mbps
+data_tx_opportunity_gap_fraction
+data_tx_profile
+mean_dominant_data_phy_rate_mbps
+mean_effective_phy_rate_mbps
+aggregate_data_tx_rate_over_interval_mbps
 ```
 
-Для STA эти поля описывают передачи данной станции, для AP они содержат
-вычисленные по STA формулы BSS выше. Остальные общие категории остаются в
-стандартной форме с нулями/null. При стандартном окне 10 мс и насыщенном
-трафике корректная прямая проверка содержит 100 окон, три AP и
-`3 * sta_count_per_bss` STA. Конфигурация находится в
-`experiment_metadata.configuration`, плотный список идентичностей -- в
-`experiment_metadata.entity_inventory`, а все восемь общих флагов
-`validation` должны быть равны `true`.
+Записи STA заполняют первые шесть и обнуляют последние три; записи AP/BSS
+обнуляют первые пять, используют пустой профиль и заполняют последние три.
+Каждая запись профиля содержит width/NSS/MCS и сырые значения
+байтов/попыток/эфирного времени. Остальные общие категории сохраняют форму с
+нулями/null. Конфигурация находится в `experiment_metadata.configuration`,
+плотные идентичности -- в `experiment_metadata.entity_inventory`, а все восемь
+флагов `validation` должны быть `true`.
 
 ### Конфигурация и команды
 
@@ -1086,7 +1071,7 @@ TOML, затем CLI-переопределения с префиксом сек
 
 | Поле | Фиксированные значения скрипта |
 |---|---|
-| `sta_count_per_bss` | 5, 10, 15, 20, 25, 30 |
+| `sta_count_per_bss` | 1, 5, 10, 15, 20, 25, 30 |
 | `rssi_range` | `high`, `medium`, `low` |
 | `interference_mode` | `isolated`, `ap_only_cochannel` |
 | `traffic_mode` | `ul`, `dl`, `ul_dl` |
@@ -1097,8 +1082,7 @@ C++-программа записывает `script.repetitions` как мета
 ровно один запуск; цикл по попыткам есть только в Python-скрипте. Если
 `general.run_folder` пропущен, прямой запуск эксклюзивно создает
 `run/saturated_tcp_<timestamp>`; явно указанная папка используется как точное
-место результата. Имя JSON никогда не перезаписывается. Прямой запуск принимает
-от 1 до 30 STA на BSS, а скрипт использует только шесть перечисленных значений.
+место результата. Имя JSON никогда не перезаписывается.
 `statistics.window_ms` должен быть положительным и делить 1000 без остатка.
 
 Команды выполняются из внешнего корня ns-3:
@@ -1106,28 +1090,42 @@ C++-программа записывает `script.repetitions` как мета
 ```bash
 ./ns3 run "saturated-tcp-scenario --config contrib/llm/config/saturated_tcp_config.toml"
 python3 contrib/llm/exp_scripts/saturated_tcp_experiment.py
+python3 contrib/llm/exp_scripts/saturated_tcp_experiment.py \
+  --experiment-ids 19 --jobs 1 --memory-reserve-percent 20
+python3 contrib/llm/exp_scripts/audit_saturated_tcp_results.py \
+  run/scripted_exp_<timestamp>
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
   -s contrib/llm/exp_scripts/tests -t contrib/llm/exp_scripts -p 'test_*.py' -v
 ```
 
 Первая команда запускает стандартный вариант с 5 STA, высоким RSSI,
-изоляцией, UL и SU. Вторая выполняет полную последовательную матрицу. Скрипт
-фиксирует `rng_seed = 12345` и задает `rng_run` равным номеру повторной
-попытки. Повторы сохраняются как отдельные результаты и никогда не
-усредняются.
+изоляцией, UL и SU. Вторая выполняет полную матрицу с учетом ресурсов. Третья
+запрашивает только ID 19; соответствующий baseline с одной STA добавляется
+автоматически. Четвертая выполняет независимый аудит сохраненного запуска
+только для чтения. Скрипт фиксирует `rng_seed = 12345`, задает `rng_run` равным
+номеру повторной попытки и никогда не усредняет повторы.
 
 При стандартном одном повторе точная матрица только с SU равна:
 
 ```text
-6 чисел STA * 3 диапазона RSSI * 2 режима интерференции * 3 режима трафика * 1 режим SU
-  = 108 запусков ns-3
-108 запусков * 3 строки BSS = 324 строки CSV
+7 чисел STA * 3 диапазона RSSI * 2 режима интерференции * 3 режима трафика * 1 режим SU
+  = 126 запусков ns-3
+126 запусков * 3 строки BSS = 378 строк CSV
 ```
 
 ### Результаты скрипта, сохранение и фиксированный CSV для Excel
 
-Скрипт выполняет по одному процессу ns-3 в стабильном порядке матрицы и
-создает новое дерево во внешнем каталоге запусков, не перезаписывая пути:
+Скрипт один раз собирает цель и запускает рабочие процессы через
+`./ns3 run --no-build`. Только контроллер выделяет каталоги, применяет baseline
+и публикует строки CSV в детерминированном порядке experiment/attempt/BSS.
+Автоматический `--jobs 0` резервирует два логических CPU и нацелен на 20
+процентов `MemAvailable`; положительный `--jobs` является только ограничением.
+`--memory-reserve-percent` принимает значения от 15 до 50. Допуск учитывает
+рост активных процессов, а полный запуск, существенно опустившийся ниже
+приемочного порога 15 процентов, отклоняется.
+
+Скрипт создает новое дерево во внешнем каталоге запусков, не перезаписывая
+пути:
 
 ```text
 run/scripted_exp_<timestamp>/
@@ -1136,23 +1134,49 @@ run/scripted_exp_<timestamp>/
 |   `-- attempt_1/
 |       |-- output.json
 |       |-- stdout.log
-|       `-- stderr.log
+|       |-- stderr.log
+|       `-- resource_usage.json
 |-- experiment_002/
 |   `-- attempt_1/
 |       |-- output.json
 |       |-- stdout.log
-|       `-- stderr.log
+|       |-- stderr.log
+|       `-- resource_usage.json
+|-- resource_summary.json
 `-- ...
 ```
 
-Каждый JSON проверяется до добавления ровно трех строк BSS. Ошибка процесса,
-тайм-аут, ошибка пути, метаданных, схемы, реестра, формулы, диапазона или флага
-проверки немедленно останавливает матрицу. Неудачная попытка не добавляет строки
-CSV. `results.csv`, JSON завершенных попыток и все логи попыток сохраняются для
-аудита; скрипт не удаляет успешные или неудачные свидетельства.
+`resource_usage.json` хранит пиковый RSS дерева процессов, минимум доступной
+памяти, время, код выхода и режим монитора для попытки. Упорядоченный
+`resource_summary.json` хранит `complete_matrix`,
+`requested_experiment_ids`, `executed_experiment_ids`,
+`auto_included_baseline_ids`, оценки памяти, число рабочих процессов, минимумы
+и все записи попыток. Поэтому subset нельзя принять за полную матрицу. Ошибка
+останавливает допуск и сохраняет созданные JSON, логи и ресурсные файлы;
+публикуется только непрерывный проверенный префикс CSV.
 
-Существует ровно один CSV с ровно 133 фиксированными столбцами: девять
-столбцов идентичности, четыре столбца BSS и четыре столбца для каждого индекса
+Один принятый стандартный полный запуск содержит ровно 126 файлов
+`output.json`, 252 лога stdout/stderr, 126 файлов `resource_usage.json`, 378
+строк данных CSV плюс один заголовок и 193 столбца в каждой строке. Независимый
+аудитор восстанавливает профили JSON, формулы, объединение окон, значения BSS,
+соответствующие baseline, каждую ячейку и строку CSV и число ресурсных файлов,
+не изменяя сохраненный запуск.
+
+Соответствующий агрегат с одной STA имеет те же RSSI, interference, traffic,
+MIMO, repetition и BSS ID:
+
+```text
+bss_competition_overhead_vs_single_sta =
+  1 - aggregate_rate_N / matching_aggregate_rate_1
+```
+
+Строка с одной STA равна `0.0`; при нулевом baseline значение пусто. Результат
+знаковый и не ограничивается. Так как агрегат считает байты ретрансляций, это
+не потеря TCP goodput и не чистая конкуренция, а в `dl` он относится к попыткам
+TCP ACK от STA.
+
+Существует ровно один CSV с ровно 193 фиксированными столбцами: девять
+столбцов идентичности, четыре столбца BSS и шесть столбцов для каждого индекса
 STA от 0 до 29. Их порядок:
 
 ```text
@@ -1166,31 +1190,30 @@ traffic_mode
 mimo_mode
 bss_id
 
-avg_all_sta_theoretical_phy_rate_mbps
-avg_all_sta_practical_phy_rate_mbps
-bss_channel_efficiency
-bss_channel_contention_fraction
+bss_mean_dominant_data_phy_rate_mbps
+bss_mean_effective_phy_rate_mbps
+bss_aggregate_data_tx_rate_over_interval_mbps
+bss_competition_overhead_vs_single_sta
 
 для каждого i = 0, ..., 29:
-  sta_i_avg_theoretical_phy_rate_mbps
-  sta_i_avg_practical_phy_rate_mbps
-  sta_i_efficiency
-  sta_i_contention_fraction
+  sta_i_dominant_data_phy_rate_mbps
+  sta_i_dominant_data_profile_share
+  sta_i_effective_phy_rate_mbps
+  sta_i_data_tx_rate_over_interval_mbps
+  sta_i_data_tx_opportunity_gap_fraction
+  sta_i_tx_profile
 ```
 
-В этом шаблоне десятичное значение `i` буквально подставляется по возрастанию:
-первый блок начинается с `sta_0_avg_theoretical_phy_rate_mbps`, последний -- с
-`sta_29_avg_theoretical_phy_rate_mbps`; буквального столбца `sta_i` нет.
+Профили используют компактные числа `.15g`, например
+`W80_NSS2_MCS11:bytes=100500,ppdus=120,airtime_us=900`; несколько профилей
+соединяются через `|` в порядке возрастания width/NSS/MCS.
 
 Одна строка соответствует одному BSS одной повторной попытки и однозначно
 определяется `experiment_id + repetition_attempt + bss_id`. Столбцы STA с
-индексом, отсутствующим в конфигурации, полностью пусты. Для существующей STA
-без подходящего общего PPDU пусты только ячейки теоретической скорости,
-практической скорости и эффективности; ячейка конкуренции остается числовой,
-включая `0.0`. Три ячейки скорости/эффективности BSS аналогично пусты только
-тогда, когда в BSS нет определенной скорости STA, а конкуренция BSS остается
-числовой. Дополнительных диагностических столбцов нет; подробная диагностика
-остается в каждом сохраненном JSON.
+индексом, отсутствующим в конфигурации, полностью пусты. Для неактивной
+существующей STA только ячейка interval rate содержит числовое `0.0`, а
+остальные пять ячеек пусты. Подробная диагностика остается в каждом
+сохраненном JSON.
 
 Для прямого открытия в Microsoft Excel контракт CSV задает разделитель
 точка с запятой, UTF-8 с BOM, окончания строк CRLF, десятичную точку и
@@ -1546,10 +1569,11 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
   -s contrib/llm/exp_scripts/tests -t contrib/llm/exp_scripts -p 'test_*.py' -v
 ```
 
-Эти тесты проверяют точный порядок 108 конфигураций, связь повторов с RNG,
-строгую проверку JSON, восстановление формул, fail-fast-владение процессами,
-сохраненные пути и фиксированный контракт CSV для Excel без запуска дорогой
-реальной матрицы.
+Эти тесты проверяют точный порядок 126 конфигураций, связь повторов с RNG,
+строгую проверку JSON, независимое восстановление аудита, планирование
+параллельных запусков с учетом ресурсов, fail-fast-владение процессами,
+сохраненные пути и фиксированный контракт Excel CSV из 193 столбцов без
+запуска дорогой реальной матрицы.
 
 ### Тесты потоковых скриптов
 
@@ -1599,8 +1623,9 @@ contrib/llm/
 |       |-- *.cc, *.h                 сбор и сводки APP/TCP/MAC/PHY
 |       `-- json/                     потоковая запись и сериализаторы иерархии
 |-- exp_scripts/
-|   |-- saturated_tcp_experiment.py  точка входа последовательного скрипта
-|   |-- saturated_tcp_benchmark/     матрица, запуск, проверка и модули CSV
+|   |-- saturated_tcp_experiment.py  точка входа скрипта с учетом ресурсов
+|   |-- audit_saturated_tcp_results.py точка входа аудита сохраненного запуска
+|   |-- saturated_tcp_benchmark/     матрица, запуск, аудит, ресурсы, проверка, CSV
 |   `-- tests/                        детерминированные тесты скрипта бенчмарка
 |-- model/
 |   |-- applications/                 генераторы, приемник, расписание и AppTxTag

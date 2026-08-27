@@ -1,5 +1,9 @@
 # Saturated TCP Wi-Fi Benchmark Design
 
+> **Superseded:** This historical v1 design is superseded by
+> [Saturated Data PHY Benchmark v2 Design](2026-08-27-saturated-data-phy-benchmark-v2-design.md).
+> It is retained unchanged below as design history.
+
 ## Purpose
 
 Add an independent, deterministic 802.11ax calibration benchmark to the

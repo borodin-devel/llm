@@ -1,5 +1,9 @@
 # Saturated TCP Wi-Fi Benchmark Implementation Plan
 
+> **Superseded:** This historical v1 plan is superseded by
+> [Saturated Data PHY Benchmark v2 Implementation Plan](2026-08-27-saturated-data-phy-benchmark-v2.md).
+> It is retained unchanged below as implementation history.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build an independent 108-run saturated TCP 802.11ax benchmark that measures station-transmitted PPDU theoretical/practical rate, efficiency, and EDCA contention, writes the shared windowed JSON schema, and produces one Excel-compatible CSV.

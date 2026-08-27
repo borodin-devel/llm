@@ -864,7 +864,9 @@ Every BSS has its own wired server, 10 Gbit/s point-to-point link with 0.1 ms
 delay, routing AP, and configured number of STAs. No server or wired link is
 shared. All APs and STAs use 802.11ax, 5 GHz channel 42, 80 MHz width, primary
 20 MHz index 0, fixed 20 dBm transmit power, MinstrelHt, two antennas, and at
-most two transmit and receive spatial streams. AP BSS colors are 1, 2, and 3.
+most two transmit and receive spatial streams. HE guard interval is fixed at
+3200 ns and the RTS/CTS threshold is fixed at 0 bytes. AP BSS colors are 1, 2,
+and 3.
 
 Placement solves distances with the same native deterministic propagation
 models used by the run:
@@ -934,77 +936,55 @@ starts payload or statistics early. At the maximum 180 flows, deterministic
 setup starts span 1.00 through 2.79 seconds, while the measured epoch is still
 selected only after complete readiness.
 
-Benchmark PHY metrics include only qualifying PPDUs transmitted by STAs. AP
-transmissions never enter station or BSS values, including in `dl` mode.
-Qualifying transmissions include unicast data, TCP ACK data frames, MAC ACK
-and BlockAck, traffic-related control frames, aggregation, and every retry.
-Beacon, association/probe, broadcast, and unrelated traffic are excluded.
+Benchmark PHY metrics observe `PhyTxPsduBegin` only on STAs. A qualifying MPDU
+is unicast data whose transmitter is the registered STA. This includes TCP
+data, TCP ACK data frames, every attempted retransmission, and every qualifying
+subframe in an A-MPDU. It excludes MAC ACK, BlockAck, RTS, CTS, management,
+broadcast/group, and all AP-transmitted frames. Consequently, `dl` results
+describe gross STA TCP-ACK data attempts, not AP downlink capacity.
 
 ### Station metrics, null windows, and BSS aggregation
 
-For each STA, raw accumulators retain complete qualifying PPDU airtime,
-nominal `WifiTxVector` rate multiplied by that airtime, qualifying PSDU bits,
-and the union of EDCA wait intervals. Complete airtime includes the preamble,
-PHY headers, and payload time. PSDU bits include MAC/IP/TCP bytes and repeated
-copies on retransmission.
+Each STA/window accumulates an ordered
+`(channel_width_mhz, nss, mcs)` profile with
+`transmitted_psdu_bytes`, `ppdu_attempt_count`, and `ppdu_airtime_us`.
+Qualifying TxVectors must be HE SU at 3200 ns GI and actual Minstrel-selected
+width 20, 40, or 80 MHz. The dominant profile has the most bytes; an exact byte
+tie uses the greater nominal HE rate and then ascending width/NSS/MCS.
 
-The four derived station fields are:
-
-```text
-average_theoretical_phy_rate_mbps =
-  sum(nominal_rate_bps * ppdu_airtime_seconds)
-  / sum(ppdu_airtime_seconds)
-  / 1,000,000
-
-average_practical_phy_rate_mbps =
-  sum(qualifying_psdu_bits)
-  / sum(ppdu_airtime_seconds)
-  / 1,000,000
-
-channel_efficiency =
-  average_practical_phy_rate_mbps
-  / average_theoretical_phy_rate_mbps
-
-contention_fraction =
-  union_edca_waiting_time / statistics_window_duration
-```
-
-EDCA waiting includes AIFS, backoff countdown, and frozen backoff while at
-least one queue is pending. Concurrent access categories are unioned, so
-`contention_fraction` stays in `[0, 1]`. Application-layer received-byte rates
-are not inputs to these equations or exported benchmark columns.
-
-The AP record is a station-derived BSS aggregate. For the configured STAs in
-one BSS:
+For total transmitted data PSDU bytes `B`, total station data PPDU airtime
+`Tdata`, and statistics interval `Tinterval`:
 
 ```text
-avg_all_sta_theoretical_phy_rate_mbps =
-  mean(defined STA average_theoretical_phy_rate_mbps values)
-
-avg_all_sta_practical_phy_rate_mbps =
-  mean(defined STA average_practical_phy_rate_mbps values)
-
-bss_channel_efficiency =
-  avg_all_sta_practical_phy_rate_mbps
-  / avg_all_sta_theoretical_phy_rate_mbps
-
-bss_channel_contention_fraction =
-  mean(all configured STA contention_fraction values)
+dominant_data_phy_rate_mbps =
+  GetDataRate(dominant width/NSS/MCS, GI 3200 ns) / 1,000,000
+dominant_data_profile_share = dominant_profile_bytes / B
+effective_phy_rate_mbps = B * 8 / Tdata_seconds / 1,000,000
+data_tx_rate_over_interval_mbps = B * 8 / Tinterval_seconds / 1,000,000
+data_tx_opportunity_gap_fraction =
+  1 - data_tx_rate_over_interval_mbps / effective_phy_rate_mbps
 ```
 
-No AP-originated PPDU or AP contention is used. In a short window, a STA with
-contention but no qualifying PPDU has null theoretical rate, practical rate,
-and efficiency; it is excluded from the rate means but still contributes its
-contention value. An entity with neither PPDU nor contention activity is
-absent from that sparse window, and a completely inactive window is absent.
-The dense `overall` section contains all configured STAs and requires every
-STA contention value to be numeric, including numeric `0.0`. If a STA has no
-qualifying PPDU during the complete one-second interval, its overall
-theoretical rate, practical rate, and efficiency are JSON `null`; that STA is
-excluded from BSS rate means but still contributes its contention value. If no
-STA in a BSS has a defined rate, the BSS theoretical rate, practical rate, and
-efficiency are also `null`. Overall values are rebuilt from raw accumulators
-rather than averages of rounded windows.
+`effective_phy_rate_mbps` is a gross transmitted-data packing rate over the
+STA's own data PPDU airtime. `data_tx_rate_over_interval_mbps` uses the whole
+window. The opportunity gap is all time outside that STA's qualifying data
+PPDUs; it is not a pure EDCA, NAV, collision, or backoff measure. Bytes include
+every attempted retransmission, so these fields are neither unique payload nor
+TCP goodput.
+
+An inactive existing STA has null dominant/share/effective/gap, numeric `0.0`
+interval rate, and an empty profile. Sparse windows omit inactive stations and
+their BSS parent; `overall` is dense. The BSS parent is derived only from its
+configured STAs:
+
+```text
+mean_dominant_data_phy_rate_mbps = mean(defined station dominant rates)
+mean_effective_phy_rate_mbps = mean(defined station effective rates)
+aggregate_data_tx_rate_over_interval_mbps = sum(all station interval rates)
+```
+
+Undefined values are excluded from means; numeric zero participates in the
+sum. No AP PPDU enters these values.
 
 ### JSON contract
 
@@ -1022,23 +1002,28 @@ validation
 experiment_metadata
 ```
 
-Every window and `overall` AP/STA `phy_stats` object begins with:
+`schema_version` is exactly `2`. Every `phy_stats` object begins with these
+nine benchmark keys:
 
 ```text
-average_theoretical_phy_rate_mbps
-average_practical_phy_rate_mbps
-channel_efficiency
-contention_fraction
+dominant_data_phy_rate_mbps
+dominant_data_profile_share
+effective_phy_rate_mbps
+data_tx_rate_over_interval_mbps
+data_tx_opportunity_gap_fraction
+data_tx_profile
+mean_dominant_data_phy_rate_mbps
+mean_effective_phy_rate_mbps
+aggregate_data_tx_rate_over_interval_mbps
 ```
 
-For a STA these fields describe that station's transmissions; for an AP they
-hold the station-derived BSS formulas above. The other shared category fields
-remain present with their default zero/null shapes. With the standard 10 ms
-window and saturated traffic, a valid direct audit contains 100 windows,
-three APs, and `3 * sta_count_per_bss` STAs. Configuration is recorded below
-`experiment_metadata.configuration`, the dense identity list is below
-`experiment_metadata.entity_inventory`, and all eight shared `validation`
-flags must be `true`.
+STA records populate the first six and null the last three; AP/BSS records null
+the first five, use an empty profile, and populate the last three. Each profile
+entry contains the width/NSS/MCS and raw byte/attempt/airtime values. The other
+shared categories retain their default zero/null shapes. Configuration is
+under `experiment_metadata.configuration`, dense identities are under
+`experiment_metadata.entity_inventory`, and all eight `validation` flags must
+be `true`.
 
 ### Configuration and commands
 
@@ -1051,7 +1036,7 @@ coordinates are:
 
 | Field | Fixed runner values |
 |---|---|
-| `sta_count_per_bss` | 5, 10, 15, 20, 25, 30 |
+| `sta_count_per_bss` | 1, 5, 10, 15, 20, 25, 30 |
 | `rssi_range` | `high`, `medium`, `low` |
 | `interference_mode` | `isolated`, `ap_only_cochannel` |
 | `traffic_mode` | `ul`, `dl`, `ul_dl` |
@@ -1062,36 +1047,47 @@ The C++ executable records `script.repetitions` as metadata but still performs
 exactly one run; only the Python runner loops over attempts. If
 `general.run_folder` is omitted, a direct run exclusively creates
 `run/saturated_tcp_<timestamp>`; an explicit folder is used as the exact
-destination. The JSON filename is never overwritten. A direct run accepts
-from 1 through 30 STAs per BSS, while the runner uses only the six listed
-counts. `statistics.window_ms` must be positive and divide 1000 exactly.
+destination. The JSON filename is never overwritten. `statistics.window_ms`
+must be positive and divide 1000 exactly.
 
 Run commands from the outer ns-3 root:
 
 ```bash
 ./ns3 run "saturated-tcp-scenario --config contrib/llm/config/saturated_tcp_config.toml"
 python3 contrib/llm/exp_scripts/saturated_tcp_experiment.py
+python3 contrib/llm/exp_scripts/saturated_tcp_experiment.py \
+  --experiment-ids 19 --jobs 1 --memory-reserve-percent 20
+python3 contrib/llm/exp_scripts/audit_saturated_tcp_results.py \
+  run/scripted_exp_<timestamp>
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
   -s contrib/llm/exp_scripts/tests -t contrib/llm/exp_scripts -p 'test_*.py' -v
 ```
 
 The first command runs the default 5-STA, high-RSSI, isolated, UL, SU case.
-The second runs the complete sequential matrix. The runner fixes
-`rng_seed = 12345` and sets `rng_run` to the repetition-attempt number.
-Repetitions are retained as separate results and are never averaged.
+The second runs the complete resource-aware matrix. The third requests only
+ID 19; its matching one-STA baseline ID is included automatically. The fourth
+audits a retained run read-only. The runner fixes `rng_seed = 12345`, sets
+`rng_run` to the repetition-attempt number, and never averages repetitions.
 
 With the default single repetition, the honest SU-only matrix is exactly:
 
 ```text
-6 STA counts * 3 RSSI ranges * 2 interference modes * 3 traffic modes * 1 SU mode
-  = 108 ns-3 runs
-108 runs * 3 BSS rows = 324 CSV rows
+7 STA counts * 3 RSSI ranges * 2 interference modes * 3 traffic modes * 1 SU mode
+  = 126 ns-3 runs
+126 runs * 3 BSS rows = 378 CSV rows
 ```
 
 ### Runner output, retention, and fixed Excel CSV
 
-The runner executes one ns-3 process at a time in stable matrix order and
-creates a new outer run tree without overwriting existing paths:
+The runner builds once and launches `./ns3 run --no-build` workers. The
+controller alone allocates directories, applies baselines, and publishes CSV
+rows in deterministic experiment/attempt/BSS order. Automatic `--jobs 0`
+reserves two logical CPUs and targets 20 percent `MemAvailable`; a positive
+`--jobs` is only a cap. `--memory-reserve-percent` accepts 15 through 50.
+Admission accounts for active-worker growth, and a complete run that
+materially falls below the 15 percent acceptance floor is rejected.
+
+The runner creates a new outer run tree without overwriting existing paths:
 
 ```text
 run/scripted_exp_<timestamp>/
@@ -1100,23 +1096,47 @@ run/scripted_exp_<timestamp>/
 |   `-- attempt_1/
 |       |-- output.json
 |       |-- stdout.log
-|       `-- stderr.log
+|       |-- stderr.log
+|       `-- resource_usage.json
 |-- experiment_002/
 |   `-- attempt_1/
 |       |-- output.json
 |       |-- stdout.log
-|       `-- stderr.log
+|       |-- stderr.log
+|       `-- resource_usage.json
+|-- resource_summary.json
 `-- ...
 ```
 
-Every JSON is validated before exactly three BSS rows are appended. A process,
-timeout, path, metadata, schema, inventory, formula, range, or validation-flag
-failure stops the matrix immediately. The failed attempt contributes no CSV
-rows. `results.csv`, completed attempt JSON files, and all attempt logs remain
-for audit; the runner does not delete successful or failed evidence.
+`resource_usage.json` records per-attempt peak process-tree RSS, minimum
+available memory, wall time, exit code, and monitor mode. The ordered
+`resource_summary.json` records `complete_matrix`,
+`requested_experiment_ids`, `executed_experiment_ids`,
+`auto_included_baseline_ids`, memory estimates, worker count, minima, and all
+attempt records. A subset therefore cannot be mistaken for a full matrix.
+Failure stops admissions and retains created JSON, logs, and resource files;
+only the contiguous validated CSV prefix is published.
 
-There is exactly one CSV with exactly 133 fixed columns: nine identity
-columns, four BSS columns, and four columns for each station index 0 through
+One accepted default full run has exactly 126 `output.json` files, 252
+stdout/stderr logs, 126 `resource_usage.json` files, 378 CSV data rows plus one
+header, and 193 columns per row. The independent auditor reconstructs JSON
+profiles, formulas, window merges, BSS values, matching baselines, every CSV
+cell and row, and resource counts without modifying the retained run.
+
+The matching one-STA aggregate uses the same RSSI, interference, traffic,
+MIMO, repetition, and BSS ID:
+
+```text
+bss_competition_overhead_vs_single_sta =
+  1 - aggregate_rate_N / matching_aggregate_rate_1
+```
+
+The one-STA row is `0.0`; a zero baseline is empty. Results are signed and not
+clamped. Because the aggregate counts retransmission bytes, this is not TCP
+goodput loss or pure contention, and in `dl` it covers STA TCP-ACK attempts.
+
+There is exactly one CSV with exactly 193 fixed columns: nine identity
+columns, four BSS columns, and six columns for each station index 0 through
 29. Their order is:
 
 ```text
@@ -1130,32 +1150,29 @@ traffic_mode
 mimo_mode
 bss_id
 
-avg_all_sta_theoretical_phy_rate_mbps
-avg_all_sta_practical_phy_rate_mbps
-bss_channel_efficiency
-bss_channel_contention_fraction
+bss_mean_dominant_data_phy_rate_mbps
+bss_mean_effective_phy_rate_mbps
+bss_aggregate_data_tx_rate_over_interval_mbps
+bss_competition_overhead_vs_single_sta
 
 for each i = 0, ..., 29:
-  sta_i_avg_theoretical_phy_rate_mbps
-  sta_i_avg_practical_phy_rate_mbps
-  sta_i_efficiency
-  sta_i_contention_fraction
+  sta_i_dominant_data_phy_rate_mbps
+  sta_i_dominant_data_profile_share
+  sta_i_effective_phy_rate_mbps
+  sta_i_data_tx_rate_over_interval_mbps
+  sta_i_data_tx_opportunity_gap_fraction
+  sta_i_tx_profile
 ```
 
-In that pattern, the decimal value of `i` is substituted literally in
-ascending order, so the first block starts with
-`sta_0_avg_theoretical_phy_rate_mbps` and the last starts with
-`sta_29_avg_theoretical_phy_rate_mbps`; no literal `sta_i` column exists.
+Profiles use compact `.15g` numbers, for example
+`W80_NSS2_MCS11:bytes=100500,ppdus=120,airtime_us=900`; multiple profiles are
+joined with `|` in ascending width/NSS/MCS order.
 
 One row is one BSS in one repetition attempt, uniquely identified by
 `experiment_id + repetition_attempt + bss_id`. Station columns whose index is
-not present in that configuration are all empty. For an existing STA with no
-qualifying overall PPDU, only its theoretical-rate, practical-rate, and
-efficiency cells are empty; its contention cell remains numeric, including
-`0.0`. The three BSS rate/efficiency cells are likewise empty only when that
-BSS has no defined STA rate, while BSS contention remains numeric. There are
-no extra diagnostic columns; detailed diagnostics remain in each retained
-JSON.
+not present in that configuration are all empty. For an inactive existing STA,
+only its interval-rate cell is numeric `0.0`; its other five cells are empty.
+Detailed diagnostics remain in each retained JSON.
 
 For direct Microsoft Excel opening, the CSV contract is semicolon delimiters,
 UTF-8 with BOM, CRLF line endings, decimal dots, and standard double-quote
@@ -1511,10 +1528,10 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
   -s contrib/llm/exp_scripts/tests -t contrib/llm/exp_scripts -p 'test_*.py' -v
 ```
 
-These tests cover the exact 108-configuration order, repetition/RNG mapping,
-strict JSON validation, formula reconstruction, fail-fast process ownership,
-retained paths, and the fixed Excel CSV contract without running the expensive
-real matrix.
+These tests cover the exact 126-configuration order, repetition/RNG mapping,
+strict JSON validation, independent audit reconstruction, resource-aware
+parallel scheduling, fail-fast process ownership, retained paths, and the
+fixed 193-column Excel CSV contract without running the expensive real matrix.
 
 ### Streaming-script tests
 
@@ -1564,8 +1581,9 @@ contrib/llm/
 |       |-- *.cc, *.h                 APP/TCP/MAC/PHY collection and summaries
 |       `-- json/                     Streaming writer and hierarchy serializers
 |-- exp_scripts/
-|   |-- saturated_tcp_experiment.py  Sequential benchmark runner entry point
-|   |-- saturated_tcp_benchmark/     Matrix, runner, validation, and CSV modules
+|   |-- saturated_tcp_experiment.py  Resource-aware benchmark runner entry point
+|   |-- audit_saturated_tcp_results.py Independent retained-run audit entry point
+|   |-- saturated_tcp_benchmark/     Matrix, runner, audit, resources, validation, CSV
 |   `-- tests/                        Deterministic benchmark-runner tests
 |-- model/
 |   |-- applications/                 Generators, sink, schedule, and AppTxTag
