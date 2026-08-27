@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+import threading
 import time
 import unittest
 from unittest import mock
@@ -35,14 +36,18 @@ def _write_process(
     children_by_thread: dict[int, str] | None = None,
     parent_pid: int = 1,
     start_time_ticks: int | None = None,
+    status_state: str | None = None,
+    stat_state: str = "S",
 ) -> None:
     process_directory = proc_root / str(process_id)
     process_directory.mkdir()
     status = "Name:\ttest\n"
+    if status_state is not None:
+        status += f"State:\t{status_state}\n"
     if rss_kb is not None:
         status += f"VmRSS:\t{rss_kb} kB\n"
     (process_directory / "status").write_text(status, encoding="ascii")
-    stat_fields = ["S", str(parent_pid), *("0" for _ in range(17))]
+    stat_fields = [stat_state, str(parent_pid), *("0" for _ in range(17))]
     stat_fields.append(str(start_time_ticks if start_time_ticks is not None else process_id * 10))
     (process_directory / "stat").write_text(
         f"{process_id} (test process) {' '.join(stat_fields)}\n",
@@ -254,7 +259,7 @@ class ProcParserTest(unittest.TestCase):
     def test_retries_one_transient_live_status_without_vmrss(self) -> None:
         with TemporaryDirectory() as directory:
             proc_root = Path(directory)
-            _write_process(proc_root, 200, rss_kb=7)
+            _write_process(proc_root, 200, rss_kb=7, stat_state="R")
             status_path = proc_root / "200/status"
             original_read_text = Path.read_text
             status_reads = 0
@@ -278,6 +283,7 @@ class ProcParserTest(unittest.TestCase):
         cases = (
             ("Name:\ttest\nState:\tS (sleeping)\n", "sleeping"),
             ("Name:\ttest\nState:\tReady\n", "non-code-running-prefix"),
+            ("Name:\ttest\nState:\tRR (malformed)\n", "malformed-state"),
             ("Name:\ttest\n", "missing-state"),
         )
         for first_status, case in cases:
@@ -303,6 +309,151 @@ class ProcParserTest(unittest.TestCase):
                     resources._read_process_rss_bytes(200, proc_root)
                 self.assertEqual(status_reads, 1)
 
+    def test_stale_running_status_uses_current_stat_zombie(self) -> None:
+        with TemporaryDirectory() as directory:
+            proc_root = Path(directory)
+            _write_process(
+                proc_root,
+                200,
+                rss_kb=None,
+                status_state="R (running)",
+                stat_state="Z",
+            )
+            self.assertIsNone(resources._read_process_rss_bytes(200, proc_root))
+
+    def test_retries_exit_transition_sequences_until_zombie(self) -> None:
+        cases = (
+            ("R (running)", "R (running)", "Z (zombie)"),
+            ("R (running)", "D (disk sleep)", "R (running)", "Z (zombie)"),
+        )
+        for states in cases:
+            with self.subTest(states=states), TemporaryDirectory() as directory:
+                proc_root = Path(directory)
+                _write_process(proc_root, 200, rss_kb=None, stat_state="R")
+                status_path = proc_root / "200/status"
+                state_reads = iter(states)
+                original_read_text = Path.read_text
+
+                def transition_status(path, *args, **kwargs):
+                    if path == status_path:
+                        state = next(state_reads)
+                        return f"Name:\ttest\nState:\t{state}\n"
+                    return original_read_text(path, *args, **kwargs)
+
+                with mock.patch.object(Path, "read_text", new=transition_status):
+                    self.assertIsNone(
+                        resources._read_process_rss_bytes(200, proc_root)
+                    )
+
+    def test_retries_running_or_uninterruptible_transition_until_valid_rss(self) -> None:
+        for state_code in ("R", "D"):
+            with self.subTest(state=state_code), TemporaryDirectory() as directory:
+                proc_root = Path(directory)
+                _write_process(
+                    proc_root,
+                    200,
+                    rss_kb=7,
+                    stat_state=state_code,
+                )
+                status_path = proc_root / "200/status"
+                original_read_text = Path.read_text
+                status_reads = 0
+
+                def transient_status(path, *args, **kwargs):
+                    nonlocal status_reads
+                    if path == status_path:
+                        status_reads += 1
+                        if status_reads == 1:
+                            return f"Name:\ttest\nState:\t{state_code}\n"
+                    return original_read_text(path, *args, **kwargs)
+
+                with mock.patch.object(Path, "read_text", new=transient_status):
+                    self.assertEqual(
+                        resources._read_process_rss_bytes(200, proc_root),
+                        7 * 1024,
+                    )
+                self.assertEqual(status_reads, 2)
+
+    def test_transition_retry_does_not_measure_reused_pid_instance(self) -> None:
+        with TemporaryDirectory() as directory:
+            proc_root = Path(directory)
+            _write_process(
+                proc_root,
+                200,
+                rss_kb=7,
+                start_time_ticks=2_000,
+                stat_state="R",
+            )
+            status_path = proc_root / "200/status"
+            stat_path = proc_root / "200/stat"
+            original_read_text = Path.read_text
+            status_reads = 0
+            stat_reads = 0
+
+            def reused_during_retry(path, *args, **kwargs):
+                nonlocal status_reads, stat_reads
+                contents = original_read_text(path, *args, **kwargs)
+                if path == status_path:
+                    status_reads += 1
+                    if status_reads == 1:
+                        return "Name:\ttest\nState:\tR (running)\n"
+                if path == stat_path:
+                    stat_reads += 1
+                    if stat_reads == 2:
+                        prefix, _, _start_time = contents.rstrip().rpartition(" ")
+                        return f"{prefix} 3000\n"
+                return contents
+
+            with mock.patch.object(Path, "read_text", new=reused_during_retry):
+                self.assertIsNone(
+                    resources._read_process_rss_bytes(200, proc_root)
+                )
+
+    def test_transition_retry_deadline_is_bounded_and_diagnostic(self) -> None:
+        class FakeClock:
+            def __init__(self) -> None:
+                self.now = 0.0
+                self.sleeps = []
+
+            def monotonic(self) -> float:
+                return self.now
+
+            def sleep(self, seconds: float) -> None:
+                self.sleeps.append(seconds)
+                self.now += seconds
+
+        for state_code in ("R", "D"):
+            with self.subTest(state=state_code), TemporaryDirectory() as directory:
+                proc_root = Path(directory)
+                _write_process(
+                    proc_root,
+                    200,
+                    rss_kb=None,
+                    status_state=state_code,
+                    stat_state=state_code,
+                )
+                status_path = proc_root / "200/status"
+                status_path.write_text(
+                    f"Name:\ttest\nState:\t{state_code}\nExtra:\t" + "x" * 5_000,
+                    encoding="ascii",
+                )
+                clock = FakeClock()
+                with self.assertRaises(ResourceError) as caught:
+                    resources._read_process_rss_bytes(
+                        200,
+                        proc_root,
+                        monotonic=clock.monotonic,
+                        sleep=clock.sleep,
+                    )
+                diagnostic = str(caught.exception)
+                self.assertIn(f"state={state_code}", diagnostic)
+                self.assertIn("status=", diagnostic)
+                self.assertIn("Name:\\ttest", diagnostic)
+                self.assertIn("truncated", diagnostic)
+                self.assertLess(len(diagnostic), 2_000)
+                self.assertGreaterEqual(clock.now, 0.010)
+                self.assertTrue(clock.sleeps)
+
     def test_missing_proc_capability_is_explicitly_sequential(self) -> None:
         with TemporaryDirectory() as directory:
             missing = Path(directory) / "missing"
@@ -320,6 +471,62 @@ class ProcParserTest(unittest.TestCase):
 @unittest.skipUnless(Path("/proc/self/status").is_file(), "Linux /proc is required")
 class LiveProcessMonitorTest(unittest.TestCase):
     """Exercise the real monitor against a bounded parent/child process tree."""
+
+    def test_fast_exit_rss_transition_is_tolerated_without_leaking_groups(self) -> None:
+        for iteration in range(24):
+            with self.subTest(iteration=iteration):
+                process = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import sys;"
+                        "allocation=bytearray(1024*1024);"
+                        "sys.stdout.write('1');sys.stdout.flush();"
+                        "sys.stdin.read(1)",
+                    ],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                release = None
+                try:
+                    self.assertEqual(process.stdout.read(1), b"1")
+                    self.assertGreater(
+                        resources._read_process_rss_bytes(process.pid, Path("/proc")),
+                        0,
+                    )
+
+                    def release_process() -> None:
+                        process.stdin.write(b"x")
+                        process.stdin.flush()
+                        process.stdin.close()
+
+                    release = threading.Thread(target=release_process)
+                    release.start()
+                    deadline = time.monotonic() + 1.0
+                    while time.monotonic() < deadline:
+                        if (
+                            resources._read_process_rss_bytes(
+                                process.pid,
+                                Path("/proc"),
+                            )
+                            is None
+                        ):
+                            break
+                    else:
+                        self.fail("exiting process never became unavailable")
+                    release.join()
+                    self.assertEqual(process.wait(timeout=1.0), 0)
+                    self.assertFalse(_process_group_exists(process.pid))
+                finally:
+                    if release is not None and release.is_alive():
+                        release.join(timeout=1.0)
+                    _cleanup_real_process(process, None)
+                    if process.stdin is not None and not process.stdin.closed:
+                        process.stdin.close()
+                    if process.stdout is not None and not process.stdout.closed:
+                        process.stdout.close()
 
     def test_monitors_child_memory_and_leaves_no_process_group_member(self) -> None:
         with TemporaryDirectory() as directory:
