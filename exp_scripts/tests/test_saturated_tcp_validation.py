@@ -418,6 +418,67 @@ class SaturatedTcpValidationTest(unittest.TestCase):
         self.assertIsNone(rows[2].mean_effective_phy_rate_mbps)
         self.assertEqual(rows[2].aggregate_data_tx_rate_over_interval_mbps, 0.0)
 
+    def test_fully_idle_output_may_have_no_sparse_windows(self) -> None:
+        document = deepcopy(self.document)
+        document["windows"] = []
+        for station in document["overall"]["stations"]:
+            station["phy_stats"].update(_idle_station_phy())
+        for access_point in document["overall"]["access_points"]:
+            access_point["phy_stats"].update(_bss_phy(2, overall=True))
+
+        rows = self.validate(document)
+
+        self.assertEqual(
+            tuple(row.aggregate_data_tx_rate_over_interval_mbps for row in rows),
+            (0.0, 0.0, 0.0),
+        )
+        self.assertEqual(
+            tuple(row.stations[0] for row in rows),
+            (StationCsvMetrics(None, None, None, 0.0, None, ""),) * 3,
+        )
+
+    def test_caller_expectations_cannot_override_fixed_scenario_metadata(self) -> None:
+        mutations = (
+            ("wifi", "guard_interval_ns", 1600),
+            ("wifi", "guard_interval_ns", 3200.0),
+            ("wifi", "rts_cts_threshold_bytes", 1),
+            ("wifi", "rts_cts_threshold_bytes", False),
+            ("wifi", "bandwidth_mhz", 40),
+            ("tcp", "segment_size_bytes", 1400),
+        )
+        for section, field, value in mutations:
+            with self.subTest(section=section, field=field, value=value):
+                document = deepcopy(self.document)
+                expected = deepcopy(self.effective)
+                document["experiment_metadata"]["configuration"][section][field] = value
+                expected[section][field] = value
+                with self.assertRaisesRegex(OutputValidationError, f"{section}.*{field}"):
+                    validate_output_document(
+                        document,
+                        self.configuration,
+                        repetition_attempt=1,
+                        expected_configuration=expected,
+                        source_path="fixture.json",
+                    )
+
+    def test_default_shared_categories_require_exact_json_scalar_types(self) -> None:
+        mutations = []
+        floating_counter = deepcopy(self.document)
+        floating_counter["overall"]["stations"][0]["general_stats"]["uplink"][
+            "estimated_transmitted_tcp_payload_bytes"
+        ] = 0.0
+        mutations.append(("general_stats", floating_counter))
+        integer_airtime = deepcopy(self.document)
+        integer_airtime["overall"]["stations"][0]["phy_stats"]["uplink"][
+            "transmission_airtime_us"
+        ] = 0
+        mutations.append(("phy_stats", integer_airtime))
+
+        for expected_path, document in mutations:
+            with self.subTest(expected_path=expected_path):
+                with self.assertRaisesRegex(OutputValidationError, expected_path):
+                    self.validate(document)
+
     def test_profile_and_station_formulas_are_independently_reconstructed(self) -> None:
         mutations: list[tuple[str, dict[str, object]]] = []
         for field, value in (

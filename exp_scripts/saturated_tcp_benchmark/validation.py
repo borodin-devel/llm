@@ -128,6 +128,27 @@ _PROFILE_KEYS = (
     "ppdu_attempt_count",
     "ppdu_airtime_us",
 )
+_FIXED_WIFI_METADATA = {
+    "band": "5GHz",
+    "channel_number": 42,
+    "bandwidth_mhz": 80,
+    "primary_20_index": 0,
+    "tx_power_dbm": 20.0,
+    "rate_manager": "ns3::MinstrelHtWifiManager",
+    "guard_interval_ns": 3200,
+    "rts_cts_threshold_bytes": 0,
+    "antennas": 2,
+    "max_tx_spatial_streams": 2,
+    "max_rx_spatial_streams": 2,
+}
+_FIXED_TCP_METADATA = {
+    "congestion_control": "ns3::TcpHighSpeed",
+    "segment_size_bytes": 1460,
+    "send_buffer_bytes": 33554432,
+    "receive_buffer_bytes": 33554432,
+    "wired_rate": "10Gbps",
+    "wired_delay": "0.1ms",
+}
 _METRIC_TOLERANCE = 1e-9
 _UINT32_MAX = (1 << 32) - 1
 
@@ -380,6 +401,26 @@ def _validate_configuration_shape(
     return result
 
 
+def _validate_fixed_configuration_metadata(
+    configuration: dict[str, object], source_path: str | Path
+) -> None:
+    for section, expected_values in (
+        ("wifi", _FIXED_WIFI_METADATA),
+        ("tcp", _FIXED_TCP_METADATA),
+    ):
+        for field, expected in expected_values.items():
+            if not _json_equal(
+                configuration[section][field],
+                expected,
+                strict_scalar_types=True,
+            ):
+                _fail(
+                    source_path,
+                    f"$.experiment_metadata.configuration.{section}.{field}",
+                    f"expected fixed value {expected!r} with exact JSON scalar type",
+                )
+
+
 def _default_expected_configuration(
     actual: dict[str, object],
     configuration: ExperimentConfiguration,
@@ -551,11 +592,15 @@ def _validate_entity_shape(
             _fail(source_path, f"{json_path}.{key}", "entity identity does not match inventory")
     defaults = _default_categories()
     for category in defaults:
-        if not _json_equal(record[category], defaults[category]):
+        if not _json_equal(
+            record[category], defaults[category], strict_scalar_types=True
+        ):
             _fail(source_path, f"{json_path}.{category}", "benchmark unrelated category must remain at shared-schema default")
     phy = _expect_keys(record["phy_stats"], _PHY_KEYS, source_path, f"{json_path}.phy_stats")
     remainder = {key: phy[key] for key in _default_phy_remainder()}
-    if not _json_equal(remainder, _default_phy_remainder()):
+    if not _json_equal(
+        remainder, _default_phy_remainder(), strict_scalar_types=True
+    ):
         _fail(source_path, f"{json_path}.phy_stats", "benchmark unrelated PHY fields must remain at shared-schema default")
     return record
 
@@ -741,8 +786,6 @@ def _validate_windows(
     source_path: str | Path,
 ) -> dict[tuple[int, int], list[tuple[_ProfileValues, ...]]]:
     windows = _expect_list(windows_value, source_path, "$.windows")
-    if not windows:
-        _fail(source_path, "$.windows", "expected at least one sparse benchmark window")
     profiles_by_station: dict[tuple[int, int], list[tuple[_ProfileValues, ...]]] = {}
     previous_index = -1
     for position, window_value in enumerate(windows):
@@ -909,6 +952,7 @@ def validate_output_document(
         _fail(source_path, "$.measurement_semantics", "does not exactly match saturated station-only semantics")
     metadata = _expect_keys(root["experiment_metadata"], ("configuration", "entity_inventory"), source_path, "$.experiment_metadata")
     actual_configuration = _validate_configuration_shape(metadata["configuration"], source_path, "$.experiment_metadata.configuration")
+    _validate_fixed_configuration_metadata(actual_configuration, source_path)
     if expected_configuration is None:
         expected_configuration = _default_expected_configuration(actual_configuration, configuration, repetition_attempt, source_path)
     else:
