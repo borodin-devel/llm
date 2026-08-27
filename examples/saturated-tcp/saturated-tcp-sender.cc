@@ -2,7 +2,9 @@
 
 #include "ns3/inet-socket-address.h"
 #include "ns3/node.h"
+#include "ns3/nstime.h"
 #include "ns3/packet.h"
+#include "ns3/simulator.h"
 #include "ns3/socket.h"
 #include "ns3/tcp-socket-factory.h"
 #include "ns3/uinteger.h"
@@ -20,6 +22,13 @@ namespace ns3
 NS_LOG_COMPONENT_DEFINE("SaturatedTcpSender");
 
 NS_OBJECT_ENSURE_REGISTERED(SaturatedTcpSender);
+
+namespace
+{
+
+constexpr int64_t RECONNECT_DELAY_SECONDS = 1;
+
+} // namespace
 
 TypeId
 SaturatedTcpSender::GetTypeId()
@@ -116,6 +125,14 @@ SaturatedTcpSender::DoStartApplication()
                         "saturated TCP sender local endpoint is not IPv4");
     }
 
+    OpenConnection();
+}
+
+void
+SaturatedTcpSender::OpenConnection()
+{
+    NS_ABORT_MSG_IF(!m_running, "cannot open saturated TCP connection after sender stop");
+    NS_ABORT_MSG_IF(m_ready, "cannot replace a ready saturated TCP connection");
     m_socket = Socket::CreateSocket(GetNode(), TcpSocketFactory::GetTypeId());
     NS_ABORT_MSG_IF(!m_socket, "saturated TCP sender could not create a TCP socket");
     NS_ABORT_MSG_IF(m_socket->GetSocketType() != Socket::NS3_SOCK_STREAM,
@@ -140,6 +157,18 @@ SaturatedTcpSender::DoStartApplication()
 }
 
 void
+SaturatedTcpSender::Reconnect()
+{
+    if (!m_running || m_ready)
+    {
+        return;
+    }
+    CloseSocket();
+    m_socket = nullptr;
+    OpenConnection();
+}
+
+void
 SaturatedTcpSender::DoStopApplication()
 {
     StopTraffic();
@@ -148,6 +177,7 @@ SaturatedTcpSender::DoStopApplication()
 void
 SaturatedTcpSender::CancelEvents()
 {
+    m_reconnectEvent.Cancel();
     m_unsentPacket = nullptr;
     m_readyCallback = Callback<void>();
     if (m_socket)
@@ -165,6 +195,7 @@ SaturatedTcpSender::ConnectionSucceeded(Ptr<Socket> socket)
     NS_ABORT_MSG_IF(!m_running, "stopped saturated TCP sender received connection success");
     NS_ABORT_MSG_IF(socket != m_socket, "saturated TCP sender received success for another socket");
     NS_ABORT_MSG_IF(m_ready, "saturated TCP sender reported connection success more than once");
+    m_reconnectEvent.Cancel();
     m_connected = true;
     m_ready = true;
 
@@ -180,13 +211,23 @@ SaturatedTcpSender::ConnectionSucceeded(Ptr<Socket> socket)
 void
 SaturatedTcpSender::ConnectionFailed(Ptr<Socket> socket)
 {
+    NS_ABORT_MSG_IF(!m_running, "stopped saturated TCP sender received connection failure");
+    NS_ABORT_MSG_IF(socket != m_socket, "saturated TCP sender received failure for another socket");
+    NS_ABORT_MSG_IF(m_ready, "ready saturated TCP sender received connection failure");
     m_connected = false;
     Address local;
     socket->GetSockName(local);
     m_connectionFailure(socket, local, m_peer);
-    NS_FATAL_ERROR("saturated TCP sender connection failed from "
-                   << local << " to " << m_peer << ": socket error "
-                   << static_cast<int>(socket->GetErrno()));
+    NS_LOG_WARN("Saturated TCP sender connection failed from "
+                << local << " to " << m_peer << ": socket error "
+                << static_cast<int>(socket->GetErrno()) << "; retrying with a fresh socket in "
+                << RECONNECT_DELAY_SECONDS << " s");
+    socket->SetConnectCallback(MakeNullCallback<void, Ptr<Socket>>(),
+                               MakeNullCallback<void, Ptr<Socket>>());
+    socket->SetRecvCallback(MakeNullCallback<void, Ptr<Socket>>());
+    socket->SetSendCallback(MakeNullCallback<void, Ptr<Socket>, uint32_t>());
+    m_reconnectEvent =
+        Simulator::Schedule(Seconds(RECONNECT_DELAY_SECONDS), &SaturatedTcpSender::Reconnect, this);
 }
 
 void

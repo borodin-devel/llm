@@ -27,7 +27,7 @@ namespace
 {
 
 constexpr int64_t MEASUREMENT_DURATION_NS = 1'000'000'000;
-constexpr int64_t READINESS_TIMEOUT_SECONDS = 200;
+constexpr int64_t READINESS_TIMEOUT_SECONDS = 400;
 
 /**
  * Disable application callbacks and close one packet-sink socket.

@@ -2,6 +2,7 @@
 #define SATURATED_TCP_SENDER_H
 
 #include "ns3/callback.h"
+#include "ns3/event-id.h"
 #include "ns3/ptr.h"
 #include "ns3/source-application.h"
 
@@ -61,6 +62,12 @@ class SaturatedTcpSender : public SourceApplication
     void DoStopApplication() override;
     void CancelEvents() override;
 
+    /** Create, configure, bind, and connect one fresh TCP socket. */
+    void OpenConnection();
+
+    /** Replace a failed TCP socket and begin a fresh connection cohort. */
+    void Reconnect();
+
     /**
      * Handle successful TCP connection establishment.
      *
@@ -89,6 +96,7 @@ class SaturatedTcpSender : public SourceApplication
     uint32_t m_sendSize{512};         ///< Application packet size in bytes.
     Ptr<Packet> m_unsentPacket;       ///< Packet or fragment retained after buffer saturation.
     Callback<void> m_readyCallback;   ///< One-shot TCP readiness notification.
+    EventId m_reconnectEvent;         ///< Pending fresh-socket retry after connection failure.
     bool m_applicationStarted{false}; ///< Whether application startup has run.
     bool m_running{false};            ///< Whether the application owns a live socket.
     bool m_ready{false};              ///< Whether TCP connected and readiness was emitted.

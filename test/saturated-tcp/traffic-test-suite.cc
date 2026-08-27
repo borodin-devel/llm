@@ -194,6 +194,43 @@ IgnoreReady()
 }
 
 /**
+ * Increment one readiness counter.
+ *
+ * @param count Counter to increment.
+ */
+void
+CountReady(uint32_t* count)
+{
+    ++*count;
+}
+
+/**
+ * Record one source-application connection event.
+ *
+ * @param count Event counter to increment.
+ * @param capturedSocket Destination for the event socket.
+ * @param capturedLocal Destination for the local endpoint.
+ * @param capturedRemote Destination for the remote endpoint.
+ * @param socket Event socket.
+ * @param local Local endpoint.
+ * @param remote Remote endpoint.
+ */
+void
+RecordConnectionEvent(uint32_t* count,
+                      Ptr<Socket>* capturedSocket,
+                      Address* capturedLocal,
+                      Address* capturedRemote,
+                      Ptr<Socket> socket,
+                      const Address& local,
+                      const Address& remote)
+{
+    ++*count;
+    *capturedSocket = socket;
+    *capturedLocal = local;
+    *capturedRemote = remote;
+}
+
+/**
  * @ingroup tests
  *
  * Verify readiness gating, unlimited refill, and stop cleanup over real TCP.
@@ -395,39 +432,137 @@ SaturatedTcpSenderDuplicateStartTestCase::DoRun()
 /**
  * @ingroup tests
  *
- * Verify that a refused TCP connection produces a clear fatal diagnostic.
+ * Verify that a failed TCP cohort reconnects with a fresh configured socket.
  */
-class SaturatedTcpSenderConnectionFailureTestCase : public TestCase
+class SaturatedTcpSenderConnectionRetryTestCase : public TestCase
 {
   public:
-    /** Construct the refused-connection test. */
-    SaturatedTcpSenderConnectionFailureTestCase();
+    /** Construct the fresh-socket retry test. */
+    SaturatedTcpSenderConnectionRetryTestCase();
 
   private:
     void DoRun() override;
 };
 
-SaturatedTcpSenderConnectionFailureTestCase::SaturatedTcpSenderConnectionFailureTestCase()
-    : TestCase("diagnose saturated TCP connection failure")
+SaturatedTcpSenderConnectionRetryTestCase::SaturatedTcpSenderConnectionRetryTestCase()
+    : TestCase("retry saturated TCP readiness with a fresh configured socket")
 {
 }
 
 void
-SaturatedTcpSenderConnectionFailureTestCase::DoRun()
+SaturatedTcpSenderConnectionRetryTestCase::DoRun()
 {
 #ifdef __unix__
     const auto result = RunFatalPath([] {
         Config::SetDefault("ns3::TcpSocket::ConnTimeout", TimeValue(MilliSeconds(10)));
         Config::SetDefault("ns3::TcpSocket::ConnCount", UintegerValue(1));
-        auto fixture = BuildSenderFixture(false, MakeCallback(&IgnoreReady));
+        uint32_t readyCount = 0;
+        uint32_t failureCount = 0;
+        uint32_t successCount = 0;
+        Ptr<Socket> failedSocket;
+        Ptr<Socket> successfulSocket;
+        Address failedLocal;
+        Address failedRemote;
+        Address successfulLocal;
+        Address successfulRemote;
+
+        auto fixture = BuildSenderFixture(true, MakeCallback(&CountReady).Bind(&readyCount));
+        fixture.sink->SetStartTime(MilliSeconds(100));
+        fixture.sink->SetStopTime(Seconds(2));
+        fixture.sender->SetAttribute("Tos", UintegerValue(0x28));
+        fixture.sender->TraceConnectWithoutContext(
+            "ConnectionFailed",
+            MakeCallback(&RecordConnectionEvent)
+                .Bind(&failureCount, &failedSocket, &failedLocal, &failedRemote));
+        fixture.sender->TraceConnectWithoutContext(
+            "ConnectionSucceeded",
+            MakeCallback(&RecordConnectionEvent)
+                .Bind(&successCount, &successfulSocket, &successfulLocal, &successfulRemote));
         Simulator::Stop(Seconds(2));
         Simulator::Run();
+
+        const auto expectedLocal = InetSocketAddress(fixture.interfaces.GetAddress(0), 11000);
+        const auto expectedRemote = InetSocketAddress(fixture.interfaces.GetAddress(1), 21000);
+        const auto actualLocal = InetSocketAddress::ConvertFrom(successfulLocal);
+        const auto actualRemote = InetSocketAddress::ConvertFrom(successfulRemote);
+        if (failureCount != 1 || successCount != 1 || readyCount != 1 || !failedSocket ||
+            !successfulSocket || failedSocket == successfulSocket ||
+            !InetSocketAddress::IsMatchingType(successfulLocal) ||
+            actualLocal.GetIpv4() != expectedLocal.GetIpv4() ||
+            actualLocal.GetPort() != expectedLocal.GetPort() ||
+            !InetSocketAddress::IsMatchingType(successfulRemote) ||
+            actualRemote.GetIpv4() != expectedRemote.GetIpv4() ||
+            actualRemote.GetPort() != expectedRemote.GetPort() ||
+            successfulSocket->GetIpTos() != 0x28 || fixture.sink->GetTotalRx() != 0)
+        {
+            std::_Exit(EXIT_FAILURE);
+        }
     });
-    NS_TEST_ASSERT_MSG_EQ(result.launched, true, "Could not create fatal-path child process");
-    NS_TEST_ASSERT_MSG_EQ(result.failed, true, "Refused TCP connection was not fatal");
-    NS_TEST_ASSERT_MSG_NE(result.diagnostic.find("saturated TCP sender connection failed"),
-                          std::string::npos,
-                          "Connection failure omitted the saturated sender diagnostic");
+    NS_TEST_ASSERT_MSG_EQ(result.launched, true, "Could not create reconnect child process");
+    NS_TEST_ASSERT_MSG_EQ(result.failed,
+                          false,
+                          "Fresh-socket readiness retry failed: " << result.diagnostic);
+#endif
+}
+
+/**
+ * @ingroup tests
+ *
+ * Verify that sender stop cancels a pending fresh-socket retry.
+ */
+class SaturatedTcpSenderRetryCancellationTestCase : public TestCase
+{
+  public:
+    /** Construct the pending-retry cancellation test. */
+    SaturatedTcpSenderRetryCancellationTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+SaturatedTcpSenderRetryCancellationTestCase::SaturatedTcpSenderRetryCancellationTestCase()
+    : TestCase("cancel saturated TCP reconnect when the sender stops")
+{
+}
+
+void
+SaturatedTcpSenderRetryCancellationTestCase::DoRun()
+{
+#ifdef __unix__
+    const auto result = RunFatalPath([] {
+        Config::SetDefault("ns3::TcpSocket::ConnTimeout", TimeValue(MilliSeconds(10)));
+        Config::SetDefault("ns3::TcpSocket::ConnCount", UintegerValue(1));
+        uint32_t readyCount = 0;
+        uint32_t failureCount = 0;
+        uint32_t successCount = 0;
+        Ptr<Socket> failedSocket;
+        Ptr<Socket> successfulSocket;
+        Address failedLocal;
+        Address failedRemote;
+        Address successfulLocal;
+        Address successfulRemote;
+
+        auto fixture = BuildSenderFixture(false, MakeCallback(&CountReady).Bind(&readyCount));
+        fixture.sender->TraceConnectWithoutContext(
+            "ConnectionFailed",
+            MakeCallback(&RecordConnectionEvent)
+                .Bind(&failureCount, &failedSocket, &failedLocal, &failedRemote));
+        fixture.sender->TraceConnectWithoutContext(
+            "ConnectionSucceeded",
+            MakeCallback(&RecordConnectionEvent)
+                .Bind(&successCount, &successfulSocket, &successfulLocal, &successfulRemote));
+        fixture.sender->SetStopTime(MilliSeconds(100));
+        Simulator::Stop(Seconds(2));
+        Simulator::Run();
+        if (failureCount != 1 || successCount != 0 || readyCount != 0)
+        {
+            std::_Exit(EXIT_FAILURE);
+        }
+    });
+    NS_TEST_ASSERT_MSG_EQ(result.launched, true, "Could not create retry-cancellation child");
+    NS_TEST_ASSERT_MSG_EQ(result.failed,
+                          false,
+                          "Stopped sender retained a stale reconnect: " << result.diagnostic);
 #endif
 }
 
@@ -1065,7 +1200,7 @@ SaturatedReadinessBarrierDuplicateTestCase::DoRun()
 /**
  * @ingroup tests
  *
- * Verify that a TCP retry after 30 seconds can still complete readiness.
+ * Verify that a complete replacement TCP cohort can still report readiness.
  */
 class SaturatedReadinessBarrierDelayedReadyTestCase : public TestCase
 {
@@ -1078,7 +1213,7 @@ class SaturatedReadinessBarrierDelayedReadyTestCase : public TestCase
 };
 
 SaturatedReadinessBarrierDelayedReadyTestCase::SaturatedReadinessBarrierDelayedReadyTestCase()
-    : TestCase("accept saturated readiness at the 45-second TCP retry")
+    : TestCase("accept saturated readiness through one replacement TCP cohort")
 {
 }
 
@@ -1098,10 +1233,10 @@ SaturatedReadinessBarrierDelayedReadyTestCase::DoRun()
                                    MakeCallback(&BarrierRecorder::StopSender, &recorder).Bind(0));
         sender->SetReadyCallback(ready);
         barrier.FinalizeRegistration();
-        Simulator::Schedule(Seconds(45), ready);
+        Simulator::Schedule(Seconds(382), ready);
         Simulator::Run();
         if (!barrier.IsMeasurementComplete() ||
-            barrier.GetExperimentStartNs() != Seconds(46).GetNanoSeconds())
+            barrier.GetExperimentStartNs() != Seconds(383).GetNanoSeconds())
         {
             std::_Exit(EXIT_FAILURE);
         }
@@ -1112,7 +1247,7 @@ SaturatedReadinessBarrierDelayedReadyTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(
         result.failed,
         false,
-        "Readiness at the 45-second TCP retry was rejected: " << result.diagnostic);
+        "Readiness during a replacement TCP cohort was rejected: " << result.diagnostic);
 #endif
 }
 
@@ -1414,7 +1549,8 @@ CreateSaturatedTcpTrafficTestCases()
     return {new SaturatedTcpSenderLifecycleTestCase,
             new SaturatedTcpSenderBeforeReadyTestCase,
             new SaturatedTcpSenderDuplicateStartTestCase,
-            new SaturatedTcpSenderConnectionFailureTestCase,
+            new SaturatedTcpSenderConnectionRetryTestCase,
+            new SaturatedTcpSenderRetryCancellationTestCase,
             new SaturatedTcpSinkEndpointCleanupTestCase,
             new SaturatedReadinessBarrierEpochTestCase,
             new SaturatedReadinessBarrierLifetimeTestCase,
