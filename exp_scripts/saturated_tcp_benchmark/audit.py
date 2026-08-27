@@ -134,6 +134,7 @@ class _Bss:
 class _Attempt:
     configuration: ExperimentConfiguration
     repetition_attempt: int
+    repetitions: int
     stations: dict[tuple[int, int], _Station]
     bsses: dict[int, _Bss]
 
@@ -435,6 +436,15 @@ def _parse_attempt(
     actual = metadata.get("configuration")
     if type(actual) is not dict:
         _fail(path, "configuration metadata must be an object")
+    script = actual.get("script")
+    if type(script) is not dict:
+        _fail(path, "script configuration metadata must be an object")
+    repetitions = _integer(
+        script.get("repetitions"),
+        path,
+        "script.repetitions",
+        minimum=1,
+    )
     benchmark = actual.get("benchmark")
     expected_benchmark = {
         "sta_count_per_bss": configuration.sta_count_per_bss,
@@ -580,7 +590,7 @@ def _parse_attempt(
         bsses[bss_id] = bss
     if list(bsses) != [0, 1, 2]:
         _fail(path, "overall BSS inventory/order is not dense")
-    return _Attempt(configuration, repetition_attempt, stations, bsses)
+    return _Attempt(configuration, repetition_attempt, repetitions, stations, bsses)
 
 
 def _compact(value: float) -> str:
@@ -851,10 +861,10 @@ def _validate_resource_summary_aggregates(
         required_estimate = (max(peaks) * 5 + 3) // 4
         if (
             type(worker_estimate) is not int
-            or worker_estimate < required_estimate
+            or worker_estimate != required_estimate
         ):
             discrepancies.append(
-                f"{path}: worker_peak_estimate_bytes is below the observed 1.25 margin"
+                f"{path}: worker_peak_estimate_bytes does not equal the observed 1.25 margin"
             )
     elif worker_estimate is not None:
         discrepancies.append(
@@ -901,6 +911,34 @@ def _validate_resource_summary_aggregates(
     elif summary_minimum_percent is not None:
         discrepancies.append(
             f"{path}: minimum_mem_available_percent must be null without memory measurements"
+        )
+
+
+def _validate_declared_repetition_lattice(
+    attempts: list[_Attempt],
+    executed_ids: list[int],
+    path: Path,
+    discrepancies: list[str],
+) -> None:
+    declared_repetitions = {attempt.repetitions for attempt in attempts}
+    if len(declared_repetitions) != 1:
+        discrepancies.append(
+            f"{path}: outputs do not declare one consistent script.repetitions value"
+        )
+        return
+    repetitions = next(iter(declared_repetitions))
+    expected = [
+        (experiment_id, repetition_attempt)
+        for experiment_id in executed_ids
+        for repetition_attempt in range(1, repetitions + 1)
+    ]
+    observed = [
+        (attempt.configuration.experiment_id, attempt.repetition_attempt)
+        for attempt in attempts
+    ]
+    if observed != expected:
+        discrepancies.append(
+            f"{path}: attempts do not match the output-declared repetition lattice"
         )
 
 
@@ -996,8 +1034,18 @@ def audit_run_directory(run_directory: str | Path) -> AuditReport:
         summary_path,
         discrepancies,
     )
-    if len(parsed_attempts) == expected_attempt_count:
-        parsed_attempts.sort(key=lambda item: (item.configuration.experiment_id, item.repetition_attempt))
+    parsed_attempts.sort(
+        key=lambda item: (
+            item.configuration.experiment_id,
+            item.repetition_attempt,
+        )
+    )
+    _validate_declared_repetition_lattice(
+        parsed_attempts,
+        executed_ids,
+        summary_path,
+        discrepancies,
+    )
     baseline_values: list[float] = []
     expected_rows: list[list[str]] = []
     try:

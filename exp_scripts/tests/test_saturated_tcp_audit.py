@@ -546,6 +546,42 @@ class SaturatedTcpAuditTest(unittest.TestCase):
 
         self.assertTrue(any("lattice" in item for item in self.audit().discrepancies))
 
+    def test_output_declared_repetitions_define_the_exact_attempt_lattice(self) -> None:
+        output_paths = (
+            self.run_directory / "experiment_001/attempt_1/output.json",
+            self.run_directory / "experiment_019/attempt_1/output.json",
+        )
+        originals = [json.loads(path.read_text(encoding="utf-8")) for path in output_paths]
+
+        for path, document in zip(output_paths, deepcopy(originals)):
+            document["experiment_metadata"]["configuration"]["script"][
+                "repetitions"
+            ] = 2
+            path.write_text(json.dumps(document), encoding="utf-8")
+        self.assertTrue(
+            any("declared repetition lattice" in item for item in self.audit().discrepancies)
+        )
+
+        for path, document in zip(output_paths, deepcopy(originals)):
+            path.write_text(json.dumps(document), encoding="utf-8")
+        inconsistent = deepcopy(originals[1])
+        inconsistent["experiment_metadata"]["configuration"]["script"][
+            "repetitions"
+        ] = 2
+        output_paths[1].write_text(json.dumps(inconsistent), encoding="utf-8")
+        self.assertTrue(
+            any("consistent script.repetitions" in item for item in self.audit().discrepancies)
+        )
+
+        for path, document in zip(output_paths, deepcopy(originals)):
+            document["experiment_metadata"]["configuration"]["script"][
+                "repetitions"
+            ] = 0
+            path.write_text(json.dumps(document), encoding="utf-8")
+        self.assertTrue(
+            any("script.repetitions" in item for item in self.audit().discrepancies)
+        )
+
     def test_manifest_rejects_empty_and_duplicate_selection_or_attempt_keys(self) -> None:
         summary_path = self.run_directory / "resource_summary.json"
         original = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -574,6 +610,7 @@ class SaturatedTcpAuditTest(unittest.TestCase):
             ("memory_reserve_percent", 14),
             ("calibrated_peak_rss_bytes", 999),
             ("worker_peak_estimate_bytes", -1),
+            ("worker_peak_estimate_bytes", 10**12),
             ("minimum_mem_available_bytes", 999999),
             ("minimum_mem_available_percent", 999.0),
         )
