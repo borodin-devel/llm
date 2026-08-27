@@ -2,6 +2,8 @@
 
 using namespace ns3;
 
+std::vector<TestCase*> CreateSaturatedTcpDataTxMetricTestCases();
+
 namespace
 {
 
@@ -46,6 +48,7 @@ LlmTestSuite::LlmTestSuite()
     AddCases(CreateSaturatedTcpPropagationTestCases());
     AddCases(CreateSaturatedTcpAccessWaitTestCases());
     AddCases(CreateSaturatedTcpStaPhyMetricTestCases());
+    AddCases(CreateSaturatedTcpDataTxMetricTestCases());
     AddCases(CreateSaturatedTcpBenchmarkOutputTestCases());
     AddCases(CreateSaturatedTcpTrafficTestCases());
     AddCases(CreateSaturatedTcpTopologyTestCases());
