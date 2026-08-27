@@ -152,13 +152,18 @@ def _read_process_rss_bytes(process_id: int, proc_root: Path) -> int | None:
         except ResourceError:
             if any(line.startswith("VmRSS:") for line in contents.splitlines()):
                 raise
-            if any(
-                line.startswith("State:")
-                and line[len("State:") :].lstrip().startswith("Z")
+            state_values = tuple(
+                line[len("State:") :].lstrip()
                 for line in contents.splitlines()
-            ):
+                if line.startswith("State:")
+            )
+            state_codes = tuple(
+                state.split(maxsplit=1)[0] if state else ""
+                for state in state_values
+            )
+            if "Z" in state_codes:
                 return None
-            if read_attempt == 0:
+            if read_attempt == 0 and "R" in state_codes:
                 time.sleep(0)
                 continue
             raise

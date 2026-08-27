@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import _thread
 import csv
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor as RealThreadPoolExecutor
 from io import StringIO
 import json
 import os
@@ -912,6 +912,119 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
             )
             self.assertTrue(id_three_started.is_set())
 
+    def test_admission_uses_memavailable_sample_after_live_rss_growth(self) -> None:
+        configurations = build_matrix()[:3]
+        timestamp = "rss_then_memory"
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            growth_sampled = threading.Event()
+            id_two_waiting = threading.Event()
+            release_id_two = threading.Event()
+            id_three_started = threading.Event()
+            controller_errors = []
+
+            class FixedMonitor:
+                def __init__(self, root_pid, capability):
+                    pass
+
+                def start(self):
+                    pass
+
+                def finish(self, exit_code):
+                    return ResourceMeasurement(
+                        100,
+                        1_000,
+                        4_400,
+                        44.0,
+                        0.01,
+                        exit_code,
+                        LINUX_PROC_MONITOR_MODE,
+                    )
+
+            class WaitingProcess(_FakeProcess):
+                def wait(self, timeout=None):
+                    id_two_waiting.set()
+                    if not release_id_two.wait(3.0):
+                        raise AssertionError("test did not release experiment 2")
+                    return super().wait(timeout)
+
+            def fake_process(command, **kwargs):
+                attempt_directory = Path(
+                    next(
+                        argument.split("=", 1)[1]
+                        for argument in shlex.split(command[-1])
+                        if argument.startswith("--general-run-folder=")
+                    )
+                )
+                experiment_id = int(
+                    attempt_directory.parent.name.split("_", 1)[1]
+                )
+                write_valid_output(
+                    attempt_directory / "output.json",
+                    configurations[experiment_id - 1],
+                    attempt_directory,
+                )
+                if experiment_id == 2:
+                    process = WaitingProcess(0)
+                else:
+                    process = _FakeProcess(0)
+                if experiment_id == 3:
+                    id_three_started.set()
+                process.pid = 985_000 + experiment_id
+                return process
+
+            def read_active_rss(process_ids):
+                if not process_ids:
+                    return ()
+                if not id_two_waiting.wait(2.0):
+                    raise AssertionError("active worker did not begin waiting")
+                growth_sampled.set()
+                return (1_000,)
+
+            capability = ResourceCapability(
+                LINUX_PROC_MONITOR_MODE,
+                Path("/proc"),
+                Path("/proc/meminfo"),
+                MemorySnapshot(10_000, 4_400),
+                "test Linux proc capability",
+            )
+
+            def run_controller():
+                try:
+                    run_benchmark(
+                        ns3_root=root,
+                        config_path=DEFAULT_CONFIG,
+                        timestamp=timestamp,
+                        configurations=configurations,
+                        process_factory=fake_process,
+                        build_runner=lambda command, cwd: 0,
+                        resource_capability=capability,
+                        resource_monitor_factory=FixedMonitor,
+                        memory_snapshot_reader=lambda: MemorySnapshot(
+                            10_000,
+                            3_499 if growth_sampled.is_set() else 4_400,
+                        ),
+                        active_rss_reader=read_active_rss,
+                        logical_cpu_count=8,
+                        jobs=2,
+                        output=StringIO(),
+                    )
+                except BaseException as error:
+                    controller_errors.append(error)
+
+            controller = threading.Thread(target=run_controller)
+            controller.start()
+            self.assertTrue(id_two_waiting.wait(2.0))
+            self.assertTrue(growth_sampled.wait(2.0))
+            admitted_from_stale_snapshot = id_three_started.wait(0.2)
+            release_id_two.set()
+            controller.join(3.0)
+
+            self.assertFalse(controller.is_alive())
+            self.assertEqual(controller_errors, [])
+            self.assertFalse(admitted_from_stale_snapshot)
+            self.assertTrue(id_three_started.is_set())
+
     def test_experiment_id_parser_and_cli_forward_exact_scheduler_controls(self) -> None:
         self.assertEqual(runner.parse_experiment_ids("19, 37,126"), (19, 37, 126))
         for invalid in ("", "19,", "19,19", "0", "127", "true"):
@@ -1170,6 +1283,140 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
             self.assertEqual(process_calls, [1, 2])
             self.assertFalse((run_directory / "experiment_003").exists())
 
+    def test_failure_queued_while_rss_reader_blocks_gates_next_submission(self) -> None:
+        configurations = build_matrix()[:3]
+        timestamp = "blocked_reader_failure"
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            allow_failure = threading.Event()
+            failure_queued = threading.Event()
+            process_calls = []
+
+            class FutureProxy:
+                def __init__(self, future, experiment_id):
+                    self._future = future
+                    self._experiment_id = experiment_id
+
+                def add_done_callback(self, callback):
+                    def observed_callback(_future):
+                        callback(self)
+                        if self._experiment_id == 2:
+                            failure_queued.set()
+
+                    self._future.add_done_callback(observed_callback)
+
+                def cancel(self):
+                    return self._future.cancel()
+
+                def cancelled(self):
+                    return self._future.cancelled()
+
+                def result(self):
+                    return self._future.result()
+
+            class ObservedExecutor:
+                def __init__(self, **kwargs):
+                    self._executor = RealThreadPoolExecutor(**kwargs)
+
+                def submit(self, function, **kwargs):
+                    experiment_id = kwargs["context"].attempt.configuration.experiment_id
+                    return FutureProxy(
+                        self._executor.submit(function, **kwargs),
+                        experiment_id,
+                    )
+
+                def shutdown(self, **kwargs):
+                    self._executor.shutdown(**kwargs)
+
+            class FixedMonitor:
+                def __init__(self, root_pid, capability):
+                    pass
+
+                def start(self):
+                    pass
+
+                def finish(self, exit_code):
+                    return ResourceMeasurement(
+                        100,
+                        1_000,
+                        4_400,
+                        44.0,
+                        0.01,
+                        exit_code,
+                        LINUX_PROC_MONITOR_MODE,
+                    )
+
+            class ReleasedFailureProcess(_FakeProcess):
+                def wait(self, timeout=None):
+                    if not allow_failure.wait(3.0):
+                        raise AssertionError("RSS reader did not release failure")
+                    return super().wait(timeout)
+
+            def fake_process(command, **kwargs):
+                attempt_directory = Path(
+                    next(
+                        argument.split("=", 1)[1]
+                        for argument in shlex.split(command[-1])
+                        if argument.startswith("--general-run-folder=")
+                    )
+                )
+                experiment_id = int(
+                    attempt_directory.parent.name.split("_", 1)[1]
+                )
+                process_calls.append(experiment_id)
+                if experiment_id != 2:
+                    write_valid_output(
+                        attempt_directory / "output.json",
+                        configurations[experiment_id - 1],
+                        attempt_directory,
+                    )
+                if experiment_id == 2:
+                    process = ReleasedFailureProcess(7)
+                else:
+                    process = _FakeProcess(0)
+                process.pid = 986_000 + experiment_id
+                return process
+
+            def blocking_active_rss(process_ids):
+                if not process_ids:
+                    return ()
+                allow_failure.set()
+                if not failure_queued.wait(3.0):
+                    raise AssertionError("worker failure was not queued")
+                return (1_000,)
+
+            capability = ResourceCapability(
+                LINUX_PROC_MONITOR_MODE,
+                Path("/proc"),
+                Path("/proc/meminfo"),
+                MemorySnapshot(10_000, 4_400),
+                "test Linux proc capability",
+            )
+            with (
+                mock.patch.object(runner, "ThreadPoolExecutor", ObservedExecutor),
+                self.assertRaisesRegex(RunnerError, "return code 7"),
+            ):
+                run_benchmark(
+                    ns3_root=root,
+                    config_path=DEFAULT_CONFIG,
+                    timestamp=timestamp,
+                    configurations=configurations,
+                    process_factory=fake_process,
+                    build_runner=lambda command, cwd: 0,
+                    resource_capability=capability,
+                    resource_monitor_factory=FixedMonitor,
+                    memory_snapshot_reader=lambda: MemorySnapshot(10_000, 4_400),
+                    active_rss_reader=blocking_active_rss,
+                    logical_cpu_count=8,
+                    jobs=2,
+                    output=StringIO(),
+                )
+
+            self.assertEqual(process_calls, [1, 2])
+            self.assertFalse(
+                (root / "run" / f"scripted_exp_{timestamp}/experiment_003").exists()
+            )
+
     def test_no_active_worker_with_unsatisfied_reserve_fails_without_waiting(self) -> None:
         configurations = build_matrix()[:2]
         timestamp = "no_active_memory"
@@ -1311,6 +1558,144 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                 allow_popen.set()
                 for process in processes:
                     _cleanup_real_process_group(process)
+
+    def test_failure_sets_sticky_stop_before_cancelling_queued_future(self) -> None:
+        configurations = build_matrix()[:3]
+        timestamp = "stop_before_cancel"
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            id_three_submitted = threading.Event()
+            process_calls = []
+
+            class DeferredFuture:
+                def __init__(self, function, kwargs):
+                    self._function = function
+                    self._kwargs = kwargs
+                    self._callbacks = []
+                    self._done = False
+                    self._result = None
+                    self._error = None
+
+                def add_done_callback(self, callback):
+                    if self._done:
+                        callback(self)
+                    else:
+                        self._callbacks.append(callback)
+
+                def cancel(self):
+                    if self._done:
+                        return False
+                    try:
+                        self._result = self._function(**self._kwargs)
+                    except BaseException as error:
+                        self._error = error
+                    self._done = True
+                    for callback in self._callbacks:
+                        callback(self)
+                    return False
+
+                def cancelled(self):
+                    return False
+
+                def result(self):
+                    if self._error is not None:
+                        raise self._error
+                    return self._result
+
+            class DeferredExecutor:
+                def __init__(self, **kwargs):
+                    self._executor = RealThreadPoolExecutor(**kwargs)
+
+                def submit(self, function, **kwargs):
+                    experiment_id = kwargs["context"].attempt.configuration.experiment_id
+                    if experiment_id == 3:
+                        future = DeferredFuture(function, kwargs)
+                        id_three_submitted.set()
+                        return future
+                    return self._executor.submit(function, **kwargs)
+
+                def shutdown(self, **kwargs):
+                    self._executor.shutdown(**kwargs)
+
+            class FixedMonitor:
+                def __init__(self, root_pid, capability):
+                    pass
+
+                def start(self):
+                    pass
+
+                def finish(self, exit_code):
+                    return ResourceMeasurement(
+                        100,
+                        1_000,
+                        90_000,
+                        90.0,
+                        0.01,
+                        exit_code,
+                        LINUX_PROC_MONITOR_MODE,
+                    )
+
+            class FailureAfterQueueProcess(_FakeProcess):
+                def wait(self, timeout=None):
+                    if not id_three_submitted.wait(3.0):
+                        raise AssertionError("experiment 3 was not queued")
+                    return super().wait(timeout)
+
+            def fake_process(command, **kwargs):
+                attempt_directory = Path(
+                    next(
+                        argument.split("=", 1)[1]
+                        for argument in shlex.split(command[-1])
+                        if argument.startswith("--general-run-folder=")
+                    )
+                )
+                experiment_id = int(
+                    attempt_directory.parent.name.split("_", 1)[1]
+                )
+                process_calls.append(experiment_id)
+                if experiment_id != 2:
+                    write_valid_output(
+                        attempt_directory / "output.json",
+                        configurations[experiment_id - 1],
+                        attempt_directory,
+                    )
+                if experiment_id == 2:
+                    process = FailureAfterQueueProcess(7)
+                else:
+                    process = _FakeProcess(0)
+                process.pid = 987_000 + experiment_id
+                return process
+
+            capability = ResourceCapability(
+                LINUX_PROC_MONITOR_MODE,
+                Path("/proc"),
+                Path("/proc/meminfo"),
+                MemorySnapshot(100_000, 90_000),
+                "test Linux proc capability",
+            )
+            with (
+                mock.patch.object(runner, "ThreadPoolExecutor", DeferredExecutor),
+                self.assertRaisesRegex(RunnerError, "return code 7"),
+            ):
+                run_benchmark(
+                    ns3_root=root,
+                    config_path=DEFAULT_CONFIG,
+                    timestamp=timestamp,
+                    configurations=configurations,
+                    process_factory=fake_process,
+                    build_runner=lambda command, cwd: 0,
+                    resource_capability=capability,
+                    resource_monitor_factory=FixedMonitor,
+                    memory_snapshot_reader=lambda: MemorySnapshot(100_000, 90_000),
+                    active_rss_reader=lambda process_ids: tuple(
+                        0 for _ in process_ids
+                    ),
+                    logical_cpu_count=8,
+                    jobs=2,
+                    output=StringIO(),
+                )
+
+            self.assertEqual(process_calls, [1, 2])
 
     def test_controller_sigint_breaks_completion_wait_and_stops_active_group(self) -> None:
         configuration = build_matrix()[0]
@@ -1521,6 +1906,117 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                 [record["exit_code"] for record in summary["attempts"]],
                 [0, 0],
             )
+
+    def test_resource_summary_includes_controller_memory_snapshot_minimum(self) -> None:
+        matrix = build_matrix()
+        selected = (matrix[17], matrix[125])
+        selection = runner._RunSelection(
+            configurations=selected,
+            requested_experiment_ids=(18, 126),
+            executed_experiment_ids=(18, 126),
+            auto_included_baseline_ids=(),
+            complete_matrix=True,
+        )
+        timestamp = "controller_memory_minimum"
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            run_directory = root / "run" / f"scripted_exp_{timestamp}"
+            snapshots = iter(
+                (
+                    MemorySnapshot(10_000, 9_000),
+                    MemorySnapshot(10_000, 1_400),
+                )
+            )
+
+            class FixedMonitor:
+                def __init__(self, root_pid, capability):
+                    pass
+
+                def start(self):
+                    pass
+
+                def finish(self, exit_code):
+                    return ResourceMeasurement(
+                        100,
+                        1_000,
+                        9_000,
+                        90.0,
+                        0.01,
+                        exit_code,
+                        LINUX_PROC_MONITOR_MODE,
+                    )
+
+            def calibration_process(command, **kwargs):
+                attempt_directory = Path(
+                    next(
+                        argument.split("=", 1)[1]
+                        for argument in shlex.split(command[-1])
+                        if argument.startswith("--general-run-folder=")
+                    )
+                )
+                (attempt_directory / "output.json").write_text("{}", encoding="utf-8")
+                process = _FakeProcess(0)
+                process.pid = 988_126
+                return process
+
+            def validated_rows(
+                output_path,
+                configuration,
+                repetition_attempt,
+                *,
+                expected_configuration,
+            ):
+                metric = StationCsvMetrics(100.0, 1.0, 50.0, 1.0, 0.98, "profile")
+                return tuple(
+                    BssCsvRow(
+                        configuration,
+                        repetition_attempt,
+                        -60.0,
+                        bss_id,
+                        100.0,
+                        50.0,
+                        30.0,
+                        None,
+                        (metric,) * 30,
+                    )
+                    for bss_id in range(3)
+                )
+
+            capability = ResourceCapability(
+                LINUX_PROC_MONITOR_MODE,
+                Path("/proc"),
+                Path("/proc/meminfo"),
+                MemorySnapshot(10_000, 9_000),
+                "test Linux proc capability",
+            )
+            with (
+                mock.patch.object(runner, "_select_run", return_value=selection),
+                mock.patch.object(
+                    runner,
+                    "load_output_document",
+                    side_effect=validated_rows,
+                ),
+                self.assertRaisesRegex(RunnerError, "insufficient available memory"),
+            ):
+                run_benchmark(
+                    ns3_root=root,
+                    config_path=DEFAULT_CONFIG,
+                    timestamp=timestamp,
+                    process_factory=calibration_process,
+                    build_runner=lambda command, cwd: 0,
+                    resource_capability=capability,
+                    resource_monitor_factory=FixedMonitor,
+                    memory_snapshot_reader=lambda: next(snapshots),
+                    active_rss_reader=lambda process_ids: (),
+                    logical_cpu_count=8,
+                    jobs=2,
+                    output=StringIO(),
+                )
+
+            summary = read_json(run_directory / "resource_summary.json")
+            self.assertEqual(summary["minimum_mem_available_bytes"], 1_400)
+            self.assertEqual(summary["minimum_mem_available_percent"], 14.0)
+            self.assertEqual(summary["attempts"][0]["minimum_mem_available_percent"], 90.0)
 
     def test_runtime_floor_breach_pauses_then_resumes_without_killing_active_work(self) -> None:
         configurations = build_matrix()[:3]
@@ -1980,6 +2476,66 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                             output=StringIO(),
                         )
                 self.assertEqual(outside.read_text(encoding="ascii"), '{"sentinel":true}')
+
+    def test_summary_publishes_before_csv_close_and_close_is_secondary(self) -> None:
+        configuration = build_matrix()[0]
+        timestamp = "csv_close_secondary"
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            run_directory = root / "run" / f"scripted_exp_{timestamp}"
+            close_started = False
+            summary_published_before_close = []
+            original_close = runner.ExcelCsvWriter.close
+            original_publish = runner._publish_resource_document
+
+            def failing_close(writer):
+                nonlocal close_started
+                close_started = True
+                original_close(writer)
+                raise OSError("injected CSV close failure")
+
+            def observe_summary_publish(path, document, description, parent_identity):
+                if path.name == "resource_summary.json":
+                    summary_published_before_close.append(not close_started)
+                return original_publish(path, document, description, parent_identity)
+
+            caught = None
+            with (
+                mock.patch.object(
+                    runner.ExcelCsvWriter,
+                    "close",
+                    new=failing_close,
+                ),
+                mock.patch.object(
+                    runner,
+                    "_publish_resource_document",
+                    new=observe_summary_publish,
+                ),
+            ):
+                try:
+                    run_benchmark(
+                        ns3_root=root,
+                        config_path=DEFAULT_CONFIG,
+                        timestamp=timestamp,
+                        configurations=(configuration,),
+                        process_factory=lambda command, **kwargs: _FakeProcess(7),
+                        resource_capability=fallback_resource_capability(directory),
+                        output=StringIO(),
+                    )
+                except BaseException as error:
+                    caught = error
+
+            self.assertIsInstance(caught, RunnerError)
+            self.assertIn("return code 7", str(caught))
+            self.assertTrue(
+                any(
+                    "secondary CSV close failure" in note
+                    and "injected CSV close failure" in note
+                    for note in getattr(caught, "__notes__", ())
+                )
+            )
+            self.assertEqual(summary_published_before_close, [True])
+            self.assertTrue((run_directory / "resource_summary.json").is_file())
 
     def test_attempt_collision_is_secondary_to_nonzero_and_invalid_output(self) -> None:
         configuration = build_matrix()[0]

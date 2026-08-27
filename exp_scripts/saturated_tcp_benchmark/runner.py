@@ -501,12 +501,21 @@ class _ActiveProcessRegistry:
         with self._lock:
             return self._maximum_processes
 
-    def stop(self) -> None:
-        """Stop future registration and terminate every currently active group."""
+    def stop_admissions(self) -> None:
+        """Make the sticky stop visible before cancellation can dequeue work."""
         with self._lock:
             self._stopped = True
+
+    def terminate_active(self) -> None:
+        """Terminate every group registered after admissions were stopped."""
+        with self._lock:
             process_group_ids = tuple(self._processes)
         _terminate_process_group_members(process_group_ids)
+
+    def stop(self) -> None:
+        """Stop future registration and terminate every currently active group."""
+        self.stop_admissions()
+        self.terminate_active()
 
 
 def _run_process(
@@ -969,6 +978,8 @@ class _ResourceSummaryState:
     calibrated_peak_rss_bytes: int | None = None
     worker_peak_estimate_bytes: int | None = None
     acceptance_floor_breached: bool = False
+    controller_minimum_mem_available_bytes: int | None = None
+    controller_minimum_mem_available_percent: float | None = None
     attempt_records: list[dict[str, object]] = field(default_factory=list)
 
 
@@ -987,6 +998,10 @@ def _build_resource_summary(state: _ResourceSummaryState) -> dict[str, object]:
         for record in ordered_attempts
         if record["minimum_mem_available_percent"] is not None
     ]
+    if state.controller_minimum_mem_available_bytes is not None:
+        available_bytes.append(state.controller_minimum_mem_available_bytes)
+    if state.controller_minimum_mem_available_percent is not None:
+        available_percent.append(state.controller_minimum_mem_available_percent)
     return {
         "schema_version": 1,
         "complete_matrix": state.complete_matrix,
@@ -1044,6 +1059,27 @@ def _retain_resource_summary(
             if primary_error is not None:
                 primary_error.add_note(
                     f"secondary resource summary retention failure: {retention_error}"
+                )
+            else:
+                raise
+
+
+@contextmanager
+def _close_csv_after_summary(csv_output: ExcelCsvWriter) -> Iterator[None]:
+    """Close CSV last without replacing an active primary failure."""
+    primary_error: BaseException | None = None
+    try:
+        yield
+    except BaseException as error:
+        primary_error = error
+        raise
+    finally:
+        try:
+            csv_output.close()
+        except BaseException as close_error:
+            if primary_error is not None:
+                primary_error.add_note(
+                    f"secondary CSV close failure: {close_error}"
                 )
             else:
                 raise
@@ -1562,7 +1598,25 @@ def run_benchmark(
                 1,
                 memory_reserve_percent,
             )
-            if policy.acceptance_floor_breached(snapshot):
+            breached = policy.acceptance_floor_breached(snapshot)
+            available_percent = (
+                snapshot.mem_available_bytes * 100.0 / snapshot.mem_total_bytes
+            )
+            if (
+                state.controller_minimum_mem_available_bytes is None
+                or snapshot.mem_available_bytes
+                < state.controller_minimum_mem_available_bytes
+            ):
+                state.controller_minimum_mem_available_bytes = (
+                    snapshot.mem_available_bytes
+                )
+            if (
+                state.controller_minimum_mem_available_percent is None
+                or available_percent
+                < state.controller_minimum_mem_available_percent
+            ):
+                state.controller_minimum_mem_available_percent = available_percent
+            if breached:
                 state.acceptance_floor_breached = True
         except SchedulerError as error:
             raise RunnerError(f"invalid scheduler memory snapshot: {error}") from error
@@ -1714,6 +1768,16 @@ def run_benchmark(
         phase_outcomes.append(outcome)
         accept_outcome(outcome)
 
+    def drain_ready_completions(
+        phase_outcomes: list[_WorkerOutcome],
+    ) -> None:
+        while True:
+            try:
+                completed_future = completion_queue.get_nowait()
+            except queue.Empty:
+                return
+            process_completion(completed_future, phase_outcomes)
+
     def execute_phase(
         phase_attempts: Iterable[ExperimentAttempt],
         *,
@@ -1722,21 +1786,16 @@ def run_benchmark(
         pending = deque(phase_attempts)
         phase_outcomes: list[_WorkerOutcome] = []
         while pending or active_futures:
-            while True:
-                try:
-                    completed_future = completion_queue.get_nowait()
-                except queue.Empty:
-                    break
-                process_completion(completed_future, phase_outcomes)
+            drain_ready_completions(phase_outcomes)
 
             admission_blocked = False
             while pending and len(active_futures) < maximum_workers:
                 if resource_capability.sequential_only:
                     can_admit = True
                 else:
-                    snapshot = read_snapshot()
-                    note_memory_snapshot(snapshot)
                     if calibration:
+                        snapshot = read_snapshot()
+                        note_memory_snapshot(snapshot)
                         try:
                             calibration_policy = ResourceScheduler(
                                 1,
@@ -1774,6 +1833,8 @@ def run_benchmark(
                         active_rss += (0,) * (
                             len(active_futures) - len(active_rss)
                         )
+                        snapshot = read_snapshot()
+                        note_memory_snapshot(snapshot)
                         try:
                             can_admit = scheduler_policy.can_admit(
                                 snapshot,
@@ -1786,6 +1847,7 @@ def run_benchmark(
                 if not can_admit:
                     admission_blocked = True
                     break
+                drain_ready_completions(phase_outcomes)
                 submit_attempt(pending.popleft())
                 try:
                     completed_future = completion_queue.get_nowait()
@@ -1811,10 +1873,16 @@ def run_benchmark(
         return tuple(phase_outcomes)
 
     def drain_after_failure(primary_error: BaseException) -> None:
+        try:
+            process_registry.stop_admissions()
+        except BaseException as cleanup_error:
+            primary_error.add_note(
+                f"secondary worker admission-stop failure: {cleanup_error}"
+            )
         for future in tuple(active_futures):
             future.cancel()
         try:
-            process_registry.stop()
+            process_registry.terminate_active()
         except BaseException as cleanup_error:
             primary_error.add_note(
                 f"secondary active process-group termination failure: {cleanup_error}"
@@ -1839,6 +1907,7 @@ def run_benchmark(
 
     primary_error: BaseException | None = None
     with (
+        _close_csv_after_summary(csv_output),
         _retain_resource_summary(
             root=root,
             run_parent=run_parent,
@@ -1847,7 +1916,6 @@ def run_benchmark(
             run_directory_identity=run_directory_identity,
             state=state,
         ),
-        csv_output,
     ):
         verify_csv()
         try:

@@ -274,6 +274,35 @@ class ProcParserTest(unittest.TestCase):
                 )
             self.assertEqual(status_reads, 2)
 
+    def test_does_not_retry_missing_vmrss_without_explicit_running_state(self) -> None:
+        cases = (
+            ("Name:\ttest\nState:\tS (sleeping)\n", "sleeping"),
+            ("Name:\ttest\nState:\tReady\n", "non-code-running-prefix"),
+            ("Name:\ttest\n", "missing-state"),
+        )
+        for first_status, case in cases:
+            with self.subTest(case=case), TemporaryDirectory() as directory:
+                proc_root = Path(directory)
+                _write_process(proc_root, 200, rss_kb=7)
+                status_path = proc_root / "200/status"
+                original_read_text = Path.read_text
+                status_reads = 0
+
+                def non_running_status(path, *args, **kwargs):
+                    nonlocal status_reads
+                    if path == status_path:
+                        status_reads += 1
+                        if status_reads == 1:
+                            return first_status
+                    return original_read_text(path, *args, **kwargs)
+
+                with (
+                    mock.patch.object(Path, "read_text", new=non_running_status),
+                    self.assertRaisesRegex(ResourceError, "missing.*VmRSS|VmRSS.*missing"),
+                ):
+                    resources._read_process_rss_bytes(200, proc_root)
+                self.assertEqual(status_reads, 1)
+
     def test_missing_proc_capability_is_explicitly_sequential(self) -> None:
         with TemporaryDirectory() as directory:
             missing = Path(directory) / "missing"
