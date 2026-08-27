@@ -1417,6 +1417,144 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                 (root / "run" / f"scripted_exp_{timestamp}/experiment_003").exists()
             )
 
+    def test_queued_higher_peak_success_restarts_admission_decision(self) -> None:
+        configurations = build_matrix()[:3]
+        timestamp = "higher_peak_resample"
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            allow_success = threading.Event()
+            success_queued = threading.Event()
+            process_calls = []
+
+            class FutureProxy:
+                def __init__(self, future, experiment_id):
+                    self._future = future
+                    self._experiment_id = experiment_id
+
+                def add_done_callback(self, callback):
+                    def observed_callback(_future):
+                        callback(self)
+                        if self._experiment_id == 2:
+                            success_queued.set()
+
+                    self._future.add_done_callback(observed_callback)
+
+                def cancel(self):
+                    return self._future.cancel()
+
+                def cancelled(self):
+                    return self._future.cancelled()
+
+                def result(self):
+                    return self._future.result()
+
+            class ObservedExecutor:
+                def __init__(self, **kwargs):
+                    self._executor = RealThreadPoolExecutor(**kwargs)
+
+                def submit(self, function, **kwargs):
+                    experiment_id = kwargs["context"].attempt.configuration.experiment_id
+                    return FutureProxy(
+                        self._executor.submit(function, **kwargs),
+                        experiment_id,
+                    )
+
+                def shutdown(self, **kwargs):
+                    self._executor.shutdown(**kwargs)
+
+            class PeakMonitor:
+                def __init__(self, root_pid, capability):
+                    self._root_pid = root_pid
+
+                def start(self):
+                    pass
+
+                def finish(self, exit_code):
+                    peak = 4_000 if self._root_pid == 989_002 else 1_000
+                    return ResourceMeasurement(
+                        100,
+                        peak,
+                        4_000,
+                        40.0,
+                        0.01,
+                        exit_code,
+                        LINUX_PROC_MONITOR_MODE,
+                    )
+
+            class ReleasedSuccessProcess(_FakeProcess):
+                def wait(self, timeout=None):
+                    if not allow_success.wait(3.0):
+                        raise AssertionError("RSS reader did not release success")
+                    return super().wait(timeout)
+
+            def fake_process(command, **kwargs):
+                attempt_directory = Path(
+                    next(
+                        argument.split("=", 1)[1]
+                        for argument in shlex.split(command[-1])
+                        if argument.startswith("--general-run-folder=")
+                    )
+                )
+                experiment_id = int(
+                    attempt_directory.parent.name.split("_", 1)[1]
+                )
+                process_calls.append(experiment_id)
+                write_valid_output(
+                    attempt_directory / "output.json",
+                    configurations[experiment_id - 1],
+                    attempt_directory,
+                )
+                if experiment_id == 2:
+                    process = ReleasedSuccessProcess(0)
+                else:
+                    process = _FakeProcess(0)
+                process.pid = 989_000 + experiment_id
+                return process
+
+            def blocking_active_rss(process_ids):
+                if not process_ids:
+                    return ()
+                allow_success.set()
+                if not success_queued.wait(3.0):
+                    raise AssertionError("worker success was not queued")
+                return (1_000,)
+
+            capability = ResourceCapability(
+                LINUX_PROC_MONITOR_MODE,
+                Path("/proc"),
+                Path("/proc/meminfo"),
+                MemorySnapshot(10_000, 4_000),
+                "test Linux proc capability",
+            )
+            caught = None
+            with mock.patch.object(runner, "ThreadPoolExecutor", ObservedExecutor):
+                try:
+                    run_benchmark(
+                        ns3_root=root,
+                        config_path=DEFAULT_CONFIG,
+                        timestamp=timestamp,
+                        configurations=configurations,
+                        process_factory=fake_process,
+                        build_runner=lambda command, cwd: 0,
+                        resource_capability=capability,
+                        resource_monitor_factory=PeakMonitor,
+                        memory_snapshot_reader=lambda: MemorySnapshot(10_000, 4_000),
+                        active_rss_reader=blocking_active_rss,
+                        logical_cpu_count=8,
+                        jobs=2,
+                        output=StringIO(),
+                    )
+                except RunnerError as error:
+                    caught = error
+
+            self.assertIsNotNone(caught)
+            self.assertIn("insufficient available memory", str(caught))
+            self.assertEqual(process_calls, [1, 2])
+            summary = read_json(
+                root / "run" / f"scripted_exp_{timestamp}/resource_summary.json"
+            )
+            self.assertEqual(summary["worker_peak_estimate_bytes"], 5_000)
+
     def test_no_active_worker_with_unsatisfied_reserve_fails_without_waiting(self) -> None:
         configurations = build_matrix()[:2]
         timestamp = "no_active_memory"

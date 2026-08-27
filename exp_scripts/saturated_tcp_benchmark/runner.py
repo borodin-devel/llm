@@ -1770,13 +1770,15 @@ def run_benchmark(
 
     def drain_ready_completions(
         phase_outcomes: list[_WorkerOutcome],
-    ) -> None:
+    ) -> bool:
+        consumed = False
         while True:
             try:
                 completed_future = completion_queue.get_nowait()
             except queue.Empty:
-                return
+                return consumed
             process_completion(completed_future, phase_outcomes)
+            consumed = True
 
     def execute_phase(
         phase_attempts: Iterable[ExperimentAttempt],
@@ -1847,7 +1849,8 @@ def run_benchmark(
                 if not can_admit:
                     admission_blocked = True
                     break
-                drain_ready_completions(phase_outcomes)
+                if drain_ready_completions(phase_outcomes):
+                    continue
                 submit_attempt(pending.popleft())
                 try:
                     completed_future = completion_queue.get_nowait()
