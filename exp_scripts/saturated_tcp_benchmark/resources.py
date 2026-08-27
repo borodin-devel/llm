@@ -22,6 +22,7 @@ _PROCESS_RSS_RETRY_TIMEOUT_SECONDS = 0.010
 _PROCESS_RSS_RETRY_POLL_SECONDS = 0.0001
 _STATUS_DIAGNOSTIC_CHARACTERS = 1024
 _RSS_TRANSITION_STATES = frozenset(("R", "D"))
+_PROCESS_EXIT_STATES = frozenset(("Z", "X"))
 
 
 class ResourceError(RuntimeError):
@@ -191,29 +192,31 @@ def _read_process_rss_bytes(
         except ResourceError as rss_error:
             if any(line.startswith("VmRSS:") for line in contents.splitlines()):
                 raise
+            current_identity = _read_process_identity(process_id, proc_root)
+            if (
+                current_identity is None
+                or current_identity.state_code in _PROCESS_EXIT_STATES
+            ):
+                return None
+            if pinned_identity is not None and current_identity != pinned_identity:
+                return None
+
             status_state = _status_state_code(contents)
             if status_state == "Z":
                 return None
-            if status_state not in _RSS_TRANSITION_STATES:
-                if status_state is None:
-                    raise ResourceError(
-                        f"{rss_error}; missing or malformed State field in {status_path}"
-                    ) from rss_error
-                raise
-
-            current_identity = _read_process_identity(process_id, proc_root)
-            if current_identity is None or current_identity.state_code == "Z":
-                return None
-            if current_identity.state_code not in _RSS_TRANSITION_STATES:
+            if (
+                status_state not in _RSS_TRANSITION_STATES
+                or current_identity.state_code not in _RSS_TRANSITION_STATES
+            ):
                 raise ResourceError(
-                    f"{rss_error}; status state={status_state}, "
-                    f"stat state={current_identity.state_code}"
+                    f"{rss_error}; "
+                    f"status_state={status_state or '<missing/malformed>'}, "
+                    f"stat_state={current_identity.state_code}, "
+                    f"status={_bounded_status_diagnostic(contents)}"
                 ) from rss_error
             if pinned_identity is None:
                 pinned_identity = current_identity
                 retry_deadline = monotonic() + _PROCESS_RSS_RETRY_TIMEOUT_SECONDS
-            elif current_identity != pinned_identity:
-                return None
 
             last_status = contents
             last_status_state = status_state
@@ -233,7 +236,7 @@ def _read_process_rss_bytes(
             current_identity = _read_process_identity(process_id, proc_root)
             if (
                 current_identity is None
-                or current_identity.state_code == "Z"
+                or current_identity.state_code in _PROCESS_EXIT_STATES
                 or current_identity != pinned_identity
             ):
                 return None

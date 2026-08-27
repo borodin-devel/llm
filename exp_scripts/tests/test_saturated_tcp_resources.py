@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -321,6 +322,104 @@ class ProcParserTest(unittest.TestCase):
             )
             self.assertIsNone(resources._read_process_rss_bytes(200, proc_root))
 
+    def test_absent_rss_checks_current_stat_exit_before_status_classification(self) -> None:
+        cases = (
+            ("X (dead)", "S", True, "dead-status-stat-gone"),
+            ("D (disk sleep)", "Z", False, "transition-status-stat-zombie"),
+            (None, "Z", False, "missing-status-state-stat-zombie"),
+            ("RR (malformed)", "Z", False, "malformed-status-state-stat-zombie"),
+            ("S (sleeping)", "X", False, "sleeping-status-stat-dead"),
+        )
+        for status_state, stat_state, remove_stat, case in cases:
+            with self.subTest(case=case), TemporaryDirectory() as directory:
+                proc_root = Path(directory)
+                _write_process(
+                    proc_root,
+                    200,
+                    rss_kb=None,
+                    status_state=status_state,
+                    stat_state=stat_state,
+                )
+                if remove_stat:
+                    (proc_root / "200/stat").unlink()
+                self.assertIsNone(
+                    resources._read_process_rss_bytes(200, proc_root)
+                )
+
+    def test_absent_rss_invalid_status_with_live_stat_keeps_diagnostics(self) -> None:
+        cases = (
+            ("S (sleeping)", "sleeping"),
+            (None, "missing"),
+            ("RR (malformed)", "malformed"),
+        )
+        for status_state, case in cases:
+            with self.subTest(case=case), TemporaryDirectory() as directory:
+                proc_root = Path(directory)
+                _write_process(
+                    proc_root,
+                    200,
+                    rss_kb=None,
+                    status_state=status_state,
+                    stat_state="S",
+                )
+                with self.assertRaises(ResourceError) as caught:
+                    resources._read_process_rss_bytes(200, proc_root)
+                diagnostic = str(caught.exception)
+                self.assertIn("status_state=", diagnostic)
+                self.assertIn("stat_state=S", diagnostic)
+                self.assertIn("status=", diagnostic)
+
+    def test_malformed_vmrss_is_never_forgiven_by_stat_exit(self) -> None:
+        with TemporaryDirectory() as directory:
+            proc_root = Path(directory)
+            _write_process(
+                proc_root,
+                200,
+                rss_kb=None,
+                status_state="X (dead)",
+                stat_state="Z",
+            )
+            (proc_root / "200/status").write_text(
+                "Name:\ttest\nState:\tX (dead)\nVmRSS:\tnot-a-number kB\n",
+                encoding="ascii",
+            )
+            with (
+                mock.patch.object(
+                    resources,
+                    "_read_process_identity",
+                    side_effect=AssertionError("stat must not be read"),
+                ),
+                self.assertRaisesRegex(ResourceError, "malformed.*VmRSS|VmRSS.*malformed"),
+            ):
+                resources._read_process_rss_bytes(200, proc_root)
+
+    def test_repeated_running_transition_returns_none_when_stat_disappears(self) -> None:
+        with TemporaryDirectory() as directory:
+            proc_root = Path(directory)
+            _write_process(
+                proc_root,
+                200,
+                rss_kb=None,
+                status_state="R (running)",
+                stat_state="R",
+            )
+            stat_path = proc_root / "200/stat"
+            original_read_text = Path.read_text
+            stat_reads = 0
+
+            def disappearing_stat(path, *args, **kwargs):
+                nonlocal stat_reads
+                if path == stat_path:
+                    stat_reads += 1
+                    if stat_reads == 2:
+                        raise ProcessLookupError(errno.ESRCH, "process vanished")
+                return original_read_text(path, *args, **kwargs)
+
+            with mock.patch.object(Path, "read_text", new=disappearing_stat):
+                self.assertIsNone(
+                    resources._read_process_rss_bytes(200, proc_root)
+                )
+
     def test_retries_exit_transition_sequences_until_zombie(self) -> None:
         cases = (
             ("R (running)", "R (running)", "Z (zombie)"),
@@ -471,6 +570,51 @@ class ProcParserTest(unittest.TestCase):
 @unittest.skipUnless(Path("/proc/self/status").is_file(), "Linux /proc is required")
 class LiveProcessMonitorTest(unittest.TestCase):
     """Exercise the real monitor against a bounded parent/child process tree."""
+
+    def test_concurrent_active_wrapper_trees_exit_without_rss_errors_or_leaks(self) -> None:
+        scenario = "import time;allocation=bytearray(1024*1024);time.sleep(0.001)"
+        wrapper = (
+            "import subprocess,sys;"
+            f"code={scenario!r};"
+            "exec('for _ in range(80):\\n "
+            "process=subprocess.Popen([sys.executable,\"-c\",code])\\n "
+            "process.wait()')"
+        )
+        processes = [
+            subprocess.Popen(
+                [sys.executable, "-c", wrapper],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            for _ in range(4)
+        ]
+        errors = []
+
+        def sample_tree(process) -> None:
+            while process.poll() is None:
+                try:
+                    process_tree_rss_bytes(process.pid)
+                except ResourceError as error:
+                    errors.append(str(error))
+
+        try:
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = [executor.submit(sample_tree, process) for process in processes]
+                while any(process.poll() is None for process in processes):
+                    for process in processes:
+                        if process.poll() is None:
+                            try:
+                                process_tree_rss_bytes(process.pid)
+                            except ResourceError as error:
+                                errors.append(str(error))
+                for future in futures:
+                    future.result()
+            self.assertEqual(errors, [])
+        finally:
+            for process in processes:
+                _cleanup_real_process(process, None)
+                self.assertFalse(_process_group_exists(process.pid))
 
     def test_fast_exit_rss_transition_is_tolerated_without_leaking_groups(self) -> None:
         for iteration in range(24):
