@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import errno
 import json
 import os
 from pathlib import Path
@@ -39,6 +40,15 @@ class AttemptResourceUsage:
     peak_rss_bytes: int
     wall_time_seconds: float
     exit_code: int
+
+
+@dataclass(frozen=True)
+class _ProcessIdentity:
+    """One PID instance and its current direct parent."""
+
+    process_id: int
+    parent_pid: int
+    start_time_ticks: int
 
 
 @dataclass(frozen=True)
@@ -100,6 +110,13 @@ def _parse_kibibyte_field(contents: str, field: str, source: Path) -> int:
     raise ResourceError(f"missing {field} field in {source}")
 
 
+def _is_process_disappearance(error: OSError) -> bool:
+    return isinstance(error, (FileNotFoundError, ProcessLookupError)) or error.errno in (
+        errno.ENOENT,
+        errno.ESRCH,
+    )
+
+
 def read_memory_snapshot(meminfo_path: Path = Path("/proc/meminfo")) -> MemorySnapshot:
     """Read required host memory fields and convert Linux kB to bytes."""
     path = Path(meminfo_path)
@@ -122,9 +139,9 @@ def _read_process_rss_bytes(process_id: int, proc_root: Path) -> int | None:
     status_path = proc_root / str(process_id) / "status"
     try:
         contents = status_path.read_text(encoding="ascii")
-    except FileNotFoundError:
-        return None
     except OSError as error:
+        if _is_process_disappearance(error):
+            return None
         raise ResourceError(
             f"cannot read process status for PID {process_id} at {status_path}: {error}"
         ) from error
@@ -139,13 +156,46 @@ def _read_process_rss_bytes(process_id: int, proc_root: Path) -> int | None:
         raise
 
 
+def _read_process_identity(
+    process_id: int,
+    proc_root: Path,
+) -> _ProcessIdentity | None:
+    stat_path = proc_root / str(process_id) / "stat"
+    try:
+        contents = stat_path.read_text(encoding="ascii")
+    except OSError as error:
+        if _is_process_disappearance(error):
+            return None
+        raise ResourceError(
+            f"cannot read process identity for PID {process_id} at {stat_path}: {error}"
+        ) from error
+    prefix, separator, remaining = contents.strip().rpartition(") ")
+    fields = remaining.split()
+    if (
+        not separator
+        or not prefix.startswith(f"{process_id} (")
+        or len(fields) <= 19
+    ):
+        raise ResourceError(f"malformed process identity for PID {process_id} at {stat_path}")
+    try:
+        parent_pid = int(fields[1], 10)
+        start_time_ticks = int(fields[19], 10)
+    except ValueError as error:
+        raise ResourceError(
+            f"malformed process identity for PID {process_id} at {stat_path}"
+        ) from error
+    if parent_pid < 0 or start_time_ticks < 0:
+        raise ResourceError(f"malformed process identity for PID {process_id} at {stat_path}")
+    return _ProcessIdentity(process_id, parent_pid, start_time_ticks)
+
+
 def _read_process_children(process_id: int, proc_root: Path) -> tuple[int, ...]:
     task_root = proc_root / str(process_id) / "task"
     try:
         task_directories = tuple(task_root.iterdir())
-    except FileNotFoundError:
-        return ()
     except OSError as error:
+        if _is_process_disappearance(error):
+            return ()
         raise ResourceError(
             f"cannot enumerate threads for PID {process_id} at {task_root}: {error}"
         ) from error
@@ -155,9 +205,9 @@ def _read_process_children(process_id: int, proc_root: Path) -> tuple[int, ...]:
         children_path = task_directory / "children"
         try:
             fields = children_path.read_text(encoding="ascii").split()
-        except FileNotFoundError:
-            continue
         except OSError as error:
+            if _is_process_disappearance(error):
+                continue
             raise ResourceError(
                 f"cannot read process children for PID {process_id} at "
                 f"{children_path}: {error}"
@@ -180,19 +230,41 @@ def process_tree_rss_bytes(root_pid: int, proc_root: Path = Path("/proc")) -> in
     if isinstance(root_pid, bool) or not isinstance(root_pid, int) or root_pid <= 0:
         raise ResourceError("root process ID must be a positive integer")
     root = Path(proc_root)
-    pending = [root_pid]
-    observed: set[int] = set()
+    root_identity = _read_process_identity(root_pid, root)
+    if root_identity is None:
+        return 0
+    pending = [(root_identity, None)]
+    observed: set[tuple[int, int]] = set()
     total = 0
     while pending:
-        process_id = pending.pop()
-        if process_id in observed:
+        expected_identity, expected_parent = pending.pop()
+        identity_key = (
+            expected_identity.process_id,
+            expected_identity.start_time_ticks,
+        )
+        if identity_key in observed:
             continue
-        observed.add(process_id)
-        rss_bytes = _read_process_rss_bytes(process_id, root)
+        current_identity = _read_process_identity(expected_identity.process_id, root)
+        if current_identity != expected_identity:
+            continue
+        if (
+            expected_parent is not None
+            and current_identity.parent_pid != expected_parent.process_id
+        ):
+            continue
+        rss_bytes = _read_process_rss_bytes(current_identity.process_id, root)
         if rss_bytes is None:
             continue
+        child_pids = _read_process_children(current_identity.process_id, root)
+        if _read_process_identity(current_identity.process_id, root) != current_identity:
+            continue
+        observed.add(identity_key)
         total += rss_bytes
-        pending.extend(_read_process_children(process_id, root))
+        for child_pid in child_pids:
+            child_identity = _read_process_identity(child_pid, root)
+            if child_identity is None or child_identity.parent_pid != current_identity.process_id:
+                continue
+            pending.append((child_identity, current_identity))
     return total
 
 
@@ -255,6 +327,7 @@ class ProcessTreeResourceMonitor:
         self._error: BaseException | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._thread_started = False
 
     def _sample(self) -> None:
         if self._capability.sequential_only:
@@ -280,9 +353,8 @@ class ProcessTreeResourceMonitor:
 
     def _run(self) -> None:
         try:
-            while not self._stop.is_set():
+            while not self._stop.wait(self._sample_interval_ms / 1000.0):
                 self._sample()
-                self._stop.wait(self._sample_interval_ms / 1000.0)
         except BaseException as error:
             self._error = error
             self._stop.set()
@@ -294,11 +366,13 @@ class ProcessTreeResourceMonitor:
         self._started_at = time.monotonic()
         if self._capability.sequential_only:
             return
+        self._sample()
         self._thread = threading.Thread(
             target=self._run,
             name=f"resource-monitor-{self._root_pid}",
             daemon=True,
         )
+        self._thread_started = True
         self._thread.start()
 
     def finish(self, exit_code: int) -> ResourceMeasurement:
@@ -308,8 +382,11 @@ class ProcessTreeResourceMonitor:
         if isinstance(exit_code, bool) or not isinstance(exit_code, int):
             raise ResourceError("resource monitor exit code must be an integer")
         self._stop.set()
-        if self._thread is not None:
-            self._thread.join()
+        if self._thread is not None and self._thread_started:
+            try:
+                self._thread.join()
+            except RuntimeError:
+                pass
         wall_time_seconds = time.monotonic() - self._started_at
         self._started_at = None
         if self._error is not None:
@@ -328,7 +405,12 @@ class ProcessTreeResourceMonitor:
         )
 
 
-def publish_json_exclusive(path: Path, document: Mapping[str, object]) -> None:
+def publish_json_exclusive(
+    path: Path,
+    document: Mapping[str, object],
+    *,
+    expected_parent_identity: tuple[int, int] | None = None,
+) -> None:
     """Atomically publish ordered JSON without following or replacing a destination."""
     output_path = Path(path)
     parent_path = output_path.parent
@@ -336,10 +418,19 @@ def publish_json_exclusive(path: Path, document: Mapping[str, object]) -> None:
         parent_path,
         os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
     )
+    parent_status = os.fstat(parent_descriptor)
+    parent_identity = (parent_status.st_dev, parent_status.st_ino)
+    if not stat.S_ISDIR(parent_status.st_mode):
+        os.close(parent_descriptor)
+        raise ResourceError(f"resource parent is not a directory: {parent_path}")
+    if expected_parent_identity is not None and parent_identity != expected_parent_identity:
+        os.close(parent_descriptor)
+        raise ResourceError(f"resource parent identity changed: {parent_path}")
     temporary_name = (
         f".{output_path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
     )
     temporary_descriptor: int | None = None
+    temporary_identity: tuple[int, int] | None = None
     try:
         temporary_descriptor = os.open(
             temporary_name,
@@ -360,21 +451,47 @@ def publish_json_exclusive(path: Path, document: Mapping[str, object]) -> None:
         while offset < len(payload):
             offset += os.write(temporary_descriptor, payload[offset:])
         os.fsync(temporary_descriptor)
-        os.close(temporary_descriptor)
-        temporary_descriptor = None
-        os.link(
-            temporary_name,
+        temporary_status = os.fstat(temporary_descriptor)
+        temporary_identity = (temporary_status.st_dev, temporary_status.st_ino)
+        if not stat.S_ISREG(temporary_status.st_mode):
+            raise ResourceError(f"resource temporary file is not regular: {output_path}")
+        try:
+            os.link(
+                f"/proc/self/fd/{temporary_descriptor}",
+                output_path.name,
+                dst_dir_fd=parent_descriptor,
+                follow_symlinks=True,
+            )
+        except FileNotFoundError as error:
+            raise ResourceError(
+                f"resource temporary identity changed during publication: {output_path}"
+            ) from error
+        destination_status = os.stat(
             output_path.name,
-            src_dir_fd=parent_descriptor,
-            dst_dir_fd=parent_descriptor,
+            dir_fd=parent_descriptor,
             follow_symlinks=False,
         )
+        if (
+            not stat.S_ISREG(destination_status.st_mode)
+            or (destination_status.st_dev, destination_status.st_ino)
+            != temporary_identity
+        ):
+            raise ResourceError(f"published resource identity mismatch: {output_path}")
         os.fsync(parent_descriptor)
     finally:
         if temporary_descriptor is not None:
             os.close(temporary_descriptor)
         try:
-            os.unlink(temporary_name, dir_fd=parent_descriptor)
+            current_temporary = os.stat(
+                temporary_name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if temporary_identity is not None and (
+                current_temporary.st_dev,
+                current_temporary.st_ino,
+            ) == temporary_identity:
+                os.unlink(temporary_name, dir_fd=parent_descriptor)
         except FileNotFoundError:
             pass
         os.close(parent_descriptor)

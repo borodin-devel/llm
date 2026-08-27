@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -11,7 +12,9 @@ import sys
 from tempfile import TemporaryDirectory
 import time
 import unittest
+from unittest import mock
 
+from saturated_tcp_benchmark import resources
 from saturated_tcp_benchmark.resources import (
     AttemptResourceUsage,
     MemorySnapshot,
@@ -30,6 +33,8 @@ def _write_process(
     *,
     rss_kb: int | None,
     children_by_thread: dict[int, str] | None = None,
+    parent_pid: int = 1,
+    start_time_ticks: int | None = None,
 ) -> None:
     process_directory = proc_root / str(process_id)
     process_directory.mkdir()
@@ -37,6 +42,12 @@ def _write_process(
     if rss_kb is not None:
         status += f"VmRSS:\t{rss_kb} kB\n"
     (process_directory / "status").write_text(status, encoding="ascii")
+    stat_fields = ["S", str(parent_pid), *("0" for _ in range(17))]
+    stat_fields.append(str(start_time_ticks if start_time_ticks is not None else process_id * 10))
+    (process_directory / "stat").write_text(
+        f"{process_id} (test process) {' '.join(stat_fields)}\n",
+        encoding="ascii",
+    )
     for thread_id, children in (children_by_thread or {process_id: ""}).items():
         task_directory = process_directory / "task" / str(thread_id)
         task_directory.mkdir(parents=True)
@@ -79,11 +90,118 @@ class ProcParserTest(unittest.TestCase):
                 rss_kb=100,
                 children_by_thread={100: "101 102 999", 105: "102"},
             )
-            _write_process(proc_root, 101, rss_kb=20, children_by_thread={101: "103"})
-            _write_process(proc_root, 102, rss_kb=30, children_by_thread={102: "103"})
-            _write_process(proc_root, 103, rss_kb=40)
+            _write_process(
+                proc_root,
+                101,
+                rss_kb=20,
+                children_by_thread={101: "103"},
+                parent_pid=100,
+            )
+            _write_process(
+                proc_root,
+                102,
+                rss_kb=30,
+                children_by_thread={102: "103"},
+                parent_pid=100,
+            )
+            _write_process(proc_root, 103, rss_kb=40, parent_pid=101)
 
             self.assertEqual(process_tree_rss_bytes(100, proc_root), 194_560)
+
+    def test_treats_enoent_and_esrch_as_vanished_at_each_per_pid_read(self) -> None:
+        for operation in ("status", "task", "children"):
+            with self.subTest(operation=operation), TemporaryDirectory() as directory:
+                proc_root = Path(directory)
+                _write_process(
+                    proc_root,
+                    100,
+                    rss_kb=10,
+                    children_by_thread={100: "101"},
+                )
+                _write_process(proc_root, 101, rss_kb=20, parent_pid=100)
+                original_read_text = Path.read_text
+                original_iterdir = Path.iterdir
+
+                def failing_read_text(path, *args, **kwargs):
+                    if operation == "status" and path == proc_root / "101/status":
+                        raise ProcessLookupError(errno.ESRCH, "process vanished")
+                    if operation == "children" and path == proc_root / "100/task/100/children":
+                        raise ProcessLookupError(errno.ESRCH, "process vanished")
+                    return original_read_text(path, *args, **kwargs)
+
+                def failing_iterdir(path):
+                    if operation == "task" and path == proc_root / "100/task":
+                        raise ProcessLookupError(errno.ESRCH, "process vanished")
+                    return original_iterdir(path)
+
+                with (
+                    mock.patch.object(Path, "read_text", new=failing_read_text),
+                    mock.patch.object(Path, "iterdir", new=failing_iterdir),
+                ):
+                    self.assertEqual(process_tree_rss_bytes(100, proc_root), 10_240)
+
+    def test_rejects_child_pid_reused_outside_current_parent_tree(self) -> None:
+        with TemporaryDirectory() as directory:
+            proc_root = Path(directory)
+            _write_process(
+                proc_root,
+                100,
+                rss_kb=10,
+                children_by_thread={100: "101"},
+            )
+            _write_process(
+                proc_root,
+                101,
+                rss_kb=50,
+                parent_pid=999,
+                start_time_ticks=2000,
+            )
+
+            self.assertEqual(process_tree_rss_bytes(100, proc_root), 10_240)
+
+    def test_distinguishes_reused_pid_instances_by_start_time(self) -> None:
+        with TemporaryDirectory() as directory:
+            proc_root = Path(directory)
+            _write_process(
+                proc_root,
+                100,
+                rss_kb=10,
+                children_by_thread={100: "102 101"},
+            )
+            _write_process(proc_root, 101, rss_kb=20, parent_pid=100)
+            _write_process(
+                proc_root,
+                102,
+                rss_kb=30,
+                children_by_thread={102: "101"},
+                parent_pid=100,
+            )
+            identities = {
+                100: resources._ProcessIdentity(100, 1, 1000),
+                102: resources._ProcessIdentity(102, 100, 1020),
+            }
+            child_identities = iter(
+                (
+                    resources._ProcessIdentity(101, 100, 1010),
+                    resources._ProcessIdentity(101, 100, 1010),
+                    resources._ProcessIdentity(101, 100, 1010),
+                    resources._ProcessIdentity(101, 102, 2010),
+                    resources._ProcessIdentity(101, 102, 2010),
+                    resources._ProcessIdentity(101, 102, 2010),
+                )
+            )
+
+            def changing_identity(process_id, root):
+                if process_id == 101:
+                    return next(child_identities)
+                return identities[process_id]
+
+            with mock.patch.object(
+                resources,
+                "_read_process_identity",
+                side_effect=changing_identity,
+            ):
+                self.assertEqual(process_tree_rss_bytes(100, proc_root), 81_920)
 
     def test_reports_missing_and_malformed_required_memory_fields(self) -> None:
         cases = (
@@ -192,6 +310,61 @@ class LiveProcessMonitorTest(unittest.TestCase):
             self.assertGreater(measurement.minimum_mem_available_percent, 0.0)
             self.assertFalse(_process_group_exists(process.pid))
 
+    def test_fast_process_disappearance_does_not_fail_monitor_finish(self) -> None:
+        process = subprocess.Popen(
+            ["/bin/true"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        monitor = ProcessTreeResourceMonitor(process.pid, detect_resource_capability())
+        monitor.start()
+        try:
+            exit_code = process.wait(timeout=1.0)
+            measurement = monitor.finish(exit_code)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=1.0)
+
+        self.assertEqual(measurement.usage.exit_code, 0)
+        self.assertGreaterEqual(measurement.usage.peak_rss_bytes, 0)
+
+    def test_start_samples_before_background_thread_can_run(self) -> None:
+        class DormantThread:
+            def __init__(self, **kwargs) -> None:
+                pass
+
+            def start(self) -> None:
+                pass
+
+            def join(self) -> None:
+                pass
+
+        with TemporaryDirectory() as directory:
+            proc_root = Path(directory) / "proc"
+            proc_root.mkdir()
+            _write_process(proc_root, 300, rss_kb=7)
+            meminfo = proc_root / "meminfo"
+            meminfo.write_text(
+                "MemTotal: 1000 kB\nMemAvailable: 750 kB\n",
+                encoding="ascii",
+            )
+            capability = resources.ResourceCapability(
+                monitor_mode="linux_proc",
+                proc_root=proc_root,
+                meminfo_path=meminfo,
+                initial_memory_snapshot=MemorySnapshot(1_024_000, 768_000),
+                diagnostic="test",
+            )
+            monitor = ProcessTreeResourceMonitor(300, capability)
+            with mock.patch.object(resources.threading, "Thread", DormantThread):
+                monitor.start()
+                measurement = monitor.finish(0)
+
+        self.assertEqual(measurement.usage.peak_rss_bytes, 7_168)
+        self.assertEqual(measurement.minimum_mem_available_bytes, 768_000)
+
 
 class ResourcePublicationTest(unittest.TestCase):
     """Protect deterministic, atomic, exclusive, no-follow resource JSON."""
@@ -233,6 +406,49 @@ class ResourcePublicationTest(unittest.TestCase):
 
             self.assertTrue(output_path.is_symlink())
             self.assertEqual(outside.read_text(encoding="ascii"), '{"sentinel":true}')
+
+    def test_refuses_temp_name_substitution_without_publishing_symlink(self) -> None:
+        document = {"schema_version": 1, "peak_rss_bytes": 4096}
+        with TemporaryDirectory() as directory, TemporaryDirectory() as outside_directory:
+            parent = Path(directory)
+            output_path = parent / "resource_usage.json"
+            outside = Path(outside_directory) / "outside.json"
+            outside.write_text('{"sentinel":true}', encoding="ascii")
+            real_link = os.link
+
+            def substituting_link(source, destination, **kwargs):
+                temporary = next(path for path in parent.iterdir() if path.name.endswith(".tmp"))
+                temporary.unlink()
+                temporary.symlink_to(outside)
+                return real_link(source, destination, **kwargs)
+
+            with (
+                mock.patch.object(resources.os, "link", new=substituting_link),
+                self.assertRaisesRegex(ResourceError, "temporary identity"),
+            ):
+                publish_json_exclusive(output_path, document)
+
+            self.assertFalse(output_path.exists())
+            self.assertFalse(output_path.is_symlink())
+            self.assertEqual(outside.read_text(encoding="ascii"), '{"sentinel":true}')
+
+    def test_rejects_replaced_parent_directory_identity(self) -> None:
+        with TemporaryDirectory() as directory:
+            original_parent = Path(directory) / "attempt"
+            original_parent.mkdir()
+            status = original_parent.lstat()
+            displaced = Path(directory) / "displaced"
+            original_parent.rename(displaced)
+            original_parent.mkdir()
+
+            with self.assertRaisesRegex(ResourceError, "parent.*identity|identity.*parent"):
+                publish_json_exclusive(
+                    original_parent / "resource_usage.json",
+                    {"schema_version": 1},
+                    expected_parent_identity=(status.st_dev, status.st_ino),
+                )
+
+            self.assertEqual(list(original_parent.iterdir()), [])
 
     def test_attempt_usage_contract_is_frozen_and_literal(self) -> None:
         self.assertEqual(

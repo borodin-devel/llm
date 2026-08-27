@@ -126,6 +126,14 @@ def _assert_test_process_reaped(test: unittest.TestCase, identity: tuple[int, in
     test.assertNotEqual(_read_test_process_identity(identity[0]), identity)
 
 
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 def create_fake_ns3_root(directory: str) -> Path:
     """Create the runner's minimum outer-root filesystem contract."""
     root = Path(directory)
@@ -548,6 +556,117 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                         resource_capability=fallback_resource_capability(directory),
                         output=StringIO(),
                     )
+                self.assertEqual(outside.read_text(encoding="ascii"), '{"sentinel":true}')
+
+    def test_monitor_start_failures_terminate_and_reap_process(self) -> None:
+        cases = (
+            (RuntimeError("injected thread start failure"), RunnerError),
+            (KeyboardInterrupt(), KeyboardInterrupt),
+        )
+        for start_error, expected_error in cases:
+            with (
+                self.subTest(start_error=type(start_error).__name__),
+                TemporaryDirectory() as directory,
+            ):
+                temporary = Path(directory)
+                stdout_path = temporary / "stdout.log"
+                stderr_path = temporary / "stderr.log"
+                processes = []
+
+                def process_factory(command, **kwargs):
+                    process = subprocess.Popen(command, **kwargs)
+                    processes.append(process)
+                    return process
+
+                original_start = runner.ProcessTreeResourceMonitor.start
+
+                def start_then_fail(monitor):
+                    original_start(monitor)
+                    raise start_error
+
+                with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
+                    with (
+                        mock.patch.object(
+                            runner.ProcessTreeResourceMonitor,
+                            "start",
+                            new=start_then_fail,
+                        ),
+                        self.assertRaises(expected_error),
+                    ):
+                        runner._run_process(
+                            process_factory,
+                            [sys.executable, "-c", "import time; time.sleep(30)"],
+                            temporary,
+                            stdout,
+                            stderr,
+                            2.0,
+                            resource_capability=runner.detect_resource_capability(),
+                        )
+
+                self.assertEqual(len(processes), 1)
+                self.assertIsNotNone(
+                    processes[0].poll(),
+                    "start failure leaked direct child",
+                )
+                self.assertFalse(_process_group_exists(processes[0].pid))
+
+    def test_primary_failures_survive_overlapping_resource_retention_errors(self) -> None:
+        configuration = build_matrix()[0]
+        cases = ("timeout_attempt", "nonzero_summary", "interrupt_both")
+        for case in cases:
+            with self.subTest(case=case), TemporaryDirectory() as directory:
+                root = create_fake_ns3_root(directory)
+                run_directory = root / "run" / f"scripted_exp_overlap_{case}"
+                attempt_directory = run_directory / "experiment_001/attempt_1"
+                outside = Path(directory) / "outside.json"
+                outside.write_text('{"sentinel":true}', encoding="ascii")
+
+                def failing_process(command, **kwargs):
+                    if case in ("timeout_attempt", "interrupt_both"):
+                        (attempt_directory / "resource_usage.json").symlink_to(outside)
+                    if case in ("nonzero_summary", "interrupt_both"):
+                        (run_directory / "resource_summary.json").symlink_to(outside)
+                    if case == "timeout_attempt":
+                        return _FakeProcess(
+                            -signal.SIGTERM,
+                            wait_effects=(
+                                subprocess.TimeoutExpired(
+                                    command,
+                                    PROCESS_TIMEOUT_SECONDS,
+                                ),
+                            ),
+                        )
+                    if case == "nonzero_summary":
+                        return _FakeProcess(7)
+                    return _FakeProcess(
+                        -signal.SIGTERM,
+                        wait_effects=(KeyboardInterrupt(),),
+                    )
+
+                if case == "interrupt_both":
+                    error = StringIO()
+                    status = main(
+                        ["--ns3-root", str(root), "--config", str(DEFAULT_CONFIG)],
+                        process_factory=failing_process,
+                        resource_capability=fallback_resource_capability(directory),
+                        timestamp_factory=lambda: f"overlap_{case}",
+                        output=StringIO(),
+                        error=error,
+                    )
+                    self.assertEqual(status, 130)
+                    self.assertIn("interrupted", error.getvalue().lower())
+                else:
+                    diagnostic = "timed out" if case == "timeout_attempt" else "return code 7"
+                    with self.assertRaisesRegex(RunnerError, diagnostic):
+                        run_benchmark(
+                            ns3_root=root,
+                            config_path=DEFAULT_CONFIG,
+                            timestamp=f"overlap_{case}",
+                            configurations=(configuration,),
+                            process_factory=failing_process,
+                            resource_capability=fallback_resource_capability(directory),
+                            output=StringIO(),
+                        )
                 self.assertEqual(outside.read_text(encoding="ascii"), '{"sentinel":true}')
 
     def test_process_failures_stop_with_no_rows_for_failed_attempt(self) -> None:

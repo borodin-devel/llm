@@ -377,23 +377,27 @@ def _run_process(
         start_new_session=True,
     )
     process_group_id = process.pid
-    group_observed_absent = False
+    process_group_cleaned = False
     resource_monitor = None
-    if resource_capability is not None:
-        resource_monitor = ProcessTreeResourceMonitor(
-            process.pid,
-            resource_capability,
-        )
-        try:
-            resource_monitor.start()
-        except ResourceError as error:
-            _terminate_process_group(process, process_group_id)
-            raise RunnerError(f"cannot start process resource monitor: {error}") from error
+    primary_error: BaseException | None = None
     try:
+        try:
+            if resource_capability is not None:
+                resource_monitor = ProcessTreeResourceMonitor(
+                    process.pid,
+                    resource_capability,
+                )
+                resource_monitor.start()
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            raise RunnerError(f"cannot start process resource monitor: {error}") from error
+
         try:
             return_code = process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired as error:
             _terminate_process_group(process, process_group_id)
+            process_group_cleaned = True
             raise RunnerError(
                 f"benchmark process timed out after {timeout_seconds} seconds"
             ) from error
@@ -401,26 +405,47 @@ def _run_process(
         state = _probe_process_group(process_group_id)
         if state is _ProcessGroupState.PRESENT:
             _terminate_process_group(process, process_group_id)
+            process_group_cleaned = True
             raise RunnerError(
                 "benchmark wrapper exited while descendant processes remained"
             )
-        group_observed_absent = True
+        process_group_cleaned = True
         return return_code
-    except KeyboardInterrupt:
-        if not group_observed_absent:
-            _terminate_process_group(process, process_group_id)
+    except BaseException as error:
+        primary_error = error
+        if not process_group_cleaned:
+            try:
+                _terminate_process_group(process, process_group_id)
+                process_group_cleaned = True
+            except BaseException as cleanup_error:
+                error.add_note(f"secondary process-group cleanup failure: {cleanup_error}")
         raise
     finally:
         if resource_monitor is not None:
-            exit_code = process.returncode
-            if isinstance(exit_code, bool) or not isinstance(exit_code, int):
-                raise RunnerError("benchmark process ended without an integer exit code")
             try:
+                exit_code = process.returncode
+                if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+                    raise RunnerError("benchmark process ended without an integer exit code")
                 measurement = resource_monitor.finish(exit_code)
                 if resource_callback is not None:
                     resource_callback(measurement)
-            except (OSError, ResourceError) as error:
-                raise RunnerError(f"cannot retain process resource usage: {error}") from error
+            except BaseException as retention_error:
+                if isinstance(retention_error, (KeyboardInterrupt, SystemExit)):
+                    secondary_error = retention_error
+                elif isinstance(retention_error, RunnerError):
+                    secondary_error = retention_error
+                else:
+                    secondary_error = RunnerError(
+                        f"cannot retain process resource usage: {retention_error}"
+                    )
+                if primary_error is not None:
+                    primary_error.add_note(
+                        f"secondary process resource retention failure: {secondary_error}"
+                    )
+                elif secondary_error is retention_error:
+                    raise
+                else:
+                    raise secondary_error from retention_error
 
 
 def _resolved_contained(path: Path, container: Path, description: str) -> Path:
@@ -630,12 +655,20 @@ def _publish_resource_document(
     path: Path,
     document: dict[str, object],
     description: str,
+    expected_parent_identity: _ObjectIdentity,
 ) -> None:
     try:
-        publish_json_exclusive(path, document)
+        publish_json_exclusive(
+            path,
+            document,
+            expected_parent_identity=(
+                expected_parent_identity.device,
+                expected_parent_identity.inode,
+            ),
+        )
     except FileExistsError as error:
         raise RunnerError(f"{description} already exists: {path}") from error
-    except (OSError, ValueError) as error:
+    except (OSError, ResourceError, ValueError) as error:
         raise RunnerError(f"cannot publish {description} {path}: {error}") from error
 
 
@@ -651,31 +684,44 @@ def _retain_resource_summary(
     complete_matrix: bool,
     attempt_records: list[dict[str, object]],
 ) -> Iterator[None]:
+    primary_error: BaseException | None = None
     try:
         yield
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        _require_directory_no_follow(
-            run_parent,
-            root,
-            "benchmark run parent",
-            run_parent_identity,
-        )
-        _require_directory_no_follow(
-            run_directory,
-            run_parent,
-            "benchmark timestamp directory",
-            run_directory_identity,
-        )
-        summary = build_sequential_resource_summary(
-            requested_experiment_ids,
-            complete_matrix,
-            attempt_records,
-        )
-        _publish_resource_document(
-            run_directory / "resource_summary.json",
-            summary,
-            "benchmark resource summary",
-        )
+        try:
+            _require_directory_no_follow(
+                run_parent,
+                root,
+                "benchmark run parent",
+                run_parent_identity,
+            )
+            _require_directory_no_follow(
+                run_directory,
+                run_parent,
+                "benchmark timestamp directory",
+                run_directory_identity,
+            )
+            summary = build_sequential_resource_summary(
+                requested_experiment_ids,
+                complete_matrix,
+                attempt_records,
+            )
+            _publish_resource_document(
+                run_directory / "resource_summary.json",
+                summary,
+                "benchmark resource summary",
+                run_directory_identity,
+            )
+        except BaseException as retention_error:
+            if primary_error is not None:
+                primary_error.add_note(
+                    f"secondary resource summary retention failure: {retention_error}"
+                )
+            else:
+                raise
 
 
 def run_benchmark(
@@ -897,6 +943,7 @@ def run_benchmark(
                                 resource_usage_path,
                                 record,
                                 "attempt resource usage",
+                                attempt_identity,
                             )
 
                         return_code = _run_process(
