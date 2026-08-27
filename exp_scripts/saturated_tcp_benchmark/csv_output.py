@@ -336,8 +336,19 @@ class ExcelCsvWriter:
         _validate_attempt_rows(attempt_rows)
         prepared = StringIO(newline="")
         _writer(prepared).writerows(_row_values(row) for row in attempt_rows)
-        self._file.write(prepared.getvalue())
-        self._synchronize()
+        checkpoint = self._file.tell()
+        try:
+            self._file.write(prepared.getvalue())
+            self._synchronize()
+        except BaseException as error:
+            try:
+                self._file.seek(checkpoint)
+                self._file.truncate()
+                self._file.flush()
+                self._fsync(self._file.fileno())
+            except BaseException as rollback_error:
+                error.add_note(f"secondary CSV batch rollback failure: {rollback_error}")
+            raise
 
     def _synchronize(self) -> None:
         self._file.flush()

@@ -251,6 +251,29 @@ class ProcParserTest(unittest.TestCase):
                 ):
                     process_tree_rss_bytes(200, proc_root)
 
+    def test_retries_one_transient_live_status_without_vmrss(self) -> None:
+        with TemporaryDirectory() as directory:
+            proc_root = Path(directory)
+            _write_process(proc_root, 200, rss_kb=7)
+            status_path = proc_root / "200/status"
+            original_read_text = Path.read_text
+            status_reads = 0
+
+            def transient_status(path, *args, **kwargs):
+                nonlocal status_reads
+                if path == status_path:
+                    status_reads += 1
+                    if status_reads == 1:
+                        return "Name:\ttest\nState:\tR (running)\n"
+                return original_read_text(path, *args, **kwargs)
+
+            with mock.patch.object(Path, "read_text", new=transient_status):
+                self.assertEqual(
+                    resources._read_process_rss_bytes(200, proc_root),
+                    7 * 1024,
+                )
+            self.assertEqual(status_reads, 2)
+
     def test_missing_proc_capability_is_explicitly_sequential(self) -> None:
         with TemporaryDirectory() as directory:
             missing = Path(directory) / "missing"

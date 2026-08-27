@@ -137,23 +137,32 @@ def read_memory_snapshot(meminfo_path: Path = Path("/proc/meminfo")) -> MemorySn
 
 def _read_process_rss_bytes(process_id: int, proc_root: Path) -> int | None:
     status_path = proc_root / str(process_id) / "status"
-    try:
-        contents = status_path.read_text(encoding="ascii")
-    except OSError as error:
-        if _is_process_disappearance(error):
-            return None
-        raise ResourceError(
-            f"cannot read process status for PID {process_id} at {status_path}: {error}"
-        ) from error
-    try:
-        return _parse_kibibyte_field(contents, "VmRSS", status_path)
-    except ResourceError:
-        if any(
-            line.startswith("State:") and line[len("State:") :].lstrip().startswith("Z")
-            for line in contents.splitlines()
-        ):
-            return None
-        raise
+    for read_attempt in range(2):
+        try:
+            contents = status_path.read_text(encoding="ascii")
+        except OSError as error:
+            if _is_process_disappearance(error):
+                return None
+            raise ResourceError(
+                f"cannot read process status for PID {process_id} at "
+                f"{status_path}: {error}"
+            ) from error
+        try:
+            return _parse_kibibyte_field(contents, "VmRSS", status_path)
+        except ResourceError:
+            if any(line.startswith("VmRSS:") for line in contents.splitlines()):
+                raise
+            if any(
+                line.startswith("State:")
+                and line[len("State:") :].lstrip().startswith("Z")
+                for line in contents.splitlines()
+            ):
+                return None
+            if read_attempt == 0:
+                time.sleep(0)
+                continue
+            raise
+    raise AssertionError("unreachable process status retry state")
 
 
 def _read_process_identity(

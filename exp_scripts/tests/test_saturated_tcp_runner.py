@@ -1,8 +1,10 @@
-"""Sequential saturated benchmark runner lifecycle tests."""
+"""Resource-aware saturated benchmark runner lifecycle tests."""
 
 from __future__ import annotations
 
+import _thread
 import csv
+from concurrent.futures import Future
 from io import StringIO
 import json
 import os
@@ -13,12 +15,14 @@ import stat
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+import threading
 import time
 import unittest
 from unittest import mock
 
 from saturated_tcp_benchmark import resources
 from saturated_tcp_benchmark import runner
+from saturated_tcp_benchmark.csv_output import BssCsvRow, StationCsvMetrics
 from saturated_tcp_benchmark.matrix import ExperimentConfiguration, build_matrix
 from saturated_tcp_benchmark.runner import (
     PROCESS_TIMEOUT_SECONDS,
@@ -29,7 +33,13 @@ from saturated_tcp_benchmark.runner import (
     main,
     run_benchmark,
 )
-from saturated_tcp_benchmark.resources import detect_resource_capability
+from saturated_tcp_benchmark.resources import (
+    LINUX_PROC_MONITOR_MODE,
+    MemorySnapshot,
+    ResourceCapability,
+    ResourceMeasurement,
+    detect_resource_capability,
+)
 from tests.test_saturated_tcp_validation import make_output_document
 
 
@@ -149,7 +159,10 @@ def create_fake_ns3_root(directory: str) -> Path:
     """Create the runner's minimum outer-root filesystem contract."""
     root = Path(directory)
     ns3 = root / "ns3"
-    ns3.write_text("#!/bin/sh\nexit 99\n", encoding="ascii")
+    ns3.write_text(
+        "#!/bin/sh\n[ \"$1\" = build ] && exit 0\nexit 99\n",
+        encoding="ascii",
+    )
     ns3.chmod(0o755)
     return root
 
@@ -193,7 +206,7 @@ def fallback_resource_capability(directory: str | Path):
 
 
 class SaturatedTcpRunnerTest(unittest.TestCase):
-    """Protect exact commands, sequential publication, failure, and retention."""
+    """Protect commands, ordered parallel publication, failure, and retention."""
 
     def _assert_popen_kwargs(self, kwargs, root: Path) -> None:
         self.assertEqual(kwargs["cwd"], root)
@@ -266,9 +279,12 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
             f"--general-run-folder={attempt_directory} "
             "--general-output-name=output.json"
         )
-        self.assertEqual(command, [str(root / "ns3"), "run", expected_command_string])
         self.assertEqual(
-            shlex.split(command[2]),
+            command,
+            [str(root / "ns3"), "run", "--no-build", expected_command_string],
+        )
+        self.assertEqual(
+            shlex.split(command[3]),
             [
                 "saturated-tcp-scenario",
                 "--config",
@@ -330,6 +346,7 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                 timestamp=timestamp,
                 configurations=configurations,
                 process_factory=fake_process,
+                resource_capability=fallback_resource_capability(directory),
                 output=StringIO(),
             )
 
@@ -360,6 +377,1266 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                 )
             self.assertEqual(list(run_directory.rglob("*.csv")), [run_directory / "results.csv"])
 
+    def test_parallel_controller_orders_results_and_is_the_only_csv_owner(self) -> None:
+        configurations = build_matrix()[:3]
+        timestamp = "parallel_order"
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            run_directory = root / "run" / f"scripted_exp_{timestamp}"
+            id_three_finished = threading.Event()
+            process_calls = []
+            completion_order = []
+            build_calls = []
+
+            class FixedMonitor:
+                def __init__(self, root_pid, capability):
+                    self.root_pid = root_pid
+
+                def start(self):
+                    pass
+
+                def finish(self, exit_code):
+                    return ResourceMeasurement(
+                        sample_interval_ms=100,
+                        peak_rss_bytes=1_000,
+                        minimum_mem_available_bytes=90_000,
+                        minimum_mem_available_percent=90.0,
+                        wall_time_seconds=0.01,
+                        exit_code=exit_code,
+                        monitor_mode=LINUX_PROC_MONITOR_MODE,
+                    )
+
+            class GateProcess(_FakeProcess):
+                def __init__(self, experiment_id):
+                    super().__init__(0)
+                    self.pid = 900_000 + experiment_id
+                    self.experiment_id = experiment_id
+
+                def wait(self, timeout=None):
+                    if self.experiment_id == 2:
+                        if not id_three_finished.wait(2.0):
+                            raise AssertionError("experiment 2 did not overlap experiment 3")
+                    elif self.experiment_id == 3:
+                        id_three_finished.set()
+                    completion_order.append(self.experiment_id)
+                    return super().wait(timeout)
+
+            def fake_process(command, **kwargs):
+                self._assert_popen_kwargs(kwargs, root)
+                command_arguments = shlex.split(command[-1])
+                run_folder = Path(
+                    next(
+                        argument.split("=", 1)[1]
+                        for argument in command_arguments
+                        if argument.startswith("--general-run-folder=")
+                    )
+                )
+                experiment_id = int(run_folder.parent.name.split("_", 1)[1])
+                configuration = configurations[experiment_id - 1]
+                write_valid_output(
+                    run_folder / "output.json",
+                    configuration,
+                    run_folder,
+                )
+                process_calls.append(experiment_id)
+                return GateProcess(experiment_id)
+
+            capability = ResourceCapability(
+                monitor_mode=LINUX_PROC_MONITOR_MODE,
+                proc_root=Path("/proc"),
+                meminfo_path=Path("/proc/meminfo"),
+                initial_memory_snapshot=MemorySnapshot(100_000, 90_000),
+                diagnostic="test Linux proc capability",
+            )
+            append_thread_ids = []
+            appended_keys = []
+            original_append = runner.ExcelCsvWriter.append_attempt
+
+            def record_append(writer, rows):
+                rows = tuple(rows)
+                append_thread_ids.append(threading.get_ident())
+                appended_keys.append(
+                    (
+                        rows[0].configuration.experiment_id,
+                        rows[0].repetition_attempt,
+                        len(rows),
+                    )
+                )
+                original_append(writer, rows)
+
+            controller_thread = threading.get_ident()
+            with mock.patch.object(
+                runner.ExcelCsvWriter,
+                "append_attempt",
+                new=record_append,
+            ):
+                result = run_benchmark(
+                    ns3_root=root,
+                    config_path=DEFAULT_CONFIG,
+                    timestamp=timestamp,
+                    configurations=configurations,
+                    process_factory=fake_process,
+                    resource_capability=capability,
+                    resource_monitor_factory=FixedMonitor,
+                    memory_snapshot_reader=lambda: MemorySnapshot(100_000, 90_000),
+                    active_rss_reader=lambda process_ids: tuple(0 for _ in process_ids),
+                    logical_cpu_count=8,
+                    jobs=2,
+                    build_runner=lambda command, cwd: build_calls.append(
+                        (tuple(command), cwd)
+                    )
+                    or 0,
+                    output=StringIO(),
+                )
+
+            self.assertEqual(result, run_directory)
+            self.assertEqual(
+                build_calls,
+                [
+                    (
+                        (str(root / "ns3"), "build", "saturated-tcp-scenario"),
+                        root,
+                    )
+                ],
+            )
+            self.assertEqual(process_calls[0], 1, "subset calibration runs first")
+            self.assertEqual(process_calls.count(1), 1, "calibration result is reused")
+            self.assertEqual(completion_order[:3], [1, 3, 2])
+            self.assertEqual(appended_keys, [(1, 1, 3), (2, 1, 3), (3, 1, 3)])
+            self.assertEqual(append_thread_ids, [controller_thread] * 3)
+            self.assertEqual(
+                [row[0] for row in read_csv(run_directory / "results.csv")[1:]],
+                ["1"] * 3 + ["2"] * 3 + ["3"] * 3,
+            )
+            summary = read_json(run_directory / "resource_summary.json")
+            self.assertEqual(summary["calibrated_peak_rss_bytes"], 1_000)
+            self.assertEqual(summary["worker_peak_estimate_bytes"], 1_250)
+            self.assertEqual(summary["maximum_parallel_workers"], 2)
+            self.assertEqual(
+                [record["experiment_id"] for record in summary["attempts"]],
+                [1, 2, 3],
+            )
+
+    def test_full_synthetic_run_calibrates_126_once_and_reuses_buffered_result(self) -> None:
+        timestamp = "full_synthetic_calibration"
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            run_directory = root / "run" / f"scripted_exp_{timestamp}"
+            process_calls = []
+
+            def fake_process(command, **kwargs):
+                attempt_directory = Path(
+                    next(
+                        argument.split("=", 1)[1]
+                        for argument in shlex.split(command[-1])
+                        if argument.startswith("--general-run-folder=")
+                    )
+                )
+                experiment_id = int(
+                    attempt_directory.parent.name.split("_", 1)[1]
+                )
+                if experiment_id == 1:
+                    self.assertEqual(
+                        len(read_csv(run_directory / "results.csv")),
+                        1,
+                        "calibration 126 remains buffered behind canonical ID 1",
+                    )
+                if experiment_id == 19:
+                    self.assertEqual(
+                        len(read_csv(run_directory / "results.csv")),
+                        55,
+                        "all 18 one-STA baselines publish before dependents",
+                    )
+                process_calls.append(experiment_id)
+                (attempt_directory / "output.json").write_text("{}", encoding="utf-8")
+                process = _FakeProcess(0)
+                process.pid = 940_000 + experiment_id
+                return process
+
+            def validated_rows(
+                output_path,
+                configuration,
+                repetition_attempt,
+                *,
+                expected_configuration,
+            ):
+                metric = StationCsvMetrics(100.0, 1.0, 50.0, 1.0, 0.98, "profile")
+                stations = (
+                    (metric,) * configuration.sta_count_per_bss
+                    + (None,) * (30 - configuration.sta_count_per_bss)
+                )
+                return tuple(
+                    BssCsvRow(
+                        configuration,
+                        repetition_attempt,
+                        -41.5 if configuration.rssi_range == "high" else -50.0,
+                        bss_id,
+                        100.0,
+                        50.0,
+                        float(configuration.sta_count_per_bss),
+                        None,
+                        stations,
+                    )
+                    for bss_id in range(3)
+                )
+
+            with mock.patch.object(
+                runner,
+                "load_output_document",
+                side_effect=validated_rows,
+            ):
+                run_benchmark(
+                    ns3_root=root,
+                    config_path=DEFAULT_CONFIG,
+                    timestamp=timestamp,
+                    process_factory=fake_process,
+                    resource_capability=fallback_resource_capability(directory),
+                    output=StringIO(),
+                )
+
+            self.assertEqual(process_calls[0], 126)
+            self.assertEqual(process_calls.count(126), 1)
+            self.assertEqual(process_calls[1:19], list(range(1, 19)))
+            self.assertEqual(process_calls[19:], list(range(19, 126)))
+            published = read_csv(run_directory / "results.csv")
+            self.assertEqual(len(published), 379)
+            self.assertEqual(
+                [published[index][0] for index in range(1, 379, 3)],
+                [str(experiment_id) for experiment_id in range(1, 127)],
+            )
+
+    def test_csv_fsync_failure_rolls_back_the_uncommitted_three_row_batch(self) -> None:
+        configuration = build_matrix()[0]
+        timestamp = "csv_fsync_failure"
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            run_directory = root / "run" / f"scripted_exp_{timestamp}"
+
+            def valid_process(command, **kwargs):
+                attempt_directory = run_directory / "experiment_001/attempt_1"
+                write_valid_output(
+                    attempt_directory / "output.json",
+                    configuration,
+                    attempt_directory,
+                )
+                return _FakeProcess(0)
+
+            original_synchronize = runner.ExcelCsvWriter._synchronize
+            synchronize_calls = 0
+
+            def fail_append_synchronize(writer):
+                nonlocal synchronize_calls
+                synchronize_calls += 1
+                if synchronize_calls == 1:
+                    original_synchronize(writer)
+                    return
+                raise OSError("injected append fsync failure")
+
+            with (
+                mock.patch.object(
+                    runner.ExcelCsvWriter,
+                    "_synchronize",
+                    new=fail_append_synchronize,
+                ),
+                self.assertRaisesRegex(RunnerError, "append.*CSV|CSV.*append"),
+            ):
+                run_benchmark(
+                    ns3_root=root,
+                    config_path=DEFAULT_CONFIG,
+                    timestamp=timestamp,
+                    configurations=(configuration,),
+                    process_factory=valid_process,
+                    resource_capability=fallback_resource_capability(directory),
+                    output=StringIO(),
+                )
+
+            self.assertEqual(len(read_csv(run_directory / "results.csv")), 1)
+            self.assertTrue(
+                (run_directory / "experiment_001/attempt_1/output.json").is_file()
+            )
+            self.assertTrue(
+                (
+                    run_directory
+                    / "experiment_001/attempt_1/resource_usage.json"
+                ).is_file()
+            )
+
+    def test_parallel_failure_interrupt_and_timeout_stop_every_active_group(self) -> None:
+        configurations = build_matrix()[:3]
+        cases = ("failure", "interrupt", "timeout")
+        for case in cases:
+            with self.subTest(case=case), TemporaryDirectory() as directory:
+                root = create_fake_ns3_root(directory)
+                timestamp = f"parallel_stop_{case}"
+                run_directory = root / "run" / f"scripted_exp_{timestamp}"
+                sibling_started = Path(directory) / "sibling.started"
+                real_processes = []
+
+                class FixedMonitor:
+                    def __init__(self, root_pid, capability):
+                        pass
+
+                    def start(self):
+                        pass
+
+                    def finish(self, exit_code):
+                        return ResourceMeasurement(
+                            sample_interval_ms=100,
+                            peak_rss_bytes=1_000,
+                            minimum_mem_available_bytes=90_000,
+                            minimum_mem_available_percent=90.0,
+                            wall_time_seconds=0.01,
+                            exit_code=exit_code,
+                            monitor_mode=LINUX_PROC_MONITOR_MODE,
+                        )
+
+                def fake_process(command, **kwargs):
+                    command_arguments = shlex.split(command[-1])
+                    attempt_directory = Path(
+                        next(
+                            argument.split("=", 1)[1]
+                            for argument in command_arguments
+                            if argument.startswith("--general-run-folder=")
+                        )
+                    )
+                    experiment_id = int(
+                        attempt_directory.parent.name.split("_", 1)[1]
+                    )
+                    if experiment_id == 1:
+                        write_valid_output(
+                            attempt_directory / "output.json",
+                            configurations[0],
+                            attempt_directory,
+                        )
+                        process = _FakeProcess(0)
+                        process.pid = 910_001
+                        return process
+                    (attempt_directory / "output.json").write_text(
+                        json.dumps({"retained_experiment_id": experiment_id}),
+                        encoding="utf-8",
+                    )
+                    if experiment_id == 2:
+                        sibling_script = (
+                            "import pathlib,signal,time;"
+                            "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+                            f"pathlib.Path({str(sibling_started)!r}).write_text('started');"
+                            "time.sleep(30)"
+                        )
+                        process = subprocess.Popen(
+                            [sys.executable, "-c", sibling_script],
+                            **kwargs,
+                        )
+                        real_processes.append(process)
+                        return process
+                    deadline = time.monotonic() + 2.0
+                    while not sibling_started.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    if not sibling_started.exists():
+                        raise AssertionError("active sibling process did not start")
+                    if case == "failure":
+                        process = _FakeProcess(7)
+                    elif case == "interrupt":
+                        process = _FakeProcess(
+                            -signal.SIGTERM,
+                            wait_effects=(KeyboardInterrupt(),),
+                        )
+                    else:
+                        process = _FakeProcess(
+                            -signal.SIGTERM,
+                            wait_effects=(
+                                subprocess.TimeoutExpired(
+                                    command,
+                                    PROCESS_TIMEOUT_SECONDS,
+                                ),
+                            ),
+                        )
+                    process.pid = 910_003
+                    return process
+
+                capability = ResourceCapability(
+                    monitor_mode=LINUX_PROC_MONITOR_MODE,
+                    proc_root=Path("/proc"),
+                    meminfo_path=Path("/proc/meminfo"),
+                    initial_memory_snapshot=MemorySnapshot(100_000, 90_000),
+                    diagnostic="test Linux proc capability",
+                )
+                caught = None
+                try:
+                    run_benchmark(
+                        ns3_root=root,
+                        config_path=DEFAULT_CONFIG,
+                        timestamp=timestamp,
+                        configurations=configurations,
+                        process_factory=fake_process,
+                        build_runner=lambda command, cwd: 0,
+                        resource_capability=capability,
+                        resource_monitor_factory=FixedMonitor,
+                        memory_snapshot_reader=lambda: MemorySnapshot(
+                            100_000,
+                            90_000,
+                        ),
+                        active_rss_reader=lambda process_ids: tuple(
+                            0 for _ in process_ids
+                        ),
+                        logical_cpu_count=8,
+                        jobs=2,
+                        output=StringIO(),
+                    )
+                except BaseException as error:
+                    caught = error
+                finally:
+                    for process in real_processes:
+                        _cleanup_real_process_group(process)
+
+                self.assertIsNotNone(caught)
+                if case == "interrupt":
+                    self.assertIsInstance(caught, KeyboardInterrupt)
+                else:
+                    self.assertIsInstance(caught, RunnerError)
+                    expected = "return code 7" if case == "failure" else "timed out"
+                    self.assertIn(expected, str(caught))
+                self.assertEqual(len(real_processes), 1)
+                self.assertIsNotNone(real_processes[0].returncode)
+                self.assertFalse(_process_group_exists(real_processes[0].pid))
+                self.assertEqual(len(read_csv(run_directory / "results.csv")), 4)
+                for experiment_id in (1, 2, 3):
+                    attempt_directory = (
+                        run_directory
+                        / f"experiment_{experiment_id:03d}/attempt_1"
+                    )
+                    self.assertTrue((attempt_directory / "stdout.log").is_file())
+                    self.assertTrue((attempt_directory / "stderr.log").is_file())
+                    self.assertTrue((attempt_directory / "resource_usage.json").is_file())
+                summary = read_json(run_directory / "resource_summary.json")
+                self.assertEqual(
+                    [record["experiment_id"] for record in summary["attempts"]],
+                    [1, 2, 3],
+                )
+
+    def test_admission_reserves_growth_for_submitted_worker_before_popen_registers(self) -> None:
+        configurations = build_matrix()[:3]
+        timestamp = "launching_growth_reserve"
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            id_two_launching = threading.Event()
+            release_id_two = threading.Event()
+            id_three_started = threading.Event()
+            controller_errors = []
+
+            class FixedMonitor:
+                def __init__(self, root_pid, capability):
+                    pass
+
+                def start(self):
+                    pass
+
+                def finish(self, exit_code):
+                    return ResourceMeasurement(
+                        sample_interval_ms=100,
+                        peak_rss_bytes=1_000,
+                        minimum_mem_available_bytes=4_000,
+                        minimum_mem_available_percent=40.0,
+                        wall_time_seconds=0.01,
+                        exit_code=exit_code,
+                        monitor_mode=LINUX_PROC_MONITOR_MODE,
+                    )
+
+            def fake_process(command, **kwargs):
+                attempt_directory = Path(
+                    next(
+                        argument.split("=", 1)[1]
+                        for argument in shlex.split(command[-1])
+                        if argument.startswith("--general-run-folder=")
+                    )
+                )
+                experiment_id = int(
+                    attempt_directory.parent.name.split("_", 1)[1]
+                )
+                if experiment_id == 2:
+                    id_two_launching.set()
+                    if not release_id_two.wait(2.0):
+                        raise AssertionError("test did not release experiment 2 Popen")
+                elif experiment_id == 3:
+                    id_three_started.set()
+                write_valid_output(
+                    attempt_directory / "output.json",
+                    configurations[experiment_id - 1],
+                    attempt_directory,
+                )
+                process = _FakeProcess(0)
+                process.pid = 920_000 + experiment_id
+                return process
+
+            capability = ResourceCapability(
+                monitor_mode=LINUX_PROC_MONITOR_MODE,
+                proc_root=Path("/proc"),
+                meminfo_path=Path("/proc/meminfo"),
+                initial_memory_snapshot=MemorySnapshot(10_000, 4_000),
+                diagnostic="test Linux proc capability",
+            )
+
+            def run_controller():
+                try:
+                    run_benchmark(
+                        ns3_root=root,
+                        config_path=DEFAULT_CONFIG,
+                        timestamp=timestamp,
+                        configurations=configurations,
+                        process_factory=fake_process,
+                        build_runner=lambda command, cwd: 0,
+                        resource_capability=capability,
+                        resource_monitor_factory=FixedMonitor,
+                        memory_snapshot_reader=lambda: MemorySnapshot(10_000, 4_000),
+                        active_rss_reader=lambda process_ids: tuple(
+                            0 for _ in process_ids
+                        ),
+                        logical_cpu_count=8,
+                        jobs=2,
+                        output=StringIO(),
+                    )
+                except BaseException as error:
+                    controller_errors.append(error)
+
+            controller = threading.Thread(target=run_controller)
+            controller.start()
+            self.assertTrue(id_two_launching.wait(2.0))
+            admitted_too_early = id_three_started.wait(0.2)
+            release_id_two.set()
+            controller.join(3.0)
+
+            self.assertFalse(controller.is_alive())
+            self.assertEqual(controller_errors, [])
+            self.assertFalse(
+                admitted_too_early,
+                "unregistered submitted work still consumes one peak estimate",
+            )
+            self.assertTrue(id_three_started.is_set())
+
+    def test_experiment_id_parser_and_cli_forward_exact_scheduler_controls(self) -> None:
+        self.assertEqual(runner.parse_experiment_ids("19, 37,126"), (19, 37, 126))
+        for invalid in ("", "19,", "19,19", "0", "127", "true"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    runner.parse_experiment_ids(invalid)
+
+        with mock.patch.object(
+            runner,
+            "run_benchmark",
+            return_value=Path("/unused"),
+        ) as run:
+            status = main(
+                [
+                    "--ns3-root",
+                    str(OUTER_ROOT),
+                    "--jobs",
+                    "4",
+                    "--memory-reserve-percent",
+                    "25",
+                    "--experiment-ids",
+                    "19,37,126",
+                ],
+                timestamp_factory=lambda: "cli_controls",
+                output=StringIO(),
+                error=StringIO(),
+            )
+        self.assertEqual(status, 0)
+        keyword_arguments = run.call_args.kwargs
+        self.assertEqual(keyword_arguments["jobs"], 4)
+        self.assertEqual(keyword_arguments["memory_reserve_percent"], 25)
+        self.assertEqual(keyword_arguments["experiment_ids"], (19, 37, 126))
+
+    def test_subset_auto_includes_baseline_and_records_exact_manifest(self) -> None:
+        timestamp = "subset_manifest"
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            run_directory = root / "run" / f"scripted_exp_{timestamp}"
+            process_calls = []
+
+            def fake_process(command, **kwargs):
+                attempt_directory = Path(
+                    next(
+                        argument.split("=", 1)[1]
+                        for argument in shlex.split(command[-1])
+                        if argument.startswith("--general-run-folder=")
+                    )
+                )
+                experiment_id = int(
+                    attempt_directory.parent.name.split("_", 1)[1]
+                )
+                process_calls.append(experiment_id)
+                (attempt_directory / "output.json").write_text(
+                    "{}",
+                    encoding="utf-8",
+                )
+                process = _FakeProcess(0)
+                process.pid = 930_000 + experiment_id
+                return process
+
+            def validated_rows(
+                output_path,
+                configuration,
+                repetition_attempt,
+                *,
+                expected_configuration,
+            ):
+                metric = StationCsvMetrics(100.0, 1.0, 50.0, 1.0, 0.98, "profile")
+                stations = (
+                    (metric,) * configuration.sta_count_per_bss
+                    + (None,) * (30 - configuration.sta_count_per_bss)
+                )
+                return tuple(
+                    BssCsvRow(
+                        configuration=configuration,
+                        repetition_attempt=repetition_attempt,
+                        target_rssi_dbm=-41.5,
+                        bss_id=bss_id,
+                        mean_dominant_data_phy_rate_mbps=100.0,
+                        mean_effective_phy_rate_mbps=50.0,
+                        aggregate_data_tx_rate_over_interval_mbps=float(
+                            configuration.sta_count_per_bss
+                        ),
+                        competition_overhead_vs_single_sta=None,
+                        stations=stations,
+                    )
+                    for bss_id in range(3)
+                )
+
+            with mock.patch.object(
+                runner,
+                "load_output_document",
+                side_effect=validated_rows,
+            ):
+                run_benchmark(
+                    ns3_root=root,
+                    config_path=DEFAULT_CONFIG,
+                    timestamp=timestamp,
+                    experiment_ids=(19,),
+                    process_factory=fake_process,
+                    resource_capability=fallback_resource_capability(directory),
+                    output=StringIO(),
+                )
+
+            self.assertEqual(process_calls, [1, 19])
+            summary = read_json(run_directory / "resource_summary.json")
+            self.assertIs(summary["complete_matrix"], False)
+            self.assertEqual(summary["requested_experiment_ids"], [19])
+            self.assertEqual(summary["executed_experiment_ids"], [1, 19])
+            self.assertEqual(summary["auto_included_baseline_ids"], [1])
+            self.assertEqual(
+                [row[0] for row in read_csv(run_directory / "results.csv")[1:]],
+                ["1"] * 3 + ["19"] * 3,
+            )
+
+    def test_explicit_all_ids_remains_subset_while_no_filter_is_complete(self) -> None:
+        all_ids = tuple(range(1, 127))
+        explicit = runner._select_run(None, all_ids)
+        default = runner._select_run(None, None)
+
+        self.assertIs(explicit.complete_matrix, False)
+        self.assertEqual(explicit.requested_experiment_ids, all_ids)
+        self.assertEqual(explicit.executed_experiment_ids, all_ids)
+        self.assertEqual(explicit.auto_included_baseline_ids, ())
+        self.assertIs(default.complete_matrix, True)
+        self.assertEqual(default.executed_experiment_ids, all_ids)
+
+    def test_build_failure_launches_no_simulation_worker(self) -> None:
+        configuration = build_matrix()[0]
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            simulation_calls = []
+            build_calls = []
+
+            with self.assertRaisesRegex(RunnerError, "build.*return code 9"):
+                run_benchmark(
+                    ns3_root=root,
+                    config_path=DEFAULT_CONFIG,
+                    timestamp="build_failure",
+                    configurations=(configuration,),
+                    process_factory=lambda command, **kwargs: simulation_calls.append(
+                        command
+                    ),
+                    build_runner=lambda command, cwd: build_calls.append(
+                        (tuple(command), cwd)
+                    )
+                    or 9,
+                    resource_capability=fallback_resource_capability(directory),
+                    output=StringIO(),
+                )
+
+            self.assertEqual(
+                build_calls,
+                [
+                    (
+                        (str(root / "ns3"), "build", "saturated-tcp-scenario"),
+                        root,
+                    )
+                ],
+            )
+            self.assertEqual(simulation_calls, [])
+            self.assertFalse((root / "run").exists())
+
+    def test_completed_failure_is_consumed_before_any_further_admission(self) -> None:
+        configurations = build_matrix()[:5]
+        timestamp = "prompt_failure_stop"
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            run_directory = root / "run" / f"scripted_exp_{timestamp}"
+            process_calls = []
+
+            class ImmediateExecutor:
+                def __init__(self, **kwargs):
+                    pass
+
+                def submit(self, function, **kwargs):
+                    future = Future()
+                    try:
+                        future.set_result(function(**kwargs))
+                    except BaseException as error:
+                        future.set_exception(error)
+                    return future
+
+                def shutdown(self, **kwargs):
+                    pass
+
+            class FixedMonitor:
+                def __init__(self, root_pid, capability):
+                    pass
+
+                def start(self):
+                    pass
+
+                def finish(self, exit_code):
+                    return ResourceMeasurement(
+                        100,
+                        1_000,
+                        90_000,
+                        90.0,
+                        0.01,
+                        exit_code,
+                        LINUX_PROC_MONITOR_MODE,
+                    )
+
+            def fake_process(command, **kwargs):
+                attempt_directory = Path(
+                    next(
+                        argument.split("=", 1)[1]
+                        for argument in shlex.split(command[-1])
+                        if argument.startswith("--general-run-folder=")
+                    )
+                )
+                experiment_id = int(
+                    attempt_directory.parent.name.split("_", 1)[1]
+                )
+                process_calls.append(experiment_id)
+                if experiment_id == 1:
+                    write_valid_output(
+                        attempt_directory / "output.json",
+                        configurations[0],
+                        attempt_directory,
+                    )
+                process = _FakeProcess(0 if experiment_id == 1 else 7)
+                process.pid = 950_000 + experiment_id
+                return process
+
+            capability = ResourceCapability(
+                LINUX_PROC_MONITOR_MODE,
+                Path("/proc"),
+                Path("/proc/meminfo"),
+                MemorySnapshot(100_000, 90_000),
+                "test Linux proc capability",
+            )
+            with (
+                mock.patch.object(runner, "ThreadPoolExecutor", ImmediateExecutor),
+                self.assertRaisesRegex(RunnerError, "return code 7"),
+            ):
+                run_benchmark(
+                    ns3_root=root,
+                    config_path=DEFAULT_CONFIG,
+                    timestamp=timestamp,
+                    configurations=configurations,
+                    process_factory=fake_process,
+                    build_runner=lambda command, cwd: 0,
+                    resource_capability=capability,
+                    resource_monitor_factory=FixedMonitor,
+                    memory_snapshot_reader=lambda: MemorySnapshot(100_000, 90_000),
+                    active_rss_reader=lambda process_ids: tuple(
+                        0 for _ in process_ids
+                    ),
+                    logical_cpu_count=8,
+                    jobs=4,
+                    output=StringIO(),
+                )
+
+            self.assertEqual(process_calls, [1, 2])
+            self.assertFalse((run_directory / "experiment_003").exists())
+
+    def test_no_active_worker_with_unsatisfied_reserve_fails_without_waiting(self) -> None:
+        configurations = build_matrix()[:2]
+        timestamp = "no_active_memory"
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            process_calls = []
+            snapshots = iter(
+                (
+                    MemorySnapshot(10_000, 9_000),
+                    MemorySnapshot(10_000, 2_000),
+                )
+            )
+
+            class FixedMonitor:
+                def __init__(self, root_pid, capability):
+                    pass
+
+                def start(self):
+                    pass
+
+                def finish(self, exit_code):
+                    return ResourceMeasurement(
+                        100,
+                        1_000,
+                        9_000,
+                        90.0,
+                        0.01,
+                        exit_code,
+                        LINUX_PROC_MONITOR_MODE,
+                    )
+
+            def fake_process(command, **kwargs):
+                attempt_directory = Path(
+                    next(
+                        argument.split("=", 1)[1]
+                        for argument in shlex.split(command[-1])
+                        if argument.startswith("--general-run-folder=")
+                    )
+                )
+                experiment_id = int(
+                    attempt_directory.parent.name.split("_", 1)[1]
+                )
+                process_calls.append(experiment_id)
+                write_valid_output(
+                    attempt_directory / "output.json",
+                    configurations[experiment_id - 1],
+                    attempt_directory,
+                )
+                process = _FakeProcess(0)
+                process.pid = 960_000 + experiment_id
+                return process
+
+            capability = ResourceCapability(
+                LINUX_PROC_MONITOR_MODE,
+                Path("/proc"),
+                Path("/proc/meminfo"),
+                MemorySnapshot(10_000, 9_000),
+                "test Linux proc capability",
+            )
+            started = time.monotonic()
+            with self.assertRaisesRegex(RunnerError, "insufficient available memory"):
+                run_benchmark(
+                    ns3_root=root,
+                    config_path=DEFAULT_CONFIG,
+                    timestamp=timestamp,
+                    configurations=configurations,
+                    process_factory=fake_process,
+                    build_runner=lambda command, cwd: 0,
+                    resource_capability=capability,
+                    resource_monitor_factory=FixedMonitor,
+                    memory_snapshot_reader=lambda: next(snapshots),
+                    active_rss_reader=lambda process_ids: (),
+                    logical_cpu_count=8,
+                    jobs=2,
+                    output=StringIO(),
+                )
+            self.assertLess(time.monotonic() - started, 1.0)
+            self.assertEqual(process_calls, [1])
+
+    def test_process_born_after_registry_stop_self_terminates_and_is_reaped(self) -> None:
+        with TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            stdout_path = temporary / "stdout.log"
+            stderr_path = temporary / "stderr.log"
+            factory_entered = threading.Event()
+            allow_popen = threading.Event()
+            processes = []
+            errors = []
+            registry = runner._ActiveProcessRegistry()
+
+            def delayed_factory(command, **kwargs):
+                factory_entered.set()
+                if not allow_popen.wait(2.0):
+                    raise AssertionError("test did not release delayed Popen")
+                process = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import signal,time;"
+                        "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+                        "time.sleep(30)",
+                    ],
+                    **kwargs,
+                )
+                processes.append(process)
+                return process
+
+            def launch_after_stop(stdout, stderr):
+                try:
+                    registry.launch(
+                        delayed_factory,
+                        ["unused"],
+                        cwd=temporary,
+                        stdout=stdout,
+                        stderr=stderr,
+                        start_new_session=True,
+                    )
+                except BaseException as error:
+                    errors.append(error)
+
+            try:
+                with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
+                    launcher = threading.Thread(
+                        target=launch_after_stop,
+                        args=(stdout, stderr),
+                    )
+                    launcher.start()
+                    self.assertTrue(factory_entered.wait(2.0))
+                    registry.stop()
+                    allow_popen.set()
+                    launcher.join(2.0)
+                self.assertFalse(launcher.is_alive())
+                self.assertEqual(len(processes), 1)
+                self.assertEqual(len(errors), 1)
+                self.assertIsInstance(errors[0], runner._AdmissionsStopped)
+                self.assertIsNotNone(processes[0].returncode)
+                self.assertFalse(_process_group_exists(processes[0].pid))
+            finally:
+                allow_popen.set()
+                for process in processes:
+                    _cleanup_real_process_group(process)
+
+    def test_controller_sigint_breaks_completion_wait_and_stops_active_group(self) -> None:
+        configuration = build_matrix()[0]
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            marker = Path(directory) / "active.marker"
+            processes = []
+            timers = []
+
+            class FixedMonitor:
+                def __init__(self, root_pid, capability):
+                    pass
+
+                def start(self):
+                    pass
+
+                def finish(self, exit_code):
+                    return ResourceMeasurement(
+                        100,
+                        1_000,
+                        90_000,
+                        90.0,
+                        0.01,
+                        exit_code,
+                        LINUX_PROC_MONITOR_MODE,
+                    )
+
+            def real_process(command, **kwargs):
+                script = (
+                    "import pathlib,signal,time;"
+                    "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+                    f"pathlib.Path({str(marker)!r}).write_text('active');"
+                    "time.sleep(30)"
+                )
+                process = subprocess.Popen(
+                    [sys.executable, "-c", script],
+                    **kwargs,
+                )
+                processes.append(process)
+                deadline = time.monotonic() + 1.0
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                if not marker.exists():
+                    raise AssertionError("real worker did not reach completion wait")
+                timer = threading.Timer(0.05, _thread.interrupt_main)
+                timers.append(timer)
+                timer.start()
+                return process
+
+            capability = ResourceCapability(
+                LINUX_PROC_MONITOR_MODE,
+                Path("/proc"),
+                Path("/proc/meminfo"),
+                MemorySnapshot(100_000, 90_000),
+                "test Linux proc capability",
+            )
+            started = time.monotonic()
+            try:
+                with self.assertRaises(KeyboardInterrupt):
+                    run_benchmark(
+                        ns3_root=root,
+                        config_path=DEFAULT_CONFIG,
+                        timestamp="controller_sigint",
+                        configurations=(configuration,),
+                        process_factory=real_process,
+                        build_runner=lambda command, cwd: 0,
+                        resource_capability=capability,
+                        resource_monitor_factory=FixedMonitor,
+                        memory_snapshot_reader=lambda: MemorySnapshot(
+                            100_000,
+                            90_000,
+                        ),
+                        active_rss_reader=lambda process_ids: tuple(
+                            0 for _ in process_ids
+                        ),
+                        logical_cpu_count=8,
+                        jobs=2,
+                        output=StringIO(),
+                    )
+                self.assertLess(time.monotonic() - started, 1.0)
+                self.assertEqual(len(processes), 1)
+                self.assertIsNotNone(processes[0].returncode)
+                self.assertFalse(_process_group_exists(processes[0].pid))
+            finally:
+                for timer in timers:
+                    timer.cancel()
+                    timer.join()
+                for process in processes:
+                    _cleanup_real_process_group(process)
+
+    def test_complete_run_below_acceptance_floor_finishes_healthy_work_then_fails(self) -> None:
+        matrix = build_matrix()
+        selected = (matrix[17], matrix[125])
+        selection = runner._RunSelection(
+            configurations=selected,
+            requested_experiment_ids=(18, 126),
+            executed_experiment_ids=(18, 126),
+            auto_included_baseline_ids=(),
+            complete_matrix=True,
+        )
+        timestamp = "acceptance_floor"
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            run_directory = root / "run" / f"scripted_exp_{timestamp}"
+            process_calls = []
+
+            class FixedMonitor:
+                def __init__(self, root_pid, capability):
+                    pass
+
+                def start(self):
+                    pass
+
+                def finish(self, exit_code):
+                    return ResourceMeasurement(
+                        100,
+                        1_000,
+                        14_000,
+                        14.0,
+                        0.01,
+                        exit_code,
+                        LINUX_PROC_MONITOR_MODE,
+                    )
+
+            def fake_process(command, **kwargs):
+                attempt_directory = Path(
+                    next(
+                        argument.split("=", 1)[1]
+                        for argument in shlex.split(command[-1])
+                        if argument.startswith("--general-run-folder=")
+                    )
+                )
+                experiment_id = int(
+                    attempt_directory.parent.name.split("_", 1)[1]
+                )
+                process_calls.append(experiment_id)
+                (attempt_directory / "output.json").write_text("{}", encoding="utf-8")
+                process = _FakeProcess(0)
+                process.pid = 970_000 + experiment_id
+                return process
+
+            def validated_rows(
+                output_path,
+                configuration,
+                repetition_attempt,
+                *,
+                expected_configuration,
+            ):
+                metric = StationCsvMetrics(100.0, 1.0, 50.0, 1.0, 0.98, "profile")
+                stations = (
+                    (metric,) * configuration.sta_count_per_bss
+                    + (None,) * (30 - configuration.sta_count_per_bss)
+                )
+                return tuple(
+                    BssCsvRow(
+                        configuration,
+                        repetition_attempt,
+                        -60.0,
+                        bss_id,
+                        100.0,
+                        50.0,
+                        float(configuration.sta_count_per_bss),
+                        None,
+                        stations,
+                    )
+                    for bss_id in range(3)
+                )
+
+            capability = ResourceCapability(
+                LINUX_PROC_MONITOR_MODE,
+                Path("/proc"),
+                Path("/proc/meminfo"),
+                MemorySnapshot(100_000, 90_000),
+                "test Linux proc capability",
+            )
+            with (
+                mock.patch.object(runner, "_select_run", return_value=selection),
+                mock.patch.object(
+                    runner,
+                    "load_output_document",
+                    side_effect=validated_rows,
+                ),
+                self.assertRaisesRegex(RunnerError, "15 percent.*acceptance floor"),
+            ):
+                run_benchmark(
+                    ns3_root=root,
+                    config_path=DEFAULT_CONFIG,
+                    timestamp=timestamp,
+                    process_factory=fake_process,
+                    build_runner=lambda command, cwd: 0,
+                    resource_capability=capability,
+                    resource_monitor_factory=FixedMonitor,
+                    memory_snapshot_reader=lambda: MemorySnapshot(100_000, 90_000),
+                    active_rss_reader=lambda process_ids: tuple(
+                        0 for _ in process_ids
+                    ),
+                    logical_cpu_count=8,
+                    jobs=2,
+                    output=StringIO(),
+                )
+
+            self.assertEqual(process_calls, [126, 18])
+            self.assertEqual(len(read_csv(run_directory / "results.csv")), 7)
+            summary = read_json(run_directory / "resource_summary.json")
+            self.assertIs(summary["complete_matrix"], True)
+            self.assertEqual(summary["minimum_mem_available_percent"], 14.0)
+            self.assertEqual(
+                [record["exit_code"] for record in summary["attempts"]],
+                [0, 0],
+            )
+
+    def test_runtime_floor_breach_pauses_then_resumes_without_killing_active_work(self) -> None:
+        configurations = build_matrix()[:3]
+        timestamp = "floor_pause_resume"
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            id_two_waiting = threading.Event()
+            release_id_two = threading.Event()
+            memory_recovered = threading.Event()
+            id_three_started = threading.Event()
+            controller_errors = []
+
+            class FixedMonitor:
+                def __init__(self, root_pid, capability):
+                    pass
+
+                def start(self):
+                    pass
+
+                def finish(self, exit_code):
+                    return ResourceMeasurement(
+                        100,
+                        1_000,
+                        1_400,
+                        14.0,
+                        0.01,
+                        exit_code,
+                        LINUX_PROC_MONITOR_MODE,
+                    )
+
+            class WaitingProcess(_FakeProcess):
+                def wait(self, timeout=None):
+                    id_two_waiting.set()
+                    if not release_id_two.wait(3.0):
+                        raise AssertionError("test did not release healthy active work")
+                    return super().wait(timeout)
+
+            snapshot_calls = 0
+
+            def memory_snapshot():
+                nonlocal snapshot_calls
+                snapshot_calls += 1
+                if snapshot_calls <= 2 or memory_recovered.is_set():
+                    return MemorySnapshot(10_000, 9_000)
+                return MemorySnapshot(10_000, 1_400)
+
+            def fake_process(command, **kwargs):
+                attempt_directory = Path(
+                    next(
+                        argument.split("=", 1)[1]
+                        for argument in shlex.split(command[-1])
+                        if argument.startswith("--general-run-folder=")
+                    )
+                )
+                experiment_id = int(
+                    attempt_directory.parent.name.split("_", 1)[1]
+                )
+                write_valid_output(
+                    attempt_directory / "output.json",
+                    configurations[experiment_id - 1],
+                    attempt_directory,
+                )
+                if experiment_id == 2:
+                    process = WaitingProcess(0)
+                else:
+                    process = _FakeProcess(0)
+                if experiment_id == 3:
+                    id_three_started.set()
+                process.pid = 980_000 + experiment_id
+                return process
+
+            capability = ResourceCapability(
+                LINUX_PROC_MONITOR_MODE,
+                Path("/proc"),
+                Path("/proc/meminfo"),
+                MemorySnapshot(10_000, 9_000),
+                "test Linux proc capability",
+            )
+
+            def run_controller():
+                try:
+                    run_benchmark(
+                        ns3_root=root,
+                        config_path=DEFAULT_CONFIG,
+                        timestamp=timestamp,
+                        configurations=configurations,
+                        process_factory=fake_process,
+                        build_runner=lambda command, cwd: 0,
+                        resource_capability=capability,
+                        resource_monitor_factory=FixedMonitor,
+                        memory_snapshot_reader=memory_snapshot,
+                        active_rss_reader=lambda process_ids: tuple(
+                            0 for _ in process_ids
+                        ),
+                        logical_cpu_count=8,
+                        jobs=2,
+                        output=StringIO(),
+                    )
+                except BaseException as error:
+                    controller_errors.append(error)
+
+            controller = threading.Thread(target=run_controller)
+            controller.start()
+            self.assertTrue(id_two_waiting.wait(2.0))
+            self.assertFalse(id_three_started.wait(0.2))
+            self.assertFalse(release_id_two.is_set())
+            memory_recovered.set()
+            self.assertTrue(id_three_started.wait(2.0))
+            release_id_two.set()
+            controller.join(3.0)
+
+            self.assertFalse(controller.is_alive())
+            self.assertEqual(controller_errors, [])
+            results_path = root / "run" / f"scripted_exp_{timestamp}/results.csv"
+            self.assertEqual(len(read_csv(results_path)), 10)
+
     def test_retains_exact_ordered_attempt_records_and_sequential_root_summary(self) -> None:
         configurations = tuple(reversed(build_matrix()[:2]))
         timestamp = "resources_success"
@@ -370,12 +1647,18 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
 
             def fake_process(command, **kwargs):
                 nonlocal calls
-                configuration = configurations[calls]
                 calls += 1
-                attempt_directory = (
-                    run_directory
-                    / f"experiment_{configuration.experiment_id:03d}/attempt_1"
+                attempt_directory = Path(
+                    next(
+                        argument.split("=", 1)[1]
+                        for argument in shlex.split(command[-1])
+                        if argument.startswith("--general-run-folder=")
+                    )
                 )
+                experiment_id = int(
+                    attempt_directory.parent.name.split("_", 1)[1]
+                )
+                configuration = build_matrix()[experiment_id - 1]
                 write_valid_output(
                     attempt_directory / "output.json",
                     configuration,
@@ -457,7 +1740,7 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                     "schema_version": 1,
                     "complete_matrix": False,
                     "requested_experiment_ids": [2, 1],
-                    "executed_experiment_ids": [2, 1],
+                    "executed_experiment_ids": [1, 2],
                     "auto_included_baseline_ids": [],
                     "memory_reserve_percent": 20,
                     "calibrated_peak_rss_bytes": None,
@@ -513,7 +1796,14 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
             root = create_fake_ns3_root(directory)
             error = StringIO()
             status = main(
-                ["--ns3-root", str(root), "--config", str(DEFAULT_CONFIG)],
+                [
+                    "--ns3-root",
+                    str(root),
+                    "--config",
+                    str(DEFAULT_CONFIG),
+                    "--experiment-ids",
+                    "1",
+                ],
                 process_factory=lambda command, **kwargs: _FakeProcess(
                     -signal.SIGTERM,
                     wait_effects=(KeyboardInterrupt(),),
@@ -661,7 +1951,14 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                 if case == "interrupt_both":
                     error = StringIO()
                     status = main(
-                        ["--ns3-root", str(root), "--config", str(DEFAULT_CONFIG)],
+                        [
+                            "--ns3-root",
+                            str(root),
+                            "--config",
+                            str(DEFAULT_CONFIG),
+                            "--experiment-ids",
+                            "1",
+                        ],
                         process_factory=failing_process,
                         resource_capability=fallback_resource_capability(directory),
                         timestamp_factory=lambda: f"overlap_{case}",
@@ -808,6 +2105,7 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                     timestamp=timestamp,
                     configurations=configurations,
                     process_factory=fake_process,
+                    resource_capability=fallback_resource_capability(directory),
                     output=StringIO(),
                 )
             self.assertEqual(calls, 2)
@@ -879,6 +2177,7 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                     timestamp="attempt_collision",
                     configurations=(configuration,),
                     process_factory=colliding_process,
+                    resource_capability=fallback_resource_capability(directory),
                     output=StringIO(),
                 )
             self.assertEqual(calls, 1)
@@ -1298,7 +2597,14 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                 )
 
             status = main(
-                ["--ns3-root", str(root), "--config", str(DEFAULT_CONFIG)],
+                [
+                    "--ns3-root",
+                    str(root),
+                    "--config",
+                    str(DEFAULT_CONFIG),
+                    "--experiment-ids",
+                    "1",
+                ],
                 process_factory=interrupt_process,
                 timestamp_factory=lambda: "interrupt",
                 output=StringIO(),
