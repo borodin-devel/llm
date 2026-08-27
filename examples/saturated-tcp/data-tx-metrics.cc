@@ -94,6 +94,14 @@ ExtractDataTxProfileContribution(Mac48Address transmitterAddress,
     {
         return std::nullopt;
     }
+    if (txVector.GetPreambleType() != WIFI_PREAMBLE_HE_SU || txVector.IsMu())
+    {
+        throw std::invalid_argument("data TX profiles require an HE SU transmission vector");
+    }
+    if (staId != SU_STA_ID)
+    {
+        throw std::invalid_argument("data TX profiles require the SU_STA_ID PSDU key");
+    }
 
     const auto mode = txVector.GetMode(staId);
     if (mode.GetModulationClass() != WIFI_MOD_CLASS_HE)

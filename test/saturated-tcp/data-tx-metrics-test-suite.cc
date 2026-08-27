@@ -15,6 +15,7 @@
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -56,6 +57,23 @@ BuildLegacyTxVector()
                         0,
                         MHz_u{20},
                         false);
+}
+
+WifiTxVector
+BuildOneUserHeMuTxVector()
+{
+    WifiTxVector txVector(HePhy::GetHeMcs9(),
+                          WIFI_MIN_TX_PWR_LEVEL,
+                          WIFI_PREAMBLE_HE_MU,
+                          NanoSeconds(3200),
+                          1,
+                          1,
+                          0,
+                          MHz_u{80},
+                          false);
+    txVector.SetHeMuUserInfo(1, {HeRu::RuSpec{RuType::RU_106_TONE, 1, true}, 9, 1});
+    txVector.SetSigBMode(VhtPhy::GetVhtMcs0());
+    return txVector;
 }
 
 Ptr<WifiPsdu>
@@ -125,6 +143,21 @@ ThrowsInvalidArgument(Function&& function)
         return true;
     }
     return false;
+}
+
+template <typename Function>
+std::string
+GetInvalidArgumentMessage(Function&& function)
+{
+    try
+    {
+        function();
+    }
+    catch (const std::invalid_argument& error)
+    {
+        return error.what();
+    }
+    return {};
 }
 
 /** @ingroup tests Catch payload-size filters and incomplete PSDU byte accounting. */
@@ -307,6 +340,39 @@ class DataTxMetricInvariantTestCase : public TestCase
     }
 };
 
+/** @ingroup tests Catch admission of MU vectors or AID-keyed SU PSDUs. */
+class DataTxMetricSuScopeTestCase : public TestCase
+{
+  public:
+    DataTxMetricSuScopeTestCase()
+        : TestCase("reject HE-MU and non-SU-key data; catches SU-shape validation removal")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        const auto data = BuildPsdu(WIFI_MAC_DATA, 1000);
+        const WifiConstPsduMap aidKeyedPsdu{{1, data}};
+        NS_TEST_ASSERT_MSG_EQ(GetInvalidArgumentMessage([&] {
+                                  ExtractDataTxProfileContribution(STATION_ADDRESS,
+                                                                   WIFI_PHY_BAND_5GHZ,
+                                                                   aidKeyedPsdu,
+                                                                   BuildOneUserHeMuTxVector());
+                              }),
+                              "data TX profiles require an HE SU transmission vector",
+                              "One-user HE-MU data bypassed the transmission-vector shape guard");
+        NS_TEST_ASSERT_MSG_EQ(GetInvalidArgumentMessage([&] {
+                                  ExtractDataTxProfileContribution(STATION_ADDRESS,
+                                                                   WIFI_PHY_BAND_5GHZ,
+                                                                   aidKeyedPsdu,
+                                                                   BuildHeTxVector());
+                              }),
+                              "data TX profiles require the SU_STA_ID PSDU key",
+                              "A non-SU PSDU key bypassed the SU-key shape guard");
+    }
+};
+
 /** @ingroup tests Catch whole-PPDU allocation and duplicate attempt attribution. */
 class DataTxMetricWindowOverallTestCase : public TestCase
 {
@@ -400,6 +466,7 @@ CreateSaturatedTcpDataTxMetricTestCases()
         new DataTxMetricExclusionTestCase(),
         new DataTxMetricAggregateAndProfileTestCase(),
         new DataTxMetricInvariantTestCase(),
+        new DataTxMetricSuScopeTestCase(),
         new DataTxMetricWindowOverallTestCase(),
     };
 }
