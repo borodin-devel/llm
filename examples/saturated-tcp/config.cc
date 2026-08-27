@@ -374,6 +374,14 @@ GetSaturatedTcpConfigOptions()
             "wifi.rate_manager",
             [](auto& c) -> auto& { return c.wifi.rateManager; },
             "Fixed registered MinstrelHt Wi-Fi rate-manager TypeId"),
+        MakeIntegerOption<uint32_t>(
+            "wifi.guard_interval_ns",
+            [](auto& c) -> auto& { return c.wifi.guardIntervalNs; },
+            "Fixed HE guard interval in nanoseconds"),
+        MakeIntegerOption<uint32_t>(
+            "wifi.rts_cts_threshold_bytes",
+            [](auto& c) -> auto& { return c.wifi.rtsCtsThresholdBytes; },
+            "Fixed RTS/CTS threshold in bytes"),
         MakeIntegerOption<uint8_t>(
             "wifi.antennas",
             [](auto& c) -> auto& { return c.wifi.antennas; },

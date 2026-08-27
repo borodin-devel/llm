@@ -15,16 +15,22 @@
 #include "ns3/ipv4-address-helper.h"
 #include "ns3/ipv4-static-routing-helper.h"
 #include "ns3/ipv4.h"
+#include "ns3/nstime.h"
+#include "ns3/packet.h"
 #include "ns3/point-to-point-helper.h"
 #include "ns3/propagation-delay-model.h"
 #include "ns3/propagation-loss-model.h"
 #include "ns3/ssid.h"
 #include "ns3/string.h"
 #include "ns3/uinteger.h"
+#include "ns3/wifi-acknowledgment.h"
 #include "ns3/wifi-helper.h"
 #include "ns3/wifi-mac-helper.h"
+#include "ns3/wifi-mpdu.h"
 #include "ns3/wifi-net-device.h"
 #include "ns3/wifi-phy.h"
+#include "ns3/wifi-protection.h"
+#include "ns3/wifi-tx-parameters.h"
 #include "ns3/yans-wifi-channel.h"
 #include "ns3/yans-wifi-helper.h"
 
@@ -196,6 +202,27 @@ ValidateNativeRssi(Ptr<PropagationLossModel> nativeLoss,
 }
 
 /**
+ * Determine whether one nonempty data MPDU requires RTS/CTS protection.
+ *
+ * @param device Wi-Fi device whose station manager is inspected.
+ * @param recipient Peer receiving the data MPDU.
+ * @return True when the live station manager requires RTS/CTS.
+ */
+bool
+RequiresRtsCts(Ptr<WifiNetDevice> device, Mac48Address recipient)
+{
+    WifiMacHeader header(WIFI_MAC_DATA);
+    header.SetAddr1(recipient);
+    header.SetAddr2(device->GetMac()->GetAddress());
+    header.SetAddr3(device->GetMac()->GetAddress());
+    WifiTxParameters txParameters;
+    txParameters.m_txVector.SetMode(device->GetPhy()->GetDefaultMode());
+    txParameters.AddMpdu(Create<WifiMpdu>(Create<Packet>(1), header));
+    txParameters.m_txDuration = NanoSeconds(1);
+    return device->GetRemoteStationManager()->NeedRts(header, txParameters);
+}
+
+/**
  * Register every shared-channel radio with the propagation filter.
  *
  * @param topology Built node/device topology.
@@ -231,6 +258,30 @@ ValidatePlacement(const SaturatedTcpTopology& topology,
                   const std::array<SaturatedChannelState, 3>& channels,
                   const SaturatedTcpConfig& config)
 {
+    for (const auto& bss : topology.bss)
+    {
+        auto accessPoint = bss.accessPointDevice;
+        NS_ABORT_MSG_IF(!accessPoint,
+                        "saturated Wi-Fi invariant validation found a missing access point");
+        for (uint32_t stationIndex = 0; stationIndex < bss.stationDevices.GetN(); ++stationIndex)
+        {
+            auto station = DynamicCast<WifiNetDevice>(bss.stationDevices.Get(stationIndex));
+            NS_ABORT_MSG_IF(!station,
+                            "saturated Wi-Fi invariant validation found a missing station");
+            NS_ABORT_MSG_IF(station->GetHeConfiguration()->GetGuardInterval() !=
+                                NanoSeconds(config.wifi.guardIntervalNs),
+                            "saturated Wi-Fi invariant validation found a wrong HE guard interval");
+            NS_ABORT_MSG_IF(!RequiresRtsCts(station, accessPoint->GetMac()->GetAddress()),
+                            "saturated Wi-Fi invariant validation found station RTS/CTS disabled");
+            NS_ABORT_MSG_IF(accessPoint->GetHeConfiguration()->GetGuardInterval() !=
+                                NanoSeconds(config.wifi.guardIntervalNs),
+                            "saturated Wi-Fi invariant validation found a wrong HE guard interval");
+            NS_ABORT_MSG_IF(
+                !RequiresRtsCts(accessPoint, station->GetMac()->GetAddress()),
+                "saturated Wi-Fi invariant validation found access-point RTS/CTS disabled");
+        }
+    }
+
     const double stationTarget = GetSaturatedTcpStationTargetRssiDbm(config.benchmark.rssiRange);
     for (uint32_t bssIndex = 0; bssIndex < topology.bss.size(); ++bssIndex)
     {
@@ -359,7 +410,9 @@ BuildSaturatedTcpTopology(const SaturatedTcpConfig& config)
         ConfigurePhy(phy, channels.at(bssIndex).channel, config.wifi);
         WifiHelper wifi;
         wifi.SetStandard(WIFI_STANDARD_80211ax);
-        wifi.SetRemoteStationManager(config.wifi.rateManager);
+        wifi.SetRemoteStationManager(config.wifi.rateManager,
+                                     "RtsCtsThreshold",
+                                     UintegerValue(config.wifi.rtsCtsThresholdBytes));
 
         const Ssid ssid("saturated-bss-" + std::to_string(bssIndex));
         WifiMacHelper accessPointMac;
@@ -374,6 +427,14 @@ BuildSaturatedTcpTopology(const SaturatedTcpConfig& config)
         const auto accessPointDevices = wifi.Install(phy, accessPointMac, bss.accessPointNode);
         bss.accessPointDevice = DynamicCast<WifiNetDevice>(accessPointDevices.Get(0));
         bss.stationDevices = wifi.Install(phy, stationMac, bss.stationNodes);
+        bss.accessPointDevice->GetHeConfiguration()->SetGuardInterval(
+            NanoSeconds(config.wifi.guardIntervalNs));
+        for (uint32_t stationIndex = 0; stationIndex < bss.stationDevices.GetN(); ++stationIndex)
+        {
+            DynamicCast<WifiNetDevice>(bss.stationDevices.Get(stationIndex))
+                ->GetHeConfiguration()
+                ->SetGuardInterval(NanoSeconds(config.wifi.guardIntervalNs));
+        }
         bss.accessPointDevice->GetHeConfiguration()->m_bssColor = bssIndex + 1;
     }
 

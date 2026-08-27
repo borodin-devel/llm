@@ -19,8 +19,12 @@
 #include "ns3/simulator.h"
 #include "ns3/socket.h"
 #include "ns3/udp-socket-factory.h"
+#include "ns3/wifi-acknowledgment.h"
+#include "ns3/wifi-mpdu.h"
 #include "ns3/wifi-net-device.h"
 #include "ns3/wifi-phy.h"
+#include "ns3/wifi-protection.h"
+#include "ns3/wifi-tx-parameters.h"
 #include "ns3/yans-wifi-channel.h"
 
 #include <array>
@@ -76,6 +80,27 @@ Ptr<WifiNetDevice>
 GetStationDevice(const SaturatedTcpTopology& topology, uint32_t bssIndex, uint32_t stationIndex)
 {
     return DynamicCast<WifiNetDevice>(topology.bss.at(bssIndex).stationDevices.Get(stationIndex));
+}
+
+/**
+ * Determine whether one nonempty data MPDU requires RTS/CTS protection.
+ *
+ * @param device Wi-Fi device whose station manager is inspected.
+ * @param recipient Peer receiving the data MPDU.
+ * @return True when the live station manager requires RTS/CTS.
+ */
+bool
+RequiresRtsCts(Ptr<WifiNetDevice> device, Mac48Address recipient)
+{
+    WifiMacHeader header(WIFI_MAC_DATA);
+    header.SetAddr1(recipient);
+    header.SetAddr2(device->GetMac()->GetAddress());
+    header.SetAddr3(device->GetMac()->GetAddress());
+    WifiTxParameters txParameters;
+    txParameters.m_txVector.SetMode(device->GetPhy()->GetDefaultMode());
+    txParameters.AddMpdu(Create<WifiMpdu>(Create<Packet>(1), header));
+    txParameters.m_txDuration = NanoSeconds(1);
+    return device->GetRemoteStationManager()->NeedRts(header, txParameters);
 }
 
 /**
@@ -328,7 +353,18 @@ SaturatedTcpTopologyAttributesTestCase::DoRun()
             NS_TEST_ASSERT_MSG_EQ(device->GetRemoteStationManager()->GetInstanceTypeId().GetName(),
                                   "ns3::MinstrelHtWifiManager",
                                   "Wrong Wi-Fi rate manager");
+            NS_TEST_ASSERT_MSG_EQ(device->GetHeConfiguration()->GetGuardInterval(),
+                                  NanoSeconds(3200),
+                                  "HE guard interval is not 3200 ns");
         }
+        NS_TEST_ASSERT_MSG_EQ(
+            RequiresRtsCts(bss.accessPointDevice, stationDevice->GetMac()->GetAddress()),
+            true,
+            "AP station manager does not require RTS/CTS for data");
+        NS_TEST_ASSERT_MSG_EQ(
+            RequiresRtsCts(stationDevice, bss.accessPointDevice->GetMac()->GetAddress()),
+            true,
+            "STA station manager does not require RTS/CTS for data");
         NS_TEST_ASSERT_MSG_EQ(bss.accessPointDevice->GetHeConfiguration()->m_bssColor,
                               bssIndex + 1,
                               "AP BSS color is not 1, 2, or 3");

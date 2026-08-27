@@ -119,6 +119,8 @@ struct SaturatedWifiConfig
     double txPowerDbm{20.0};    ///< Fixed transmit power in dBm.
     std::string rateManager{
         "ns3::MinstrelHtWifiManager"}; ///< Fixed registered MinstrelHt rate-manager TypeId.
+    uint32_t guardIntervalNs{3200};    ///< Fixed HE guard interval in nanoseconds.
+    uint32_t rtsCtsThresholdBytes{0};  ///< Fixed RTS/CTS threshold in bytes.
     uint8_t antennas{2};               ///< Number of antennas on every AP and station.
     uint8_t maxTxSpatialStreams{2};    ///< Maximum transmit spatial streams.
     uint8_t maxRxSpatialStreams{2};    ///< Maximum receive spatial streams.

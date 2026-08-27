@@ -114,6 +114,8 @@ SaturatedTcpConfigDefaultsTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(config.wifi.rateManager,
                           "ns3::MinstrelHtWifiManager",
                           "Wrong rate manager");
+    NS_TEST_ASSERT_MSG_EQ(config.wifi.guardIntervalNs, 3200, "Wrong HE guard interval");
+    NS_TEST_ASSERT_MSG_EQ(config.wifi.rtsCtsThresholdBytes, 0, "Wrong RTS/CTS threshold");
     NS_TEST_ASSERT_MSG_EQ(config.wifi.antennas, 2, "Wrong antenna count");
     NS_TEST_ASSERT_MSG_EQ(config.wifi.maxTxSpatialStreams, 2, "Wrong maximum TX streams");
     NS_TEST_ASSERT_MSG_EQ(config.wifi.maxRxSpatialStreams, 2, "Wrong maximum RX streams");
@@ -193,6 +195,8 @@ SaturatedTcpConfigParsingTestCase::DoRun()
                                                "mimo_mode = \"su\"\n"
                                                "[wifi]\n"
                                                "tx_power_dbm = 20.0\n"
+                                               "guard_interval_ns = 3200\n"
+                                               "rts_cts_threshold_bytes = 0\n"
                                                "[statistics]\n"
                                                "window_ms = 20\n");
     const auto config = ParseConfig({"--benchmark-rssi-range=low",
@@ -201,6 +205,9 @@ SaturatedTcpConfigParsingTestCase::DoRun()
                                      "--benchmark-sta-count-per-bss",
                                      "30",
                                      "--simulation-rng-run=9",
+                                     "--wifi-guard-interval-ns",
+                                     "3200",
+                                     "--wifi-rts-cts-threshold-bytes=0",
                                      "--config",
                                      configPath.string()});
     NS_TEST_ASSERT_MSG_EQ(config.script.repetitions, 7, "TOML repetition not loaded");
@@ -215,6 +222,8 @@ SaturatedTcpConfigParsingTestCase::DoRun()
                           SaturatedTrafficMode::UL_DL,
                           "Wrong traffic enum");
     NS_TEST_ASSERT_MSG_EQ_TOL(config.wifi.txPowerDbm, 20.0, 1e-12, "TOML float not loaded");
+    NS_TEST_ASSERT_MSG_EQ(config.wifi.guardIntervalNs, 3200, "HE guard interval not loaded");
+    NS_TEST_ASSERT_MSG_EQ(config.wifi.rtsCtsThresholdBytes, 0, "RTS/CTS threshold not loaded");
     NS_TEST_ASSERT_MSG_EQ(config.statistics.windowMs, 20, "TOML integer not loaded");
 
     const std::vector<std::pair<std::string, SaturatedRssiRange>> rssiValues{
@@ -306,6 +315,16 @@ SaturatedTcpConfigParsingTestCase::DoRun()
                  "saturated flag --general-output-name requires a value");
     CheckFailure({"--config", configPath.string(), "--wifi-tx-power-dbm", "-1"},
                  "wifi.tx_power_dbm");
+    for (const std::string_view guardInterval : {"800", "1600", "3201"})
+    {
+        CheckFailure({"--config",
+                      configPath.string(),
+                      "--wifi-guard-interval-ns",
+                      std::string(guardInterval)},
+                     "wifi.guard_interval_ns");
+    }
+    CheckFailure({"--config", configPath.string(), "--wifi-rts-cts-threshold-bytes", "1"},
+                 "wifi.rts_cts_threshold_bytes");
     const auto optionLikeString =
         ParseConfig({"--config", configPath.string(), "--general-run-folder=--literal"});
     NS_TEST_ASSERT_MSG_EQ(optionLikeString.general.runFolder.value(),
@@ -443,6 +462,10 @@ SaturatedTcpConfigValidationTestCase::DoRun()
     CheckFailure([](auto& c) { c.wifi.channelNumber = 43; }, "wifi.channel_number");
     CheckFailure([](auto& c) { c.wifi.bandwidthMhz = 40; }, "wifi.bandwidth_mhz");
     CheckFailure([](auto& c) { c.wifi.primary20Index = 1; }, "wifi.primary_20_index");
+    CheckFailure([](auto& c) { c.wifi.guardIntervalNs = 800; }, "wifi.guard_interval_ns");
+    CheckFailure([](auto& c) { c.wifi.guardIntervalNs = 1600; }, "wifi.guard_interval_ns");
+    CheckFailure([](auto& c) { c.wifi.guardIntervalNs = 3201; }, "wifi.guard_interval_ns");
+    CheckFailure([](auto& c) { c.wifi.rtsCtsThresholdBytes = 1; }, "wifi.rts_cts_threshold_bytes");
     CheckFailure([](auto& c) { c.wifi.antennas = 0; }, "wifi.antennas");
     CheckFailure([](auto& c) { c.wifi.maxTxSpatialStreams = 3; }, "wifi.max_tx_spatial_streams");
     CheckFailure([](auto& c) { c.wifi.maxRxSpatialStreams = 3; }, "wifi.max_rx_spatial_streams");
@@ -601,6 +624,8 @@ SaturatedTcpConfigJsonTestCase::DoRun()
                                                     "primary_20_index",
                                                     "tx_power_dbm",
                                                     "rate_manager",
+                                                    "guard_interval_ns",
+                                                    "rts_cts_threshold_bytes",
                                                     "antennas",
                                                     "max_tx_spatial_streams",
                                                     "max_rx_spatial_streams"};
@@ -624,6 +649,12 @@ SaturatedTcpConfigJsonTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(document.at("wifi").at("tx_power_dbm").is_number_float(),
                           true,
                           "TX power is not floating-point JSON");
+    NS_TEST_ASSERT_MSG_EQ(document.at("wifi").at("guard_interval_ns"),
+                          3200,
+                          "Wrong HE guard interval JSON metadata");
+    NS_TEST_ASSERT_MSG_EQ(document.at("wifi").at("rts_cts_threshold_bytes"),
+                          0,
+                          "Wrong RTS/CTS threshold JSON metadata");
     NS_TEST_ASSERT_MSG_EQ(document.at("benchmark").at("rssi_range"),
                           "medium",
                           "Wrong RSSI spelling");

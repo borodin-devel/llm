@@ -453,6 +453,16 @@ ValidateSaturatedTcpConfig(const SaturatedTcpConfig& config)
             "--wifi-tx-power-dbm",
             "20.0",
             config.wifi.txPowerDbm);
+    Require(config.wifi.guardIntervalNs == 3200,
+            "wifi.guard_interval_ns",
+            "--wifi-guard-interval-ns",
+            "3200",
+            config.wifi.guardIntervalNs);
+    Require(config.wifi.rtsCtsThresholdBytes == 0,
+            "wifi.rts_cts_threshold_bytes",
+            "--wifi-rts-cts-threshold-bytes",
+            "0",
+            config.wifi.rtsCtsThresholdBytes);
     Require(config.wifi.antennas == 2,
             "wifi.antennas",
             "--wifi-antennas",
