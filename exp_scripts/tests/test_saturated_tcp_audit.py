@@ -232,6 +232,7 @@ def _output_document(experiment_id: int, station_count: int) -> dict[str, object
                     "wired_delay": "0.1ms",
                 },
                 "statistics": {"window_ms": 10},
+                "logging": {"scenario_level": "info"},
             },
             "entity_inventory": {
                 "access_points": [
@@ -683,6 +684,91 @@ class SaturatedTcpAuditTest(unittest.TestCase):
                         for item in self.audit().discrepancies
                     )
                 )
+
+    def test_configuration_sections_require_exact_scalar_types(self) -> None:
+        output_path = self.run_directory / "experiment_001/attempt_1/output.json"
+        original = json.loads(output_path.read_text(encoding="utf-8"))
+        mutations = (
+            ("general", "output_name", True),
+            ("script", "repetitions", 1.0),
+            ("simulation", "rng_run", 1.0),
+            ("simulation", "rng_run", True),
+            ("benchmark", "sta_count_per_bss", 1.0),
+            ("benchmark", "sta_count_per_bss", True),
+            ("wifi", "channel_number", True),
+            ("tcp", "segment_size_bytes", True),
+            ("statistics", "window_ms", True),
+            ("logging", "scenario_level", True),
+        )
+        for section, field, value in mutations:
+            with self.subTest(section=section, field=field, value=value):
+                changed = deepcopy(original)
+                changed["experiment_metadata"]["configuration"][section][field] = value
+                output_path.write_text(json.dumps(changed), encoding="utf-8")
+                self.assertNotEqual(self.audit().discrepancies, ())
+
+    def test_configuration_rejects_reordered_top_level_and_nested_objects(self) -> None:
+        output_path = self.run_directory / "experiment_001/attempt_1/output.json"
+        original = json.loads(output_path.read_text(encoding="utf-8"))
+
+        changed = deepcopy(original)
+        configuration = changed["experiment_metadata"]["configuration"]
+        configuration["general"] = configuration.pop("general")
+        mutations = [("configuration", changed)]
+
+        for section in ("general", "simulation", "benchmark", "wifi", "tcp"):
+            changed = deepcopy(original)
+            fields = changed["experiment_metadata"]["configuration"][section]
+            first = next(iter(fields))
+            fields[first] = fields.pop(first)
+            mutations.append((section, changed))
+
+        for section, document in mutations:
+            with self.subTest(section=section):
+                output_path.write_text(json.dumps(document), encoding="utf-8")
+                self.assertNotEqual(self.audit().discrepancies, ())
+
+    def test_configuration_rejects_extra_sections_and_fields(self) -> None:
+        output_path = self.run_directory / "experiment_001/attempt_1/output.json"
+        original = json.loads(output_path.read_text(encoding="utf-8"))
+
+        changed = deepcopy(original)
+        changed["experiment_metadata"]["configuration"]["unexpected"] = {}
+        mutations = [("configuration", changed)]
+
+        for section in (
+            "general",
+            "script",
+            "simulation",
+            "benchmark",
+            "wifi",
+            "tcp",
+            "statistics",
+            "logging",
+        ):
+            changed = deepcopy(original)
+            changed["experiment_metadata"]["configuration"][section]["unexpected"] = None
+            mutations.append((section, changed))
+
+        for section, document in mutations:
+            with self.subTest(section=section):
+                output_path.write_text(json.dumps(document), encoding="utf-8")
+                self.assertNotEqual(self.audit().discrepancies, ())
+
+    def test_configuration_requires_output_name_and_nonempty_run_folder(self) -> None:
+        output_path = self.run_directory / "experiment_001/attempt_1/output.json"
+        original = json.loads(output_path.read_text(encoding="utf-8"))
+        mutations = (
+            ("output_name", "wrong.json"),
+            ("run_folder", ""),
+            ("run_folder", True),
+        )
+        for field, value in mutations:
+            with self.subTest(field=field, value=value):
+                changed = deepcopy(original)
+                changed["experiment_metadata"]["configuration"]["general"][field] = value
+                output_path.write_text(json.dumps(changed), encoding="utf-8")
+                self.assertNotEqual(self.audit().discrepancies, ())
 
     def test_rejects_measurement_duration_and_window_invariant_mutations(self) -> None:
         output_path = self.run_directory / "experiment_001/attempt_1/output.json"

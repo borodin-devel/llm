@@ -251,23 +251,25 @@ def _read_process_identity(
         raise ResourceError(
             f"cannot read process identity for PID {process_id} at {stat_path}: {error}"
         ) from error
-    prefix, separator, remaining = contents.strip().rpartition(") ")
-    fields = remaining.split()
+    except UnicodeError as error:
+        raise ResourceError(
+            f"malformed process identity for PID {process_id} at {stat_path}: "
+            "non-ASCII data"
+        ) from error
+    prefix, separator, remaining = contents.removesuffix("\n").rpartition(") ")
+    fields = remaining.split(" ")
     if (
         not separator
         or not prefix.startswith(f"{process_id} (")
         or len(fields) <= 19
+        or any(not field for field in fields)
     ):
         raise ResourceError(f"malformed process identity for PID {process_id} at {stat_path}")
-    try:
-        parent_pid = int(fields[1], 10)
-        start_time_ticks = int(fields[19], 10)
-    except ValueError as error:
-        raise ResourceError(
-            f"malformed process identity for PID {process_id} at {stat_path}"
-        ) from error
+    diagnostic = f"malformed process identity for PID {process_id} at {stat_path}"
+    parent_pid = _parse_ascii_decimal(fields[1], diagnostic)
+    start_time_ticks = _parse_ascii_decimal(fields[19], diagnostic)
     if parent_pid < 0 or start_time_ticks < 0:
-        raise ResourceError(f"malformed process identity for PID {process_id} at {stat_path}")
+        raise ResourceError(diagnostic)
     return _ProcessIdentity(process_id, parent_pid, start_time_ticks)
 
 

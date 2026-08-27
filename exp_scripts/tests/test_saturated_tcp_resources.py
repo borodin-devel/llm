@@ -174,6 +174,50 @@ class ProcParserTest(unittest.TestCase):
                 else:
                     self.assertEqual(process_tree_rss_bytes(100, proc_root), 10_240)
 
+    def test_process_identity_decimals_reject_noncanonical_tokens(self) -> None:
+        for field_index, field_name in ((1, "parent PID"), (19, "start ticks")):
+            for invalid in ("+1", "1_0", "-1", "\t1", "1\t", "１"):
+                with (
+                    self.subTest(field=field_name, invalid=invalid),
+                    TemporaryDirectory() as directory,
+                ):
+                    proc_root = Path(directory)
+                    _write_process(
+                        proc_root,
+                        200,
+                        rss_kb=1,
+                        parent_pid=1,
+                        start_time_ticks=2_000,
+                    )
+                    stat_path = proc_root / "200/stat"
+                    contents = stat_path.read_text(encoding="ascii")
+                    prefix, separator, remaining = contents.rstrip().rpartition(") ")
+                    fields = remaining.split()
+                    fields[field_index] = invalid
+                    stat_path.write_text(
+                        f"{prefix}{separator}{' '.join(fields)}\n",
+                        encoding="utf-8",
+                    )
+
+                    with self.assertRaisesRegex(ResourceError, "process identity"):
+                        resources._read_process_identity(200, proc_root)
+
+    def test_process_identity_preserves_zero_parent_and_start_ticks(self) -> None:
+        with TemporaryDirectory() as directory:
+            proc_root = Path(directory)
+            _write_process(
+                proc_root,
+                200,
+                rss_kb=1,
+                parent_pid=0,
+                start_time_ticks=0,
+            )
+
+            self.assertEqual(
+                resources._read_process_identity(200, proc_root),
+                resources._ProcessIdentity(200, 0, 0),
+            )
+
     def test_sums_each_recursive_descendant_once_and_tolerates_vanishing_pid(self) -> None:
         with TemporaryDirectory() as directory:
             proc_root = Path(directory)

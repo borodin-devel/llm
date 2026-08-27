@@ -49,6 +49,41 @@ _VALIDATION_KEYS = (
     "overall_matches_windows",
     "unique_phy_payload_within_tagged_payload",
 )
+_CONFIGURATION_KEYS = {
+    "general": ("output_name", "run_folder"),
+    "script": ("repetitions",),
+    "simulation": ("rng_seed", "rng_run"),
+    "benchmark": (
+        "sta_count_per_bss",
+        "rssi_range",
+        "interference_mode",
+        "traffic_mode",
+        "mimo_mode",
+    ),
+    "wifi": (
+        "band",
+        "channel_number",
+        "bandwidth_mhz",
+        "primary_20_index",
+        "tx_power_dbm",
+        "rate_manager",
+        "guard_interval_ns",
+        "rts_cts_threshold_bytes",
+        "antennas",
+        "max_tx_spatial_streams",
+        "max_rx_spatial_streams",
+    ),
+    "tcp": (
+        "congestion_control",
+        "segment_size_bytes",
+        "send_buffer_bytes",
+        "receive_buffer_bytes",
+        "wired_rate",
+        "wired_delay",
+    ),
+    "statistics": ("window_ms",),
+    "logging": ("scenario_level",),
+}
 _PROFILE_KEYS = (
     "channel_width_mhz",
     "nss",
@@ -480,16 +515,28 @@ def _parse_attempt(
     actual = metadata.get("configuration")
     if type(actual) is not dict:
         _fail(path, "configuration metadata must be an object")
-    script = actual.get("script")
-    if type(script) is not dict:
-        _fail(path, "script configuration metadata must be an object")
+    if tuple(actual) != tuple(_CONFIGURATION_KEYS):
+        _fail(path, "configuration sections/order are invalid")
+    for section, fields in _CONFIGURATION_KEYS.items():
+        if type(actual[section]) is not dict or tuple(actual[section]) != fields:
+            _fail(path, f"configuration {section} fields/order are invalid")
+
+    general = actual["general"]
+    if (
+        type(general["output_name"]) is not str
+        or general["output_name"] != "output.json"
+        or type(general["run_folder"]) is not str
+        or not general["run_folder"]
+    ):
+        _fail(path, "general output_name/run_folder metadata is invalid")
+    script = actual["script"]
     repetitions = _integer(
-        script.get("repetitions"),
+        script["repetitions"],
         path,
         "script.repetitions",
         minimum=1,
     )
-    benchmark = actual.get("benchmark")
+    benchmark = actual["benchmark"]
     expected_benchmark = {
         "sta_count_per_bss": configuration.sta_count_per_bss,
         "rssi_range": configuration.rssi_range,
@@ -497,20 +544,26 @@ def _parse_attempt(
         "traffic_mode": configuration.traffic_mode,
         "mimo_mode": configuration.mimo_mode,
     }
-    if benchmark != expected_benchmark:
+    if not _exact_scalar_object(benchmark, expected_benchmark):
         _fail(path, "configuration does not match matrix coordinate")
-    simulation = actual.get("simulation")
-    if simulation != {"rng_seed": 12345, "rng_run": repetition_attempt}:
+    simulation = actual["simulation"]
+    if not _exact_scalar_object(
+        simulation,
+        {"rng_seed": 12345, "rng_run": repetition_attempt},
+    ):
         _fail(path, "simulation seed/run metadata is invalid")
-    wifi = actual.get("wifi")
+    wifi = actual["wifi"]
     if not _exact_scalar_object(wifi, _FIXED_WIFI_METADATA):
         _fail(path, "wifi fixed metadata is invalid")
-    tcp = actual.get("tcp")
+    tcp = actual["tcp"]
     if not _exact_scalar_object(tcp, _FIXED_TCP_METADATA):
         _fail(path, "tcp fixed metadata is invalid")
-    statistics = actual.get("statistics")
+    statistics = actual["statistics"]
     if not _exact_scalar_object(statistics, {"window_ms": window_ms}):
         _fail(path, "statistics window metadata mismatch")
+    logging = actual["logging"]
+    if not _exact_scalar_object(logging, {"scenario_level": "info"}):
+        _fail(path, "logging fixed metadata is invalid")
 
     inventory = metadata.get("entity_inventory")
     if type(inventory) is not dict:
