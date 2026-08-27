@@ -13,6 +13,7 @@ from saturated_tcp_benchmark.matrix import (
     ExperimentAttempt,
     ExperimentConfiguration,
     build_matrix,
+    expand_experiment_ids,
     iter_experiment_attempts,
     target_rssi_dbm,
 )
@@ -22,14 +23,14 @@ class SaturatedTcpMatrixTest(unittest.TestCase):
     """Protect the fixed SU-only product and attempt mapping."""
 
     def test_matrix_has_exact_constants_order_and_stable_ids(self) -> None:
-        self.assertEqual(STA_COUNTS, (5, 10, 15, 20, 25, 30))
+        self.assertEqual(STA_COUNTS, (1, 5, 10, 15, 20, 25, 30))
         self.assertEqual(RSSI_RANGES, ("high", "medium", "low"))
         self.assertEqual(INTERFERENCE_MODES, ("isolated", "ap_only_cochannel"))
         self.assertEqual(TRAFFIC_MODES, ("ul", "dl", "ul_dl"))
         self.assertEqual(MIMO_MODES, ("su",))
 
         expected_coordinates = []
-        for station_count in (5, 10, 15, 20, 25, 30):
+        for station_count in (1, 5, 10, 15, 20, 25, 30):
             for rssi_range in ("high", "medium", "low"):
                 for interference_mode in ("isolated", "ap_only_cochannel"):
                     for traffic_mode in ("ul", "dl", "ul_dl"):
@@ -45,10 +46,19 @@ class SaturatedTcpMatrixTest(unittest.TestCase):
 
         configurations = build_matrix()
         self.assertIsInstance(configurations, tuple)
-        self.assertEqual(len(configurations), 108)
+        self.assertEqual(len(configurations), 126)
         self.assertEqual(
             [configuration.experiment_id for configuration in configurations],
-            list(range(1, 109)),
+            list(range(1, 127)),
+        )
+
+        self.assertEqual(
+            tuple(
+                configuration.experiment_id
+                for configuration in configurations
+                if configuration.sta_count_per_bss == 1
+            ),
+            tuple(range(1, 19)),
         )
         self.assertEqual(
             [
@@ -63,6 +73,24 @@ class SaturatedTcpMatrixTest(unittest.TestCase):
             ],
             expected_coordinates,
         )
+
+    def test_subset_expansion_adds_only_matching_single_sta_dependencies(self) -> None:
+        self.assertEqual(
+            expand_experiment_ids((20, 126, 1)),
+            (
+                (20, 126, 1),
+                (1, 2, 18, 20, 126),
+                (2, 18),
+            ),
+        )
+        self.assertEqual(
+            expand_experiment_ids((1, 2, 18)),
+            ((1, 2, 18), (1, 2, 18), ()),
+        )
+        for requested in ((), (1, 1), (0,), (127,), (True,)):
+            with self.subTest(requested=requested):
+                with self.assertRaisesRegex(ValueError, "experiment"):
+                    expand_experiment_ids(requested)
 
     def test_attempts_preserve_experiment_id_and_map_rng_run(self) -> None:
         configurations = build_matrix()[:2]
@@ -105,7 +133,7 @@ class SaturatedTcpMatrixTest(unittest.TestCase):
             target_rssi_dbm("HIGH")
 
     def test_boundaries_are_frozen_dataclasses(self) -> None:
-        configuration = ExperimentConfiguration(1, 5, "high", "isolated", "ul", "su")
+        configuration = ExperimentConfiguration(1, 1, "high", "isolated", "ul", "su")
         attempt = ExperimentAttempt(configuration, 1, 1)
         with self.assertRaises((AttributeError, TypeError)):
             configuration.experiment_id = 2  # type: ignore[misc]

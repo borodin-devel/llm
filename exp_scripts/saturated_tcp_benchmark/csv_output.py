@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from io import StringIO
 import math
 import os
@@ -27,10 +27,10 @@ _IDENTITY_COLUMNS = (
     "bss_id",
 )
 _BSS_COLUMNS = (
-    "avg_all_sta_theoretical_phy_rate_mbps",
-    "avg_all_sta_practical_phy_rate_mbps",
-    "bss_channel_efficiency",
-    "bss_channel_contention_fraction",
+    "bss_mean_dominant_data_phy_rate_mbps",
+    "bss_mean_effective_phy_rate_mbps",
+    "bss_aggregate_data_tx_rate_over_interval_mbps",
+    "bss_competition_overhead_vs_single_sta",
 )
 
 
@@ -39,10 +39,12 @@ def _build_header() -> tuple[str, ...]:
     for station_index in range(30):
         columns.extend(
             (
-                f"sta_{station_index}_avg_theoretical_phy_rate_mbps",
-                f"sta_{station_index}_avg_practical_phy_rate_mbps",
-                f"sta_{station_index}_efficiency",
-                f"sta_{station_index}_contention_fraction",
+                f"sta_{station_index}_dominant_data_phy_rate_mbps",
+                f"sta_{station_index}_dominant_data_profile_share",
+                f"sta_{station_index}_effective_phy_rate_mbps",
+                f"sta_{station_index}_data_tx_rate_over_interval_mbps",
+                f"sta_{station_index}_data_tx_opportunity_gap_fraction",
+                f"sta_{station_index}_tx_profile",
             )
         )
     return tuple(columns)
@@ -57,12 +59,14 @@ def _exclusive_nofollow_opener(path: str, flags: int) -> int:
 
 @dataclass(frozen=True)
 class StationCsvMetrics:
-    """Nullable rate-derived fields and numeric contention for one existing station."""
+    """Six fixed CSV fields for one existing station."""
 
-    average_theoretical_phy_rate_mbps: float | None
-    average_practical_phy_rate_mbps: float | None
-    efficiency: float | None
-    contention_fraction: float
+    dominant_data_phy_rate_mbps: float | None
+    dominant_data_profile_share: float | None
+    effective_phy_rate_mbps: float | None
+    data_tx_rate_over_interval_mbps: float
+    data_tx_opportunity_gap_fraction: float | None
+    tx_profile: str
 
 
 @dataclass(frozen=True)
@@ -73,11 +77,14 @@ class BssCsvRow:
     repetition_attempt: int
     target_rssi_dbm: float
     bss_id: int
-    average_theoretical_phy_rate_mbps: float | None
-    average_practical_phy_rate_mbps: float | None
-    efficiency: float | None
-    contention_fraction: float
+    mean_dominant_data_phy_rate_mbps: float | None
+    mean_effective_phy_rate_mbps: float | None
+    aggregate_data_tx_rate_over_interval_mbps: float
+    competition_overhead_vs_single_sta: float | None
     stations: tuple[StationCsvMetrics | None, ...]
+
+
+BaselineKey = tuple[str, str, str, str, int, int]
 
 
 def _writer(destination: TextIO) -> Any:
@@ -98,41 +105,60 @@ def _require_finite(value: object, name: str) -> None:
         raise ValueError(f"{name} must be a finite number")
 
 
-def _validate_rate_triplet(
-    theoretical: object,
-    practical: object,
-    efficiency: object,
-    name: str,
-) -> None:
-    for value, field in (
-        (theoretical, "theoretical rate"),
-        (practical, "practical rate"),
-        (efficiency, "efficiency"),
-    ):
-        if value is not None:
-            _require_finite(value, f"{name} {field}")
-    if (theoretical is None) != (practical is None):
-        raise ValueError(f"{name} theoretical and practical rate presence differs")
-    if theoretical is None:
-        if efficiency is not None:
-            raise ValueError(f"{name} efficiency exists without rates")
-    elif theoretical == 0.0:
-        if practical != 0.0 or efficiency is not None:
-            raise ValueError(f"{name} zero theoretical rate has invalid efficiency")
-    elif efficiency is None:
-        raise ValueError(f"{name} efficiency is missing for defined rates")
-
-
 def _validate_metric(metric: StationCsvMetrics, name: str) -> None:
     if not isinstance(metric, StationCsvMetrics):
         raise ValueError(f"{name} must contain StationCsvMetrics")
-    _validate_rate_triplet(
-        metric.average_theoretical_phy_rate_mbps,
-        metric.average_practical_phy_rate_mbps,
-        metric.efficiency,
-        name,
+    if not isinstance(metric.tx_profile, str):
+        raise ValueError(f"{name} profile text must be a string")
+    if metric.tx_profile:
+        for value, field in (
+            (metric.dominant_data_phy_rate_mbps, "dominant rate"),
+            (metric.dominant_data_profile_share, "dominant share"),
+            (metric.effective_phy_rate_mbps, "effective rate"),
+            (metric.data_tx_rate_over_interval_mbps, "interval rate"),
+            (metric.data_tx_opportunity_gap_fraction, "opportunity gap"),
+        ):
+            _require_finite(value, f"{name} {field}")
+        if metric.dominant_data_phy_rate_mbps <= 0.0:
+            raise ValueError(f"{name} dominant rate must be positive")
+        if not 0.0 < metric.dominant_data_profile_share <= 1.0:
+            raise ValueError(f"{name} dominant share must be in (0, 1]")
+        if metric.effective_phy_rate_mbps <= 0.0:
+            raise ValueError(f"{name} effective rate must be positive")
+        if metric.data_tx_rate_over_interval_mbps <= 0.0:
+            raise ValueError(f"{name} interval rate must be positive")
+        if not 0.0 <= metric.data_tx_opportunity_gap_fraction <= 1.0:
+            raise ValueError(f"{name} opportunity gap must be in [0, 1]")
+    elif (
+        metric.dominant_data_phy_rate_mbps is not None
+        or metric.dominant_data_profile_share is not None
+        or metric.effective_phy_rate_mbps is not None
+        or metric.data_tx_rate_over_interval_mbps != 0.0
+        or metric.data_tx_opportunity_gap_fraction is not None
+    ):
+        raise ValueError(f"{name} inactive profile must use null/null/null/zero/null")
+
+
+def _validate_bss_metric(row: BssCsvRow) -> None:
+    for value, field in (
+        (row.mean_dominant_data_phy_rate_mbps, "dominant mean"),
+        (row.mean_effective_phy_rate_mbps, "effective mean"),
+        (row.aggregate_data_tx_rate_over_interval_mbps, "aggregate interval rate"),
+        (row.competition_overhead_vs_single_sta, "competition overhead"),
+    ):
+        if value is not None:
+            _require_finite(value, f"BSS {field}")
+    if row.aggregate_data_tx_rate_over_interval_mbps < 0.0:
+        raise ValueError("BSS aggregate interval rate must be non-negative")
+    means = (
+        row.mean_dominant_data_phy_rate_mbps,
+        row.mean_effective_phy_rate_mbps,
     )
-    _require_finite(metric.contention_fraction, f"{name} contention")
+    if row.aggregate_data_tx_rate_over_interval_mbps == 0.0:
+        if means != (None, None):
+            raise ValueError("idle BSS must have empty means")
+    elif any(value is None or value <= 0.0 for value in means):
+        raise ValueError("active BSS must have positive means")
 
 
 def _validate_attempt_rows(rows: tuple[BssCsvRow, ...]) -> None:
@@ -162,13 +188,7 @@ def _validate_attempt_rows(rows: tuple[BssCsvRow, ...]) -> None:
         if not isinstance(row.stations, tuple) or len(row.stations) != 30:
             raise ValueError("each BSS row must contain exactly 30 station entries")
         _require_finite(row.target_rssi_dbm, "target_rssi_dbm")
-        _validate_rate_triplet(
-            row.average_theoretical_phy_rate_mbps,
-            row.average_practical_phy_rate_mbps,
-            row.efficiency,
-            "BSS",
-        )
-        _require_finite(row.contention_fraction, "BSS contention")
+        _validate_bss_metric(row)
         for station_index, metric in enumerate(row.stations):
             if station_index < station_count:
                 if metric is None:
@@ -192,24 +212,69 @@ def _row_values(row: BssCsvRow) -> list[object]:
         configuration.traffic_mode,
         configuration.mimo_mode,
         row.bss_id,
-        _empty_if_none(row.average_theoretical_phy_rate_mbps),
-        _empty_if_none(row.average_practical_phy_rate_mbps),
-        _empty_if_none(row.efficiency),
-        row.contention_fraction,
+        _empty_if_none(row.mean_dominant_data_phy_rate_mbps),
+        _empty_if_none(row.mean_effective_phy_rate_mbps),
+        row.aggregate_data_tx_rate_over_interval_mbps,
+        _empty_if_none(row.competition_overhead_vs_single_sta),
     ]
     for metric in row.stations:
         if metric is None:
-            values.extend(("", "", "", ""))
+            values.extend(("", "", "", "", "", ""))
         else:
             values.extend(
                 (
-                    _empty_if_none(metric.average_theoretical_phy_rate_mbps),
-                    _empty_if_none(metric.average_practical_phy_rate_mbps),
-                    _empty_if_none(metric.efficiency),
-                    metric.contention_fraction,
+                    _empty_if_none(metric.dominant_data_phy_rate_mbps),
+                    _empty_if_none(metric.dominant_data_profile_share),
+                    _empty_if_none(metric.effective_phy_rate_mbps),
+                    metric.data_tx_rate_over_interval_mbps,
+                    _empty_if_none(metric.data_tx_opportunity_gap_fraction),
+                    metric.tx_profile,
                 )
             )
     return values
+
+
+def _baseline_key(row: BssCsvRow) -> BaselineKey:
+    configuration = row.configuration
+    return (
+        configuration.rssi_range,
+        configuration.interference_mode,
+        configuration.traffic_mode,
+        configuration.mimo_mode,
+        row.repetition_attempt,
+        row.bss_id,
+    )
+
+
+def apply_matching_baseline(
+    rows: tuple[BssCsvRow, ...],
+    baselines: Mapping[BaselineKey, float],
+) -> tuple[BssCsvRow, ...]:
+    """Return rows with signed competition overhead from matching single-STA runs."""
+    if not isinstance(rows, tuple) or len(rows) != 3:
+        raise ValueError("baseline application requires exactly three BSS rows")
+    _validate_attempt_rows(rows)
+    applied = []
+    for row in rows:
+        key = _baseline_key(row)
+        try:
+            baseline = baselines[key]
+        except KeyError as error:
+            raise ValueError(f"missing matching baseline for {key!r}") from error
+        _require_finite(baseline, f"baseline {key!r}")
+        if baseline < 0.0:
+            raise ValueError(f"baseline {key!r} must be non-negative")
+        current = row.aggregate_data_tx_rate_over_interval_mbps
+        _require_finite(current, "BSS aggregate interval rate")
+        if row.configuration.sta_count_per_bss == 1:
+            scale = max(1.0, abs(current), abs(baseline))
+            if abs(current - baseline) > 1e-9 * scale:
+                raise ValueError(f"single-STA baseline mismatch for {key!r}")
+            overhead = None if baseline == 0.0 else 0.0
+        else:
+            overhead = None if baseline == 0.0 else 1.0 - current / baseline
+        applied.append(replace(row, competition_overhead_vs_single_sta=overhead))
+    return tuple(applied)
 
 
 class ExcelCsvWriter:

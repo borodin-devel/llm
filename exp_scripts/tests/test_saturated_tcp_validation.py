@@ -1,4 +1,4 @@
-"""Strict saturated benchmark JSON validation tests and fixtures."""
+"""Strict schema-v2 saturated benchmark JSON validation tests and fixtures."""
 
 from __future__ import annotations
 
@@ -31,15 +31,18 @@ VALIDATION_KEYS = (
 
 
 def make_configuration(
-    *, experiment_id: int = 42, station_count: int = 5
+    *,
+    experiment_id: int = 12,
+    station_count: int = 1,
+    traffic_mode: str = "ul_dl",
 ) -> ExperimentConfiguration:
-    """Return the matrix coordinate used by strict fixtures."""
+    """Return the literal matrix coordinate used by strict fixtures."""
     return ExperimentConfiguration(
         experiment_id=experiment_id,
         sta_count_per_bss=station_count,
         rssi_range="medium",
         interference_mode="ap_only_cochannel",
-        traffic_mode="ul_dl",
+        traffic_mode=traffic_mode,
         mimo_mode="su",
     )
 
@@ -49,9 +52,9 @@ def make_effective_configuration(
     *,
     repetition_attempt: int = 1,
     repetitions: int = 1,
-    run_folder: str = "/tmp/saturated/experiment_042/attempt_1",
+    run_folder: str = "/tmp/saturated/experiment_012/attempt_1",
 ) -> dict[str, object]:
-    """Return complete effective C++ configuration metadata."""
+    """Return complete ordered C++ configuration metadata including v2 invariants."""
     return {
         "general": {"output_name": "output.json", "run_folder": run_folder},
         "script": {"repetitions": repetitions},
@@ -70,6 +73,8 @@ def make_effective_configuration(
             "primary_20_index": 0,
             "tx_power_dbm": 20.0,
             "rate_manager": "ns3::MinstrelHtWifiManager",
+            "guard_interval_ns": 3200,
+            "rts_cts_threshold_bytes": 0,
             "antennas": 2,
             "max_tx_spatial_streams": 2,
             "max_rx_spatial_streams": 2,
@@ -162,25 +167,110 @@ def _phy_direction() -> dict[str, object]:
     }
 
 
-def _statistics(theoretical: float, practical: float, contention: float) -> dict[str, object]:
+def _categories(phy: dict[str, object]) -> dict[str, object]:
     return {
-        "general_stats": {
-            "uplink": _general_direction(),
-            "downlink": _general_direction(),
-        },
+        "general_stats": {"uplink": _general_direction(), "downlink": _general_direction()},
         "app_stats": {"uplink": _app_direction(), "downlink": _app_direction()},
         "tcp_stats": {"uplink": {"connections": []}, "downlink": {"connections": []}},
         "mac_stats": {"uplink": _mac_direction(), "downlink": _mac_direction()},
         "phy_stats": {
-            "average_theoretical_phy_rate_mbps": theoretical,
-            "average_practical_phy_rate_mbps": practical,
-            "channel_efficiency": practical / theoretical,
-            "contention_fraction": contention,
+            **phy,
             "busy_time_us": 0,
             "channel_utilization_percent": None,
             "uplink": _phy_direction(),
             "downlink": _phy_direction(),
         },
+    }
+
+
+def _active_station_phy(bss_id: int, *, overall: bool) -> dict[str, object]:
+    """Return hand-derived profile and station values without validator helpers."""
+    if bss_id == 0:
+        profiles = [
+            {
+                "channel_width_mhz": 20,
+                "nss": 1,
+                "mcs": 9,
+                "transmitted_psdu_bytes": 100.0,
+                "ppdu_attempt_count": 2,
+                "ppdu_airtime_us": 40.0,
+            },
+            {
+                "channel_width_mhz": 80,
+                "nss": 2,
+                "mcs": 11,
+                "transmitted_psdu_bytes": 300.0,
+                "ppdu_attempt_count": 4,
+                "ppdu_airtime_us": 120.0,
+            },
+        ]
+        return {
+            "dominant_data_phy_rate_mbps": 1020.833334,
+            "dominant_data_profile_share": 0.75,
+            "effective_phy_rate_mbps": 20.0,
+            "data_tx_rate_over_interval_mbps": 0.0032 if overall else 0.32,
+            "data_tx_opportunity_gap_fraction": 0.99984 if overall else 0.984,
+            "data_tx_profile": profiles,
+            "mean_dominant_data_phy_rate_mbps": None,
+            "mean_effective_phy_rate_mbps": None,
+            "aggregate_data_tx_rate_over_interval_mbps": None,
+        }
+    profiles = [
+        {
+            "channel_width_mhz": 40,
+            "nss": 1,
+            "mcs": 4,
+            "transmitted_psdu_bytes": 250.0,
+            "ppdu_attempt_count": 3,
+            "ppdu_airtime_us": 100.0,
+        }
+    ]
+    return {
+        "dominant_data_phy_rate_mbps": 87.75,
+        "dominant_data_profile_share": 1.0,
+        "effective_phy_rate_mbps": 20.0,
+        "data_tx_rate_over_interval_mbps": 0.002 if overall else 0.2,
+        "data_tx_opportunity_gap_fraction": 0.9999 if overall else 0.99,
+        "data_tx_profile": profiles,
+        "mean_dominant_data_phy_rate_mbps": None,
+        "mean_effective_phy_rate_mbps": None,
+        "aggregate_data_tx_rate_over_interval_mbps": None,
+    }
+
+
+def _idle_station_phy() -> dict[str, object]:
+    return {
+        "dominant_data_phy_rate_mbps": None,
+        "dominant_data_profile_share": None,
+        "effective_phy_rate_mbps": None,
+        "data_tx_rate_over_interval_mbps": 0.0,
+        "data_tx_opportunity_gap_fraction": None,
+        "data_tx_profile": [],
+        "mean_dominant_data_phy_rate_mbps": None,
+        "mean_effective_phy_rate_mbps": None,
+        "aggregate_data_tx_rate_over_interval_mbps": None,
+    }
+
+
+def _bss_phy(bss_id: int, *, overall: bool) -> dict[str, object]:
+    if bss_id == 0:
+        dominant, effective = 1020.833334, 20.0
+        aggregate = 0.0032 if overall else 0.32
+    elif bss_id == 1:
+        dominant, effective = 87.75, 20.0
+        aggregate = 0.002 if overall else 0.2
+    else:
+        dominant, effective, aggregate = None, None, 0.0
+    return {
+        "dominant_data_phy_rate_mbps": None,
+        "dominant_data_profile_share": None,
+        "effective_phy_rate_mbps": None,
+        "data_tx_rate_over_interval_mbps": None,
+        "data_tx_opportunity_gap_fraction": None,
+        "data_tx_profile": [],
+        "mean_dominant_data_phy_rate_mbps": dominant,
+        "mean_effective_phy_rate_mbps": effective,
+        "aggregate_data_tx_rate_over_interval_mbps": aggregate,
     }
 
 
@@ -193,7 +283,7 @@ def _ap_identity(bss_id: int) -> dict[str, object]:
     }
 
 
-def _station_identity(bss_id: int, station_index: int) -> dict[str, object]:
+def _station_identity(bss_id: int, station_index: int = 0) -> dict[str, object]:
     return {
         "access_point_id": bss_id,
         "station_index": station_index,
@@ -203,24 +293,8 @@ def _station_identity(bss_id: int, station_index: int) -> dict[str, object]:
     }
 
 
-def _entity(identity: dict[str, object], metrics: tuple[float, float, float]) -> dict[str, object]:
-    return {**deepcopy(identity), **_statistics(*metrics)}
-
-
-def _station_metrics(
-    bss_id: int, station_index: int, *, overall: bool
-) -> tuple[float, float, float]:
-    theoretical = 100.0 + bss_id * 10.0 + station_index
-    practical = theoretical * 0.5
-    window_contention = 0.1 + bss_id * 0.02 + station_index * 0.01
-    return theoretical, practical, window_contention * (0.01 if overall else 1.0)
-
-
-def _bss_metrics(station_metrics: list[tuple[float, float, float]]) -> tuple[float, float, float]:
-    theoretical = sum(metric[0] for metric in station_metrics) / len(station_metrics)
-    practical = sum(metric[1] for metric in station_metrics) / len(station_metrics)
-    contention = sum(metric[2] for metric in station_metrics) / len(station_metrics)
-    return theoretical, practical, contention
+def _entity(identity: dict[str, object], phy: dict[str, object]) -> dict[str, object]:
+    return {**deepcopy(identity), **_categories(phy)}
 
 
 def make_output_document(
@@ -228,48 +302,47 @@ def make_output_document(
     *,
     repetition_attempt: int = 1,
     repetitions: int = 1,
-    run_folder: str = "/tmp/saturated/experiment_042/attempt_1",
+    run_folder: str = "/tmp/saturated/experiment_012/attempt_1",
 ) -> tuple[dict[str, object], dict[str, object]]:
-    """Build a complete three-BSS shared-schema benchmark fixture."""
+    """Build a complete literal three-BSS schema-v2 benchmark fixture."""
     configuration = configuration or make_configuration()
+    if configuration.sta_count_per_bss != 1:
+        raise ValueError("the independent v2 fixture supports exactly one station per BSS")
     effective = make_effective_configuration(
         configuration,
         repetition_attempt=repetition_attempt,
         repetitions=repetitions,
         run_folder=run_folder,
     )
-    access_point_inventory = [_ap_identity(bss_id) for bss_id in range(3)]
-    station_inventory = [
-        _station_identity(bss_id, station_index)
-        for bss_id in range(3)
-        for station_index in range(configuration.sta_count_per_bss)
+    window_stations = [
+        _entity(_station_identity(0), _active_station_phy(0, overall=False)),
+        _entity(_station_identity(1), _active_station_phy(1, overall=False)),
     ]
-
-    def hierarchy(overall: bool) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-        access_points = []
-        stations = []
-        for bss_id in range(3):
-            bss_station_metrics = []
-            for station_index in range(configuration.sta_count_per_bss):
-                metrics = _station_metrics(bss_id, station_index, overall=overall)
-                bss_station_metrics.append(metrics)
-                stations.append(_entity(_station_identity(bss_id, station_index), metrics))
-            access_points.append(_entity(_ap_identity(bss_id), _bss_metrics(bss_station_metrics)))
-        return access_points, stations
-
-    window_access_points, window_stations = hierarchy(False)
-    overall_access_points, overall_stations = hierarchy(True)
+    window_access_points = [
+        _entity(_ap_identity(0), _bss_phy(0, overall=False)),
+        _entity(_ap_identity(1), _bss_phy(1, overall=False)),
+    ]
+    overall_stations = [
+        _entity(_station_identity(0), _active_station_phy(0, overall=True)),
+        _entity(_station_identity(1), _active_station_phy(1, overall=True)),
+        _entity(_station_identity(2), _idle_station_phy()),
+    ]
+    overall_access_points = [
+        _entity(_ap_identity(bss_id), _bss_phy(bss_id, overall=True))
+        for bss_id in range(3)
+    ]
     document = {
-        "schema_version": 1,
+        "schema_version": 2,
         "measurement_semantics": {
             "access_point_role": "station-derived BSS aggregate",
-            "station_role": "per-station transmitted PPDU detail",
+            "station_role": "per-station transmitted data PPDU detail",
             "parent_child_duplication": "intentional",
-            "phy_observation_scope": "qualifying station-transmitted PPDUs",
-            "phy_rate_source": "actual WifiTxVector and complete PPDU airtime",
-            "phy_practical_rate": "qualifying PSDU bits per complete PPDU airtime",
-            "contention_fraction": "unioned station EDCA waiting time per interval",
-            "sparse_window_absence": "zero station PPDU and contention activity",
+            "phy_observation_scope": "qualifying station-transmitted unicast data PPDUs",
+            "phy_rate_source": "actual fixed-invariant WifiTxVector NSS and MCS",
+            "effective_phy_rate": "transmitted data PSDU bits per data PPDU airtime",
+            "data_tx_rate_over_interval": "transmitted data PSDU bits per statistics interval",
+            "data_tx_opportunity_gap": "time outside station data PPDU airtime",
+            "sparse_window_absence": "zero station data profile activity",
             "undefined_derived_values": None,
         },
         "statistics_window_ms": 10,
@@ -290,8 +363,8 @@ def make_output_document(
         "experiment_metadata": {
             "configuration": effective,
             "entity_inventory": {
-                "access_points": access_point_inventory,
-                "stations": station_inventory,
+                "access_points": [_ap_identity(bss_id) for bss_id in range(3)],
+                "stations": [_station_identity(bss_id) for bss_id in range(3)],
             },
         },
     }
@@ -299,7 +372,7 @@ def make_output_document(
 
 
 class SaturatedTcpValidationTest(unittest.TestCase):
-    """Protect metadata, shared shape, inventory, formulas, and copying."""
+    """Protect metadata, exact roles, raw profiles, formulas, and row copying."""
 
     def setUp(self) -> None:
         self.configuration = make_configuration()
@@ -314,363 +387,304 @@ class SaturatedTcpValidationTest(unittest.TestCase):
             source_path="fixture.json",
         )
 
-    def test_valid_document_returns_three_exact_fixed_width_rows(self) -> None:
+    def test_valid_document_returns_exact_direct_rows_and_compact_profiles(self) -> None:
         rows = self.validate()
         self.assertEqual(tuple(row.bss_id for row in rows), (0, 1, 2))
         self.assertEqual(tuple(row.configuration for row in rows), (self.configuration,) * 3)
-        self.assertEqual(tuple(row.repetition_attempt for row in rows), (1, 1, 1))
-        self.assertEqual(tuple(row.target_rssi_dbm for row in rows), (-50.0, -50.0, -50.0))
-
+        self.assertEqual(tuple(row.target_rssi_dbm for row in rows), (-50.0,) * 3)
         first = rows[0]
-        self.assertEqual(first.average_theoretical_phy_rate_mbps, 102.0)
-        self.assertEqual(first.average_practical_phy_rate_mbps, 51.0)
-        self.assertEqual(first.efficiency, 0.5)
-        self.assertAlmostEqual(first.contention_fraction, 0.0012)
-        self.assertEqual(len(first.stations), 30)
-        self.assertEqual(first.stations[0], StationCsvMetrics(100.0, 50.0, 0.5, 0.001))
+        self.assertEqual(first.mean_dominant_data_phy_rate_mbps, 1020.833334)
+        self.assertEqual(first.mean_effective_phy_rate_mbps, 20.0)
+        self.assertEqual(first.aggregate_data_tx_rate_over_interval_mbps, 0.0032)
+        self.assertIsNone(first.competition_overhead_vs_single_sta)
         self.assertEqual(
-            first.stations[4],
-            StationCsvMetrics(104.0, 52.0, 0.5, 0.0014000000000000002),
+            first.stations[0],
+            StationCsvMetrics(
+                1020.833334,
+                0.75,
+                20.0,
+                0.0032,
+                0.99984,
+                "W20_NSS1_MCS9:bytes=100,ppdus=2,airtime_us=40|"
+                "W80_NSS2_MCS11:bytes=300,ppdus=4,airtime_us=120",
+            ),
         )
-        self.assertEqual(first.stations[5:], (None,) * 25)
-
-    def test_nullable_overall_station_and_bss_rates_preserve_formulas(self) -> None:
-        document = deepcopy(self.document)
-
-        def set_undefined(entity: dict[str, object], contention: float) -> None:
-            phy = entity["phy_stats"]
-            phy["average_theoretical_phy_rate_mbps"] = None
-            phy["average_practical_phy_rate_mbps"] = None
-            phy["channel_efficiency"] = None
-            phy["contention_fraction"] = contention
-
-        window = document["windows"][0]
-        window_station = next(
-            station
-            for station in window["stations"]
-            if station["access_point_id"] == 0 and station["station_index"] == 0
+        self.assertEqual(first.stations[1:], (None,) * 29)
+        self.assertEqual(
+            rows[2].stations[0],
+            StationCsvMetrics(None, None, None, 0.0, None, ""),
         )
-        set_undefined(window_station, 0.1)
-        window_ap0 = next(
-            access_point
-            for access_point in window["access_points"]
-            if access_point["access_point_id"] == 0
-        )
-        window_ap0_phy = window_ap0["phy_stats"]
-        window_ap0_phy["average_theoretical_phy_rate_mbps"] = 102.5
-        window_ap0_phy["average_practical_phy_rate_mbps"] = 51.25
-        window_ap0_phy["channel_efficiency"] = 0.5
+        self.assertIsNone(rows[2].mean_dominant_data_phy_rate_mbps)
+        self.assertIsNone(rows[2].mean_effective_phy_rate_mbps)
+        self.assertEqual(rows[2].aggregate_data_tx_rate_over_interval_mbps, 0.0)
 
-        overall_station = next(
-            station
-            for station in document["overall"]["stations"]
-            if station["access_point_id"] == 0 and station["station_index"] == 0
-        )
-        set_undefined(overall_station, 0.001)
-        overall_ap0 = document["overall"]["access_points"][0]
-        overall_ap0_phy = overall_ap0["phy_stats"]
-        overall_ap0_phy["average_theoretical_phy_rate_mbps"] = 102.5
-        overall_ap0_phy["average_practical_phy_rate_mbps"] = 51.25
-        overall_ap0_phy["channel_efficiency"] = 0.5
+    def test_profile_and_station_formulas_are_independently_reconstructed(self) -> None:
+        mutations: list[tuple[str, dict[str, object]]] = []
+        for field, value in (
+            ("dominant_data_phy_rate_mbps", 999.0),
+            ("dominant_data_profile_share", 0.5),
+            ("effective_phy_rate_mbps", 21.0),
+            ("data_tx_rate_over_interval_mbps", 0.004),
+            ("data_tx_opportunity_gap_fraction", 0.9),
+        ):
+            changed = deepcopy(self.document)
+            changed["overall"]["stations"][0]["phy_stats"][field] = value
+            mutations.append((field, changed))
+        changed_bytes = deepcopy(self.document)
+        changed_bytes["overall"]["stations"][0]["phy_stats"]["data_tx_profile"][0][
+            "transmitted_psdu_bytes"
+        ] = 101.0
+        mutations.append(("profile|bytes|reproduce", changed_bytes))
+        changed_attempt = deepcopy(self.document)
+        changed_attempt["overall"]["stations"][0]["phy_stats"]["data_tx_profile"][0][
+            "ppdu_attempt_count"
+        ] = 3
+        mutations.append(("profile|attempt|reproduce", changed_attempt))
+        for expected, document in mutations:
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(OutputValidationError, expected):
+                    self.validate(document)
 
-        window["stations"] = [
-            station for station in window["stations"] if station["access_point_id"] != 2
+    def test_profile_shape_order_ranges_and_old_fields_are_rejected(self) -> None:
+        mutations = []
+        reordered = deepcopy(self.document)
+        profiles = reordered["overall"]["stations"][0]["phy_stats"]["data_tx_profile"]
+        profiles[0], profiles[1] = profiles[1], profiles[0]
+        mutations.append(("order|profile", reordered))
+        duplicate = deepcopy(self.document)
+        profiles = duplicate["overall"]["stations"][0]["phy_stats"]["data_tx_profile"]
+        profiles[1]["channel_width_mhz"] = 20
+        profiles[1]["nss"] = 1
+        profiles[1]["mcs"] = 9
+        mutations.append(("order|duplic", duplicate))
+        for field, value in (
+            ("channel_width_mhz", 160),
+            ("nss", 0),
+            ("nss", 3),
+            ("mcs", 12),
+            ("transmitted_psdu_bytes", -1.0),
+            ("ppdu_attempt_count", 1.0),
+            ("ppdu_airtime_us", math.inf),
+        ):
+            changed = deepcopy(self.document)
+            changed["overall"]["stations"][0]["phy_stats"]["data_tx_profile"][0][field] = value
+            mutations.append((field, changed))
+        old = deepcopy(self.document)
+        old["overall"]["stations"][0]["phy_stats"][
+            "average_theoretical_phy_rate_mbps"
+        ] = 1.0
+        mutations.append(("phy_stats|ordered keys", old))
+        for expected, document in mutations:
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(OutputValidationError, expected):
+                    self.validate(document)
+
+    def test_station_and_bss_role_population_is_exact(self) -> None:
+        mutations = []
+        station_aggregate = deepcopy(self.document)
+        station_aggregate["overall"]["stations"][0]["phy_stats"][
+            "aggregate_data_tx_rate_over_interval_mbps"
+        ] = 1.0
+        mutations.append(("station|BSS", station_aggregate))
+        bss_profile = deepcopy(self.document)
+        bss_profile["overall"]["access_points"][0]["phy_stats"]["data_tx_profile"] = [
+            deepcopy(
+                self.document["overall"]["stations"][0]["phy_stats"]["data_tx_profile"][0]
+            )
         ]
-        window["access_points"] = [
-            access_point
-            for access_point in window["access_points"]
-            if access_point["access_point_id"] != 2
-        ]
-        for station in document["overall"]["stations"]:
-            if station["access_point_id"] == 2:
-                set_undefined(station, 0.0)
-        set_undefined(document["overall"]["access_points"][2], 0.0)
+        mutations.append(("BSS|station", bss_profile))
+        partial_idle = deepcopy(self.document)
+        partial_idle["overall"]["stations"][2]["phy_stats"][
+            "data_tx_rate_over_interval_mbps"
+        ] = None
+        mutations.append(("zero|idle|shape", partial_idle))
+        active_null = deepcopy(self.document)
+        active_null["overall"]["stations"][0]["phy_stats"][
+            "dominant_data_profile_share"
+        ] = None
+        mutations.append(("profile|undefined|active", active_null))
+        partial_bss = deepcopy(self.document)
+        partial_bss["overall"]["access_points"][0]["phy_stats"][
+            "mean_effective_phy_rate_mbps"
+        ] = None
+        mutations.append(("BSS|mean|station-derived", partial_bss))
+        for expected, document in mutations:
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(OutputValidationError, expected):
+                    self.validate(document)
 
-        rows = self.validate(document)
-        self.assertEqual(
-            rows[0].stations[0],
-            StationCsvMetrics(None, None, None, 0.001),
-        )
-        self.assertEqual(rows[0].average_theoretical_phy_rate_mbps, 102.5)
-        self.assertEqual(rows[0].average_practical_phy_rate_mbps, 51.25)
-        self.assertEqual(rows[0].efficiency, 0.5)
-        self.assertAlmostEqual(rows[0].contention_fraction, 0.0012)
-        self.assertIsNone(rows[2].average_theoretical_phy_rate_mbps)
-        self.assertIsNone(rows[2].average_practical_phy_rate_mbps)
-        self.assertIsNone(rows[2].efficiency)
-        self.assertEqual(rows[2].contention_fraction, 0.0)
-        self.assertEqual(
-            rows[2].stations[:5],
-            (StationCsvMetrics(None, None, None, 0.0),) * 5,
-        )
-        self.assertEqual(rows[2].stations[5:], (None,) * 25)
+    def test_bss_means_and_aggregate_are_recomputed_from_station_values(self) -> None:
+        for field in (
+            "mean_dominant_data_phy_rate_mbps",
+            "mean_effective_phy_rate_mbps",
+            "aggregate_data_tx_rate_over_interval_mbps",
+        ):
+            with self.subTest(field=field):
+                changed = deepcopy(self.document)
+                changed["overall"]["access_points"][0]["phy_stats"][field] += 1.0
+                with self.assertRaisesRegex(OutputValidationError, "station-derived|BSS"):
+                    self.validate(changed)
 
-    def test_repetitions_are_exact_nonbool_uint32_values(self) -> None:
-        maximum = (1 << 32) - 1
-        valid_document = deepcopy(self.document)
-        valid_expected = deepcopy(self.effective)
-        valid_document["experiment_metadata"]["configuration"]["script"][
-            "repetitions"
-        ] = maximum
-        valid_expected["script"]["repetitions"] = maximum
+    def test_dl_metadata_keeps_station_only_semantics(self) -> None:
+        dl_configuration = make_configuration(experiment_id=11, traffic_mode="dl")
+        document, expected = make_output_document(dl_configuration)
         self.assertEqual(
             len(
                 validate_output_document(
-                    valid_document,
+                    document,
+                    dl_configuration,
+                    repetition_attempt=1,
+                    expected_configuration=expected,
+                    source_path="dl.json",
+                )
+            ),
+            3,
+        )
+        document["measurement_semantics"]["phy_observation_scope"] = "AP downlink data PPDUs"
+        with self.assertRaisesRegex(OutputValidationError, "measurement_semantics"):
+            validate_output_document(
+                document,
+                dl_configuration,
+                repetition_attempt=1,
+                expected_configuration=expected,
+                source_path="dl.json",
+            )
+
+    def test_exact_root_configuration_and_flags_are_required(self) -> None:
+        mutations = []
+        wrong_schema = deepcopy(self.document)
+        wrong_schema["schema_version"] = 1
+        mutations.append(("schema_version", wrong_schema))
+        reordered_root = {key: self.document[key] for key in reversed(tuple(self.document))}
+        mutations.append(("root object", reordered_root))
+        wrong_guard = deepcopy(self.document)
+        wrong_guard["experiment_metadata"]["configuration"]["wifi"]["guard_interval_ns"] = 1600
+        mutations.append(("configuration", wrong_guard))
+        wrong_rts = deepcopy(self.document)
+        wrong_rts["experiment_metadata"]["configuration"]["wifi"][
+            "rts_cts_threshold_bytes"
+        ] = 1
+        mutations.append(("configuration", wrong_rts))
+        false_flag = deepcopy(self.document)
+        false_flag["validation"]["overall_matches_windows"] = False
+        mutations.append(("overall_matches_windows", false_flag))
+        for expected, document in mutations:
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(OutputValidationError, expected):
+                    self.validate(document)
+
+    def test_inventory_and_dense_overall_order_are_exact(self) -> None:
+        mutations = []
+        swapped = deepcopy(self.document)
+        swapped["experiment_metadata"]["entity_inventory"]["access_points"][0], swapped[
+            "experiment_metadata"
+        ]["entity_inventory"]["access_points"][1] = (
+            swapped["experiment_metadata"]["entity_inventory"]["access_points"][1],
+            swapped["experiment_metadata"]["entity_inventory"]["access_points"][0],
+        )
+        mutations.append(swapped)
+        missing = deepcopy(self.document)
+        missing["overall"]["stations"].pop()
+        mutations.append(missing)
+        wrong_identity = deepcopy(self.document)
+        wrong_identity["overall"]["stations"][0]["node_id"] = 999
+        mutations.append(wrong_identity)
+        for document in mutations:
+            with self.assertRaisesRegex(OutputValidationError, "inventory|dense|identity|order"):
+                self.validate(document)
+
+    def test_repetitions_and_identity_ids_require_exact_uint32_types(self) -> None:
+        maximum = (1 << 32) - 1
+        valid = deepcopy(self.document)
+        expected = deepcopy(self.effective)
+        valid["experiment_metadata"]["configuration"]["script"]["repetitions"] = maximum
+        expected["script"]["repetitions"] = maximum
+        self.assertEqual(
+            len(
+                validate_output_document(
+                    valid,
                     self.configuration,
                     repetition_attempt=1,
-                    expected_configuration=valid_expected,
+                    expected_configuration=expected,
                     source_path="fixture.json",
                 )
             ),
             3,
         )
-
         for value in (False, 0, -1, 1 << 32):
             with self.subTest(value=value):
-                document = deepcopy(self.document)
-                expected = deepcopy(self.effective)
-                document["experiment_metadata"]["configuration"]["script"][
-                    "repetitions"
-                ] = value
-                expected["script"]["repetitions"] = value
-                with self.assertRaisesRegex(
-                    OutputValidationError, "repetitions.*uint32|uint32.*repetitions"
-                ):
+                changed = deepcopy(self.document)
+                changed["experiment_metadata"]["configuration"]["script"]["repetitions"] = value
+                changed_expected = deepcopy(self.effective)
+                changed_expected["script"]["repetitions"] = value
+                with self.assertRaisesRegex(OutputValidationError, "repetitions.*uint32|uint32.*repetitions"):
                     validate_output_document(
-                        document,
+                        changed,
                         self.configuration,
                         repetition_attempt=1,
-                        expected_configuration=expected,
+                        expected_configuration=changed_expected,
                         source_path="fixture.json",
                     )
 
-    def test_identity_ids_require_integer_uint32_types_before_matching(self) -> None:
-        floating_ap = deepcopy(self.document)
-        for identity in floating_ap["experiment_metadata"]["entity_inventory"][
-            "access_points"
-        ]:
-            if identity["access_point_id"] == 0:
-                identity["access_point_id"] = 0.0
-        for identity in floating_ap["experiment_metadata"]["entity_inventory"][
-            "stations"
-        ]:
-            if identity["access_point_id"] == 0:
-                identity["access_point_id"] = 0.0
-        for hierarchy in (floating_ap["windows"][0], floating_ap["overall"]):
-            for entity in hierarchy["access_points"] + hierarchy["stations"]:
-                if entity["access_point_id"] == 0:
-                    entity["access_point_id"] = 0.0
+        floating = deepcopy(self.document)
+        floating["overall"]["stations"][0]["station_index"] = 0.0
+        with self.assertRaisesRegex(OutputValidationError, "uint32"):
+            self.validate(floating)
 
-        floating_station = deepcopy(self.document)
-        for identity in floating_station["experiment_metadata"]["entity_inventory"][
-            "stations"
-        ]:
-            if identity["station_index"] == 0:
-                identity["station_index"] = 0.0
-        for hierarchy in (floating_station["windows"][0], floating_station["overall"]):
-            for entity in hierarchy["stations"]:
-                if entity["station_index"] == 0:
-                    entity["station_index"] = 0.0
-
-        huge_node = deepcopy(self.document)
-        huge_node_id = 1 << 32
-        huge_node["experiment_metadata"]["entity_inventory"]["access_points"][0][
-            "node_id"
-        ] = huge_node_id
-        huge_node["windows"][0]["access_points"][0]["node_id"] = huge_node_id
-        huge_node["overall"]["access_points"][0]["node_id"] = huge_node_id
-
-        floating_output_id = deepcopy(self.document)
-        floating_output_id["overall"]["stations"][0]["station_index"] = 0.0
-
-        for name, document in (
-            ("floating AP ID", floating_ap),
-            ("floating STA ID", floating_station),
-            ("oversized node ID", huge_node),
-            ("floating output STA ID", floating_output_id),
-        ):
-            with self.subTest(name=name):
-                with self.assertRaisesRegex(OutputValidationError, "uint32"):
-                    self.validate(document)
-
-    def test_huge_metric_integer_is_a_validation_error_not_overflow(self) -> None:
-        huge = deepcopy(self.document)
-        huge["overall"]["stations"][0]["phy_stats"][
-            "average_theoretical_phy_rate_mbps"
-        ] = 10**10000
-        with self.assertRaisesRegex(OutputValidationError, "finite|representable"):
-            self.validate(huge)
-
-    def test_sparse_window_rejects_inert_station_and_ap_records(self) -> None:
-        for collection in ("stations", "access_points"):
-            with self.subTest(collection=collection):
-                inert = deepcopy(self.document)
-                phy = inert["windows"][0][collection][0]["phy_stats"]
-                phy["average_theoretical_phy_rate_mbps"] = None
-                phy["average_practical_phy_rate_mbps"] = None
-                phy["channel_efficiency"] = None
-                phy["contention_fraction"] = 0.0
-                with self.assertRaisesRegex(OutputValidationError, "inert|activity"):
-                    self.validate(inert)
-
-    def test_exact_root_semantics_metadata_and_flags_are_required(self) -> None:
-        mutations = []
-        extra_root = deepcopy(self.document)
-        extra_root["diagnostics"] = {}
-        mutations.append(("root", extra_root))
-        reordered_root = {key: self.document[key] for key in reversed(tuple(self.document))}
-        mutations.append(("root", reordered_root))
-        wrong_schema = deepcopy(self.document)
-        wrong_schema["schema_version"] = 2
-        mutations.append(("schema_version", wrong_schema))
-        wrong_semantics = deepcopy(self.document)
-        wrong_semantics["measurement_semantics"]["phy_observation_scope"] = "all PPDUs"
-        mutations.append(("measurement_semantics", wrong_semantics))
-        wrong_config = deepcopy(self.document)
-        wrong_config["experiment_metadata"]["configuration"]["simulation"]["rng_run"] = 2
-        mutations.append(("configuration", wrong_config))
-        wrong_mode = deepcopy(self.document)
-        wrong_mode["experiment_metadata"]["configuration"]["benchmark"]["traffic_mode"] = "ul"
-        mutations.append(("configuration", wrong_mode))
-        false_flag = deepcopy(self.document)
-        false_flag["validation"]["overall_matches_windows"] = False
-        mutations.append(("overall_matches_windows", false_flag))
-        missing_flag = deepcopy(self.document)
-        del missing_flag["validation"]["phy_peer_totals_consistent"]
-        mutations.append(("validation", missing_flag))
-        for expected_error, document in mutations:
-            with self.subTest(expected_error=expected_error):
-                with self.assertRaisesRegex(OutputValidationError, expected_error):
-                    self.validate(document)
-
-    def test_inventory_and_dense_overall_order_are_exact(self) -> None:
-        inventory = self.document["experiment_metadata"]["entity_inventory"]
-        mutations = []
-        swapped_aps = deepcopy(self.document)
-        swapped = swapped_aps["experiment_metadata"]["entity_inventory"]["access_points"]
-        swapped[0], swapped[1] = swapped[1], swapped[0]
-        mutations.append(swapped_aps)
-        duplicate_station = deepcopy(self.document)
-        station_inventory = duplicate_station["experiment_metadata"]["entity_inventory"]["stations"]
-        station_inventory[1] = deepcopy(station_inventory[0])
-        mutations.append(duplicate_station)
-        missing_station = deepcopy(self.document)
-        missing_station["experiment_metadata"]["entity_inventory"]["stations"].pop()
-        mutations.append(missing_station)
-        duplicate_bss = deepcopy(self.document)
-        duplicate_bss["overall"]["access_points"][1] = deepcopy(
-            duplicate_bss["overall"]["access_points"][0]
-        )
-        mutations.append(duplicate_bss)
-        missing_overall_station = deepcopy(self.document)
-        missing_overall_station["overall"]["stations"].pop()
-        mutations.append(missing_overall_station)
-        self.assertEqual(len(inventory["access_points"]), 3)
-        self.assertEqual(len(inventory["stations"]), 15)
-        for document in mutations:
-            with self.subTest(mutation=mutations.index(document)):
-                with self.assertRaisesRegex(
-                    OutputValidationError, "inventory|order|dense|identity"
-                ):
-                    self.validate(document)
-
-    def test_station_and_bss_metrics_are_strictly_validated(self) -> None:
-        mutations = []
-        for field, value in (
-            ("average_theoretical_phy_rate_mbps", math.nan),
-            ("average_practical_phy_rate_mbps", math.inf),
-            ("average_theoretical_phy_rate_mbps", -1.0),
-            ("average_practical_phy_rate_mbps", 101.0),
-            ("channel_efficiency", 0.9),
-            ("contention_fraction", 1.1),
-        ):
-            changed = deepcopy(self.document)
-            changed["overall"]["stations"][0]["phy_stats"][field] = value
-            mutations.append((field, changed))
-        null_overall = deepcopy(self.document)
-        null_overall["overall"]["stations"][0]["phy_stats"][
-            "average_theoretical_phy_rate_mbps"
-        ] = None
-        mutations.append(("presence", null_overall))
-        wrong_ap_mean = deepcopy(self.document)
-        wrong_ap_mean["overall"]["access_points"][0]["phy_stats"][
-            "average_theoretical_phy_rate_mbps"
-        ] += 1.0
-        wrong_ap_mean["overall"]["access_points"][0]["phy_stats"][
-            "channel_efficiency"
-        ] = 51.0 / 103.0
-        mutations.append(("station-derived", wrong_ap_mean))
-        for expected_error, document in mutations:
-            with self.subTest(expected_error=expected_error):
-                with self.assertRaisesRegex(OutputValidationError, expected_error):
-                    self.validate(document)
-
-    def test_shared_entity_shape_and_identity_are_strict(self) -> None:
-        extra_field = deepcopy(self.document)
-        extra_field["overall"]["stations"][0]["phy_stats"]["tcp_goodput_mbps"] = 1.0
-        with self.assertRaisesRegex(OutputValidationError, "phy_stats"):
-            self.validate(extra_field)
-
-        wrong_identity = deepcopy(self.document)
-        wrong_identity["overall"]["stations"][0]["node_id"] = 999
-        with self.assertRaisesRegex(OutputValidationError, "identity"):
-            self.validate(wrong_identity)
-
-        nondefault_category = deepcopy(self.document)
-        nondefault_category["overall"]["stations"][0]["app_stats"]["uplink"][
+    def test_unrelated_categories_remain_exact_shared_defaults(self) -> None:
+        changed = deepcopy(self.document)
+        changed["overall"]["stations"][0]["app_stats"]["uplink"][
             "accepted_send_count"
         ] = 1
         with self.assertRaisesRegex(OutputValidationError, "default"):
-            self.validate(nondefault_category)
+            self.validate(changed)
 
-    def test_loader_rejects_duplicate_keys_and_nonstandard_numbers(self) -> None:
+    def test_loader_rejects_duplicate_keys_nonstandard_numbers_and_symlinks(self) -> None:
         with TemporaryDirectory() as directory:
-            duplicate_path = Path(directory) / "duplicate.json"
-            duplicate_path.write_text('{"schema_version":1,"schema_version":1}', encoding="utf-8")
+            duplicate = Path(directory) / "duplicate.json"
+            duplicate.write_text('{"schema_version":2,"schema_version":2}', encoding="utf-8")
             with self.assertRaisesRegex(OutputValidationError, "duplicate.*schema_version"):
                 load_output_document(
-                    duplicate_path,
+                    duplicate,
                     self.configuration,
                     repetition_attempt=1,
                     expected_configuration=self.effective,
                 )
-
-            nonfinite_path = Path(directory) / "nonfinite.json"
-            nonfinite_path.write_text('{"value":NaN}', encoding="utf-8")
+            nonfinite = Path(directory) / "nonfinite.json"
+            nonfinite.write_text('{"value":NaN}', encoding="utf-8")
             with self.assertRaisesRegex(OutputValidationError, "NaN|non-standard"):
                 load_output_document(
-                    nonfinite_path,
+                    nonfinite,
                     self.configuration,
                     repetition_attempt=1,
                     expected_configuration=self.effective,
                 )
 
-    def test_loader_copies_the_same_values_as_direct_validation(self) -> None:
+        with TemporaryDirectory() as directory, TemporaryDirectory() as outside:
+            outside_path = Path(outside) / "outside.json"
+            outside_path.write_text(json.dumps(self.document), encoding="utf-8")
+            symlink = Path(directory) / "output.json"
+            symlink.symlink_to(outside_path)
+            with self.assertRaisesRegex(OutputValidationError, "symlink|regular"):
+                load_output_document(
+                    symlink,
+                    self.configuration,
+                    repetition_attempt=1,
+                    expected_configuration=self.effective,
+                )
+
+    def test_loader_matches_direct_validation_and_leaves_overhead_empty(self) -> None:
         with TemporaryDirectory() as directory:
             output_path = Path(directory) / "output.json"
             output_path.write_text(json.dumps(self.document), encoding="utf-8")
-            loaded_rows = load_output_document(
+            loaded = load_output_document(
                 output_path,
                 self.configuration,
                 repetition_attempt=1,
                 expected_configuration=self.effective,
             )
-        self.assertEqual(loaded_rows, self.validate())
-
-    def test_loader_does_not_follow_output_symlinks(self) -> None:
-        with TemporaryDirectory() as directory, TemporaryDirectory() as outside_directory:
-            outside_path = Path(outside_directory) / "outside.json"
-            outside_path.write_text(json.dumps(self.document), encoding="utf-8")
-            output_path = Path(directory) / "output.json"
-            output_path.symlink_to(outside_path)
-            with self.assertRaisesRegex(OutputValidationError, "symlink|regular"):
-                load_output_document(
-                    output_path,
-                    self.configuration,
-                    repetition_attempt=1,
-                    expected_configuration=self.effective,
-                )
+        self.assertEqual(loaded, self.validate())
+        self.assertTrue(all(row.competition_overhead_vs_single_sta is None for row in loaded))
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ import time
 import tomllib
 from typing import BinaryIO, Iterator, TextIO
 
-from .csv_output import ExcelCsvWriter
+from .csv_output import BaselineKey, ExcelCsvWriter, apply_matching_baseline
 from .matrix import (
     INTERFERENCE_MODES,
     MIMO_MODES,
@@ -63,6 +63,8 @@ _CONFIGURATION_KEYS = {
         "primary_20_index",
         "tx_power_dbm",
         "rate_manager",
+        "guard_interval_ns",
+        "rts_cts_threshold_bytes",
         "antennas",
         "max_tx_spatial_streams",
         "max_rx_spatial_streams",
@@ -83,7 +85,7 @@ _DEFAULT_EFFECTIVE_CONFIGURATION: dict[str, object] = {
     "script": {"repetitions": 1},
     "simulation": {"rng_seed": 12345, "rng_run": 1},
     "benchmark": {
-        "sta_count_per_bss": 5,
+        "sta_count_per_bss": 1,
         "rssi_range": "high",
         "interference_mode": "isolated",
         "traffic_mode": "ul",
@@ -96,6 +98,8 @@ _DEFAULT_EFFECTIVE_CONFIGURATION: dict[str, object] = {
         "primary_20_index": 0,
         "tx_power_dbm": 20.0,
         "rate_manager": "ns3::MinstrelHtWifiManager",
+        "guard_interval_ns": 3200,
+        "rts_cts_threshold_bytes": 0,
         "antennas": 2,
         "max_tx_spatial_streams": 2,
         "max_rx_spatial_streams": 2,
@@ -628,6 +632,7 @@ def run_benchmark(
 
     attempt_count = len(requested) * loaded.repetitions
     completed = 0
+    baselines: dict[BaselineKey, float] = {}
     experiment_identities: dict[int, _ObjectIdentity] = {}
     try:
         csv_output = ExcelCsvWriter(run_directory / "results.csv")
@@ -926,6 +931,23 @@ def run_benchmark(
                 "attempt stderr log",
                 stderr_identity,
             )
+            if configuration.sta_count_per_bss == 1:
+                for row in rows:
+                    key: BaselineKey = (
+                        configuration.rssi_range,
+                        configuration.interference_mode,
+                        configuration.traffic_mode,
+                        configuration.mimo_mode,
+                        attempt.repetition_attempt,
+                        row.bss_id,
+                    )
+                    if key in baselines:
+                        raise RunnerError(f"duplicate matching baseline for {key!r}")
+                    baselines[key] = row.aggregate_data_tx_rate_over_interval_mbps
+            try:
+                rows = apply_matching_baseline(rows, baselines)
+            except ValueError as error:
+                raise RunnerError(f"cannot apply matching baseline: {error}") from error
             csv_output.append_attempt(rows)
             _require_attempt_hierarchy(
                 root,

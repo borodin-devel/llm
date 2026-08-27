@@ -179,6 +179,10 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
         loaded = load_runner_configuration(DEFAULT_CONFIG)
         self.assertEqual(loaded.repetitions, 1)
         self.assertEqual(loaded.effective_configuration["script"]["repetitions"], 1)
+        self.assertEqual(loaded.effective_configuration["wifi"]["guard_interval_ns"], 3200)
+        self.assertEqual(
+            loaded.effective_configuration["wifi"]["rts_cts_threshold_bytes"], 0
+        )
 
     def test_repetition_parser_enforces_exact_uint32_range(self) -> None:
         original = DEFAULT_CONFIG.read_text(encoding="utf-8")
@@ -218,7 +222,7 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
 
         expected_command_string = (
             f"saturated-tcp-scenario --config {DEFAULT_CONFIG} "
-            "--benchmark-sta-count-per-bss=5 "
+            "--benchmark-sta-count-per-bss=1 "
             "--benchmark-rssi-range=high "
             "--benchmark-interference-mode=isolated "
             "--benchmark-traffic-mode=ul "
@@ -235,7 +239,7 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                 "saturated-tcp-scenario",
                 "--config",
                 str(DEFAULT_CONFIG),
-                "--benchmark-sta-count-per-bss=5",
+                "--benchmark-sta-count-per-bss=1",
                 "--benchmark-rssi-range=high",
                 "--benchmark-interference-mode=isolated",
                 "--benchmark-traffic-mode=ul",
@@ -298,7 +302,13 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
             self.assertEqual(result, run_directory)
             self.assertEqual(maximum_active, 1)
             self.assertEqual(len(calls), 2)
-            self.assertEqual(len(read_csv(run_directory / "results.csv")), 7)
+            published_rows = read_csv(run_directory / "results.csv")
+            self.assertEqual(len(published_rows), 7)
+            self.assertEqual(
+                [row[12] for row in published_rows[1:]],
+                ["0.0", "0.0", "", "0.0", "0.0", ""],
+                "positive baseline self-overhead is zero and a zero baseline stays empty",
+            )
             for configuration in configurations:
                 output_path = (
                     run_directory

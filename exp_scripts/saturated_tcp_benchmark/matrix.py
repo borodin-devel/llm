@@ -6,7 +6,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
 
-STA_COUNTS = (5, 10, 15, 20, 25, 30)
+STA_COUNTS = (1, 5, 10, 15, 20, 25, 30)
 RSSI_RANGES = ("high", "medium", "low")
 INTERFERENCE_MODES = ("isolated", "ap_only_cochannel")
 TRAFFIC_MODES = ("ul", "dl", "ul_dl")
@@ -45,7 +45,7 @@ def target_rssi_dbm(rssi_range: str) -> float:
 
 
 def build_matrix(*, mimo_modes: Iterable[str] = MIMO_MODES) -> tuple[ExperimentConfiguration, ...]:
-    """Build the exact ordered SU-only 108-configuration product."""
+    """Build the exact ordered SU-only 126-configuration product."""
     requested_mimo_modes = tuple(mimo_modes)
     if requested_mimo_modes != MIMO_MODES:
         requested = ", ".join(requested_mimo_modes) if requested_mimo_modes else "<empty>"
@@ -70,6 +70,50 @@ def build_matrix(*, mimo_modes: Iterable[str] = MIMO_MODES) -> tuple[ExperimentC
                         )
                         experiment_id += 1
     return tuple(configurations)
+
+
+def expand_experiment_ids(
+    requested_experiment_ids: Iterable[int],
+) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
+    """Add matching one-STA dependencies and return requested/executed/automatic IDs."""
+    requested = tuple(requested_experiment_ids)
+    matrix = build_matrix()
+    by_id = {configuration.experiment_id: configuration for configuration in matrix}
+    if not requested:
+        raise ValueError("requested experiment IDs must not be empty")
+    if len(set(requested)) != len(requested):
+        raise ValueError("requested experiment IDs must be unique")
+    for experiment_id in requested:
+        if type(experiment_id) is not int or experiment_id not in by_id:
+            raise ValueError(f"unknown experiment ID: {experiment_id!r}")
+
+    baseline_by_coordinate = {
+        (
+            configuration.rssi_range,
+            configuration.interference_mode,
+            configuration.traffic_mode,
+            configuration.mimo_mode,
+        ): configuration.experiment_id
+        for configuration in matrix
+        if configuration.sta_count_per_bss == 1
+    }
+    automatic = set()
+    for experiment_id in requested:
+        configuration = by_id[experiment_id]
+        if configuration.sta_count_per_bss == 1:
+            continue
+        baseline_id = baseline_by_coordinate[
+            (
+                configuration.rssi_range,
+                configuration.interference_mode,
+                configuration.traffic_mode,
+                configuration.mimo_mode,
+            )
+        ]
+        if baseline_id not in requested:
+            automatic.add(baseline_id)
+    executed = tuple(sorted(set(requested) | automatic))
+    return requested, executed, tuple(sorted(automatic))
 
 
 def iter_experiment_attempts(
