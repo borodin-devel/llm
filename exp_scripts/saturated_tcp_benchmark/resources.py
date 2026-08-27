@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass
 import errno
 import json
 import os
@@ -18,11 +18,7 @@ SAMPLE_INTERVAL_MS = 100
 LINUX_PROC_MONITOR_MODE = "linux_proc"
 SEQUENTIAL_FALLBACK_MONITOR_MODE = "sequential_fallback"
 _KIBIBYTE = 1024
-_PROCESS_RSS_RETRY_TIMEOUT_SECONDS = 0.010
-_PROCESS_RSS_RETRY_POLL_SECONDS = 0.0001
-_STATUS_DIAGNOSTIC_CHARACTERS = 1024
-_RSS_TRANSITION_STATES = frozenset(("R", "D"))
-_PROCESS_EXIT_STATES = frozenset(("Z", "X"))
+_PROC_DIAGNOSTIC_CHARACTERS = 1024
 
 
 class ResourceError(RuntimeError):
@@ -54,7 +50,6 @@ class _ProcessIdentity:
     process_id: int
     parent_pid: int
     start_time_ticks: int
-    state_code: str = field(default="", compare=False)
 
 
 @dataclass(frozen=True)
@@ -141,106 +136,99 @@ def read_memory_snapshot(meminfo_path: Path = Path("/proc/meminfo")) -> MemorySn
     return MemorySnapshot(mem_total_bytes, mem_available_bytes)
 
 
-def _status_state_code(contents: str) -> str | None:
-    state_values = tuple(
-        line[len("State:") :].lstrip()
-        for line in contents.splitlines()
-        if line.startswith("State:")
-    )
-    if len(state_values) != 1:
-        return None
-    fields = state_values[0].split(maxsplit=1)
-    if not fields or len(fields[0]) != 1:
-        return None
-    return fields[0]
-
-
-def _bounded_status_diagnostic(contents: str) -> str:
-    excerpt = contents[:_STATUS_DIAGNOSTIC_CHARACTERS]
+def _bounded_proc_diagnostic(contents: str) -> str:
+    excerpt = contents[:_PROC_DIAGNOSTIC_CHARACTERS]
     if len(contents) > len(excerpt):
         excerpt += "<truncated>"
     return repr(excerpt)
+
+
+def _read_statm_resident_pages(
+    process_id: int,
+    proc_root: Path,
+    pinned_identity: _ProcessIdentity,
+) -> int | None:
+    statm_path = proc_root / str(process_id) / "statm"
+    try:
+        contents = statm_path.read_text(encoding="ascii")
+    except OSError as error:
+        if _is_process_disappearance(error):
+            return None
+        current_identity = _read_process_identity(process_id, proc_root)
+        if current_identity is None or current_identity != pinned_identity:
+            return None
+        raise ResourceError(
+            f"cannot read process statm for PID {process_id} at "
+            f"{statm_path}: {error}"
+        ) from error
+    except UnicodeError as error:
+        current_identity = _read_process_identity(process_id, proc_root)
+        if current_identity is None or current_identity != pinned_identity:
+            return None
+        raise ResourceError(
+            f"malformed process statm for PID {process_id} at "
+            f"{statm_path}: non-ASCII data"
+        ) from error
+
+    current_identity = _read_process_identity(process_id, proc_root)
+    if current_identity is None or current_identity != pinned_identity:
+        return None
+
+    fields = contents.split()
+    if len(fields) < 2 or not fields[1] or any(
+        character < "0" or character > "9" for character in fields[1]
+    ):
+        raise ResourceError(
+            f"malformed process statm for PID {process_id} at {statm_path}: "
+            f"statm={_bounded_proc_diagnostic(contents)}"
+        )
+    return int(fields[1], 10)
 
 
 def _read_process_rss_bytes(
     process_id: int,
     proc_root: Path,
     *,
-    monotonic: Callable[[], float] | None = None,
-    sleep: Callable[[float], None] | None = None,
+    page_size: int | None = None,
+    expected_identity: _ProcessIdentity | None = None,
 ) -> int | None:
     status_path = proc_root / str(process_id) / "status"
-    monotonic = monotonic if monotonic is not None else time.monotonic
-    sleep = sleep if sleep is not None else time.sleep
-    pinned_identity: _ProcessIdentity | None = None
-    retry_deadline: float | None = None
-    last_status = ""
-    last_status_state = ""
-    last_stat_state = ""
-    while True:
+    try:
+        contents = status_path.read_text(encoding="ascii")
+    except OSError as error:
+        if _is_process_disappearance(error):
+            return None
+        raise ResourceError(
+            f"cannot read process status for PID {process_id} at "
+            f"{status_path}: {error}"
+        ) from error
+    try:
+        return _parse_kibibyte_field(contents, "VmRSS", status_path)
+    except ResourceError:
+        if any(line.startswith("VmRSS:") for line in contents.splitlines()):
+            raise
+
+    pinned_identity = _read_process_identity(process_id, proc_root)
+    if pinned_identity is None:
+        return None
+    if expected_identity is not None and pinned_identity != expected_identity:
+        return None
+    resident_pages = _read_statm_resident_pages(
+        process_id,
+        proc_root,
+        pinned_identity,
+    )
+    if resident_pages is None:
+        return None
+
+    if page_size is None:
         try:
-            contents = status_path.read_text(encoding="ascii")
-        except OSError as error:
-            if _is_process_disappearance(error):
-                return None
-            raise ResourceError(
-                f"cannot read process status for PID {process_id} at "
-                f"{status_path}: {error}"
-            ) from error
-        try:
-            rss_bytes = _parse_kibibyte_field(contents, "VmRSS", status_path)
-        except ResourceError as rss_error:
-            if any(line.startswith("VmRSS:") for line in contents.splitlines()):
-                raise
-            current_identity = _read_process_identity(process_id, proc_root)
-            if (
-                current_identity is None
-                or current_identity.state_code in _PROCESS_EXIT_STATES
-            ):
-                return None
-            if pinned_identity is not None and current_identity != pinned_identity:
-                return None
-
-            status_state = _status_state_code(contents)
-            if status_state == "Z":
-                return None
-            if (
-                status_state not in _RSS_TRANSITION_STATES
-                or current_identity.state_code not in _RSS_TRANSITION_STATES
-            ):
-                raise ResourceError(
-                    f"{rss_error}; "
-                    f"status_state={status_state or '<missing/malformed>'}, "
-                    f"stat_state={current_identity.state_code}, "
-                    f"status={_bounded_status_diagnostic(contents)}"
-                ) from rss_error
-            if pinned_identity is None:
-                pinned_identity = current_identity
-                retry_deadline = monotonic() + _PROCESS_RSS_RETRY_TIMEOUT_SECONDS
-
-            last_status = contents
-            last_status_state = status_state
-            last_stat_state = current_identity.state_code
-            assert retry_deadline is not None
-            now = monotonic()
-            if now >= retry_deadline:
-                raise ResourceError(
-                    f"missing VmRSS field in {status_path} after bounded transition "
-                    f"retry: state={last_status_state}, stat_state={last_stat_state}, "
-                    f"status={_bounded_status_diagnostic(last_status)}"
-                )
-            sleep(min(_PROCESS_RSS_RETRY_POLL_SECONDS, retry_deadline - now))
-            continue
-
-        if pinned_identity is not None:
-            current_identity = _read_process_identity(process_id, proc_root)
-            if (
-                current_identity is None
-                or current_identity.state_code in _PROCESS_EXIT_STATES
-                or current_identity != pinned_identity
-            ):
-                return None
-        return rss_bytes
+            page_size = os.sysconf("SC_PAGE_SIZE")
+        except (AttributeError, OSError, ValueError) as error:
+            raise ResourceError(f"host page size is unavailable: {error}") from error
+    if isinstance(page_size, bool) or not isinstance(page_size, int) or page_size <= 0:
+        raise ResourceError("host page size must be a positive integer")
+    return resident_pages * page_size
 
 
 def _read_process_identity(
@@ -265,16 +253,15 @@ def _read_process_identity(
     ):
         raise ResourceError(f"malformed process identity for PID {process_id} at {stat_path}")
     try:
-        state_code = fields[0]
         parent_pid = int(fields[1], 10)
         start_time_ticks = int(fields[19], 10)
     except ValueError as error:
         raise ResourceError(
             f"malformed process identity for PID {process_id} at {stat_path}"
         ) from error
-    if len(state_code) != 1 or parent_pid < 0 or start_time_ticks < 0:
+    if parent_pid < 0 or start_time_ticks < 0:
         raise ResourceError(f"malformed process identity for PID {process_id} at {stat_path}")
-    return _ProcessIdentity(process_id, parent_pid, start_time_ticks, state_code)
+    return _ProcessIdentity(process_id, parent_pid, start_time_ticks)
 
 
 def _read_process_children(process_id: int, proc_root: Path) -> tuple[int, ...]:
@@ -340,7 +327,11 @@ def process_tree_rss_bytes(root_pid: int, proc_root: Path = Path("/proc")) -> in
             and current_identity.parent_pid != expected_parent.process_id
         ):
             continue
-        rss_bytes = _read_process_rss_bytes(current_identity.process_id, root)
+        rss_bytes = _read_process_rss_bytes(
+            current_identity.process_id,
+            root,
+            expected_identity=current_identity,
+        )
         if rss_bytes is None:
             continue
         child_pids = _read_process_children(current_identity.process_id, root)

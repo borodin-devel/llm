@@ -1117,6 +1117,12 @@ attempt records. A subset therefore cannot be mistaken for a full matrix.
 Failure stops admissions and retains created JSON, logs, and resource files;
 only the contiguous validated CSV prefix is published.
 
+The Linux monitor parses a present per-PID `VmRSS` strictly. Only when that
+field is absent, it pins and revalidates PID identity around
+`/proc/PID/statm`, converts exact resident pages with the host page size, and
+accepts numeric zero; malformed present `VmRSS` or live `statm` remains an
+error.
+
 One accepted default full run has exactly 126 `output.json` files, 252
 stdout/stderr logs, 126 `resource_usage.json` files, 378 CSV data rows plus one
 header, and 193 columns per row. The independent auditor reconstructs JSON

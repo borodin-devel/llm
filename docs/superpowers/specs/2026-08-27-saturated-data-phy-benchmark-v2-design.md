@@ -363,10 +363,15 @@ and JSON validation. Workers never write CSV.
 ### RAM measurement
 
 Every 100 ms, Linux `/proc` supplies process descendants, per-PID `VmRSS`,
-`MemTotal`, and `MemAvailable`. Per-attempt `peak_rss_bytes` is the maximum
-conservative sum across the worker's process tree. Each attempt retains
-`resource_usage.json`; the run root retains `resource_summary.json`.
-Operational resource fields never enter `results.csv`.
+`MemTotal`, and `MemAvailable`. A present `VmRSS` is parsed strictly. If it is
+absent, the monitor pins and revalidates the PID, parent, and start time around
+the resident-pages field from `/proc/PID/statm`, multiplies it by the validated
+host page size, and accepts numeric zero. Present malformed `VmRSS` and
+malformed live `statm` remain errors; identity replacement means the original
+process vanished. Per-attempt `peak_rss_bytes` is the maximum conservative sum
+across the worker's process tree. Each attempt retains `resource_usage.json`;
+the run root retains `resource_summary.json`. Operational resource fields
+never enter `results.csv`.
 
 On a full run, the selected 30-STA/low/AP-only/UL+DL attempt for repetition one
 runs first as the memory calibration job and is reused as its real matrix

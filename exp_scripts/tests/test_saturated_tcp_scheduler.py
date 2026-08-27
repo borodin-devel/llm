@@ -70,6 +70,21 @@ class SaturatedTcpSchedulerTest(unittest.TestCase):
             )
         )
 
+    def test_zero_current_rss_reserves_the_full_worker_growth(self) -> None:
+        scheduler = ResourceScheduler(1_000, 20)
+        self.assertTrue(
+            scheduler.can_admit(
+                MemorySnapshot(10_000, 4_000),
+                active_worker_rss_bytes=(0,),
+            )
+        )
+        self.assertFalse(
+            scheduler.can_admit(
+                MemorySnapshot(10_000, 3_999),
+                active_worker_rss_bytes=(0,),
+            )
+        )
+
     def test_memory_pause_resumes_when_a_literal_snapshot_recovers(self) -> None:
         scheduler = ResourceScheduler(2_000, 20)
         active = (1_500,)
