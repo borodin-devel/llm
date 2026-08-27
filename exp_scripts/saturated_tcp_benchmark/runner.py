@@ -1011,7 +1011,7 @@ def _build_resource_summary(state: _ResourceSummaryState) -> dict[str, object]:
         "memory_reserve_percent": state.memory_reserve_percent,
         "calibrated_peak_rss_bytes": state.calibrated_peak_rss_bytes,
         "worker_peak_estimate_bytes": state.worker_peak_estimate_bytes,
-        "maximum_parallel_workers": max(1, state.maximum_parallel_workers),
+        "maximum_parallel_workers": state.maximum_parallel_workers,
         "minimum_mem_available_bytes": min(available_bytes, default=None),
         "minimum_mem_available_percent": min(available_percent, default=None),
         "attempts": ordered_attempts,
@@ -1964,10 +1964,7 @@ def run_benchmark(
             drain_after_failure(error)
             raise
         finally:
-            state.maximum_parallel_workers = max(
-                1,
-                process_registry.maximum_processes(),
-            )
+            state.maximum_parallel_workers = process_registry.maximum_processes()
             try:
                 executor.shutdown(wait=True, cancel_futures=True)
             except BaseException as cleanup_error:

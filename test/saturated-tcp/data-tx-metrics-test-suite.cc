@@ -351,6 +351,14 @@ class DataTxMetricInvariantTestCase : public TestCase
                 [] { StationDataTxMetricRecorder recorder(0, 1'000'000'001, 10'000'000); }),
             true,
             "Partial final window was accepted");
+        NS_TEST_ASSERT_MSG_EQ(ThrowsInvalidArgument([] {
+                                  StationDataTxMetricRecorder recorder(
+                                      std::numeric_limits<int64_t>::min(),
+                                      std::numeric_limits<int64_t>::max(),
+                                      1);
+                              }),
+                              true,
+                              "Extreme measurement endpoints bypassed range validation");
 
         StationDataTxMetricRecorder recorder(0, 1'000'000'000, 10'000'000);
         recorder.RegisterStation(7, STATION_ADDRESS);

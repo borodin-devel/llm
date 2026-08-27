@@ -10,6 +10,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+from saturated_tcp_benchmark import audit as audit_module
 from saturated_tcp_benchmark.audit import audit_run_directory
 from audit_saturated_tcp_results import main
 
@@ -36,6 +37,21 @@ def _profile(bytes_value: float, attempts: int, airtime_us: float) -> dict[str, 
     }
 
 
+def _default_phy_direction() -> dict[str, object]:
+    return {
+        "tagged_payload_bytes": 0,
+        "unique_tagged_payload_bytes": 0,
+        "tagged_mpdu_count": 0,
+        "complete_tagged_mpdu_bytes": 0,
+        "transmission_attempt_count": 0,
+        "retransmission_count": 0,
+        "transmission_airtime_us": 0.0,
+        "average_data_rate_mbps": None,
+        "throughput_mbps": None,
+        "peers": [],
+    }
+
+
 def _station_phy(
     bytes_value: float,
     attempts: int,
@@ -52,6 +68,10 @@ def _station_phy(
         "mean_dominant_data_phy_rate_mbps": None,
         "mean_effective_phy_rate_mbps": None,
         "aggregate_data_tx_rate_over_interval_mbps": None,
+        "busy_time_us": 0,
+        "channel_utilization_percent": None,
+        "uplink": _default_phy_direction(),
+        "downlink": _default_phy_direction(),
     }
 
 
@@ -66,6 +86,10 @@ def _bss_phy(station_count: int, station_rate: float) -> dict[str, object]:
         "mean_dominant_data_phy_rate_mbps": 87.75,
         "mean_effective_phy_rate_mbps": 20.0,
         "aggregate_data_tx_rate_over_interval_mbps": station_count * station_rate,
+        "busy_time_us": 0,
+        "channel_utilization_percent": None,
+        "uplink": _default_phy_direction(),
+        "downlink": _default_phy_direction(),
     }
 
 
@@ -134,7 +158,10 @@ def _output_document(experiment_id: int, station_count: int) -> dict[str, object
             "station_role": "per-station transmitted data PPDU detail",
             "parent_child_duplication": "intentional",
             "phy_observation_scope": "qualifying station-transmitted unicast data PPDUs",
-            "phy_rate_source": "actual fixed-invariant WifiTxVector NSS and MCS",
+            "phy_rate_source": (
+                "actual WifiTxVector channel width, NSS, and MCS with fixed "
+                "HE SU/GI 3200 ns invariants"
+            ),
             "effective_phy_rate": "transmitted data PSDU bits per data PPDU airtime",
             "data_tx_rate_over_interval": "transmitted data PSDU bits per statistics interval",
             "data_tx_opportunity_gap": "time outside station data PPDU airtime",
@@ -184,10 +211,25 @@ def _output_document(experiment_id: int, station_count: int) -> dict[str, object
                     "mimo_mode": "su",
                 },
                 "wifi": {
+                    "band": "5GHz",
+                    "channel_number": 42,
                     "bandwidth_mhz": 80,
+                    "primary_20_index": 0,
+                    "tx_power_dbm": 20.0,
+                    "rate_manager": "ns3::MinstrelHtWifiManager",
                     "guard_interval_ns": 3200,
                     "rts_cts_threshold_bytes": 0,
+                    "antennas": 2,
                     "max_tx_spatial_streams": 2,
+                    "max_rx_spatial_streams": 2,
+                },
+                "tcp": {
+                    "congestion_control": "ns3::TcpHighSpeed",
+                    "segment_size_bytes": 1460,
+                    "send_buffer_bytes": 33554432,
+                    "receive_buffer_bytes": 33554432,
+                    "wired_rate": "10Gbps",
+                    "wired_delay": "0.1ms",
                 },
                 "statistics": {"window_ms": 10},
             },
@@ -527,6 +569,305 @@ class SaturatedTcpAuditTest(unittest.TestCase):
         output_path.write_text(json.dumps(changed), encoding="utf-8")
         self.assertTrue(any("validation" in item for item in self.audit().discrepancies))
 
+    def test_rejects_a_completely_empty_sparse_window(self) -> None:
+        output_path = self.run_directory / "experiment_001/attempt_1/output.json"
+        document = json.loads(output_path.read_text(encoding="utf-8"))
+        document["windows"][0]["access_points"] = []
+        document["windows"][0]["stations"] = []
+        output_path.write_text(json.dumps(document), encoding="utf-8")
+
+        self.assertTrue(
+            any("empty sparse window" in item for item in self.audit().discrepancies)
+        )
+
+    def test_output_schema_version_requires_exact_integer_two(self) -> None:
+        output_path = self.run_directory / "experiment_001/attempt_1/output.json"
+        original = json.loads(output_path.read_text(encoding="utf-8"))
+        for invalid in (2.0, True):
+            with self.subTest(invalid=invalid):
+                changed = deepcopy(original)
+                changed["schema_version"] = invalid
+                output_path.write_text(json.dumps(changed), encoding="utf-8")
+                self.assertTrue(
+                    any(
+                        "schema_version must be integer 2" in item
+                        for item in self.audit().discrepancies
+                    )
+                )
+
+    def test_resource_schema_versions_require_exact_integer_one(self) -> None:
+        usage_path = self.run_directory / "experiment_001/attempt_1/resource_usage.json"
+        summary_path = self.run_directory / "resource_summary.json"
+        original_usage = json.loads(usage_path.read_text(encoding="utf-8"))
+        original_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        for invalid in (1.0, True):
+            with self.subTest(document="usage", invalid=invalid):
+                usage = deepcopy(original_usage)
+                summary = deepcopy(original_summary)
+                usage["schema_version"] = invalid
+                summary["attempts"][0]["schema_version"] = invalid
+                usage_path.write_text(json.dumps(usage), encoding="utf-8")
+                summary_path.write_text(json.dumps(summary), encoding="utf-8")
+                self.assertTrue(
+                    any(
+                        "resource usage schema_version must be integer 1" in item
+                        for item in self.audit().discrepancies
+                    )
+                )
+            with self.subTest(document="summary", invalid=invalid):
+                usage_path.write_text(json.dumps(original_usage), encoding="utf-8")
+                summary = deepcopy(original_summary)
+                summary["schema_version"] = invalid
+                summary_path.write_text(json.dumps(summary), encoding="utf-8")
+                self.assertTrue(
+                    any(
+                        "resource manifest schema_version must be integer 1" in item
+                        for item in self.audit().discrepancies
+                    )
+                )
+
+    def test_phy_stats_rejects_every_trailing_key(self) -> None:
+        output_path = self.run_directory / "experiment_001/attempt_1/output.json"
+        original = json.loads(output_path.read_text(encoding="utf-8"))
+        paths = (
+            original["overall"]["stations"][0]["phy_stats"],
+            original["overall"]["access_points"][0]["phy_stats"],
+        )
+        for role, original_phy in zip(("station", "BSS"), paths):
+            with self.subTest(role=role):
+                changed = deepcopy(original)
+                entities = (
+                    changed["overall"]["stations"]
+                    if role == "station"
+                    else changed["overall"]["access_points"]
+                )
+                entities[0]["phy_stats"]["unexpected_trailing_key"] = None
+                output_path.write_text(json.dumps(changed), encoding="utf-8")
+                self.assertTrue(
+                    any(
+                        f"{role} PHY field order is invalid" in item
+                        for item in self.audit().discrepancies
+                    )
+                )
+
+    def test_rejects_each_fixed_wifi_and_tcp_metadata_mutation(self) -> None:
+        output_path = self.run_directory / "experiment_001/attempt_1/output.json"
+        original = json.loads(output_path.read_text(encoding="utf-8"))
+        mutations = (
+            ("wifi", "band", "2.4GHz"),
+            ("wifi", "channel_number", 42.0),
+            ("wifi", "bandwidth_mhz", 40),
+            ("wifi", "primary_20_index", 1),
+            ("wifi", "tx_power_dbm", 19.0),
+            ("wifi", "rate_manager", "ns3::IdealWifiManager"),
+            ("wifi", "guard_interval_ns", 1600),
+            ("wifi", "rts_cts_threshold_bytes", 1),
+            ("wifi", "antennas", 1),
+            ("wifi", "max_tx_spatial_streams", 1),
+            ("wifi", "max_rx_spatial_streams", 1),
+            ("tcp", "congestion_control", "ns3::TcpCubic"),
+            ("tcp", "segment_size_bytes", 1448),
+            ("tcp", "send_buffer_bytes", 1024),
+            ("tcp", "receive_buffer_bytes", 1024),
+            ("tcp", "wired_rate", "1Gbps"),
+            ("tcp", "wired_delay", "1ms"),
+        )
+        for section, field, value in mutations:
+            with self.subTest(section=section, field=field):
+                changed = deepcopy(original)
+                changed["experiment_metadata"]["configuration"][section][field] = value
+                output_path.write_text(json.dumps(changed), encoding="utf-8")
+                self.assertTrue(
+                    any(
+                        f"{section} fixed metadata" in item.lower()
+                        for item in self.audit().discrepancies
+                    )
+                )
+
+    def test_rejects_measurement_duration_and_window_invariant_mutations(self) -> None:
+        output_path = self.run_directory / "experiment_001/attempt_1/output.json"
+        original = json.loads(output_path.read_text(encoding="utf-8"))
+
+        changed = deepcopy(original)
+        changed["statistics_window_ms"] = 11
+        changed["experiment_metadata"]["configuration"]["statistics"]["window_ms"] = 11
+        mutations = [("divide one second", changed)]
+
+        changed = deepcopy(original)
+        changed["windows"][0]["window_index"] = 100
+        changed["windows"][0]["window_start_ms"] = 1000.0
+        mutations.append(("order/range", changed))
+
+        changed = deepcopy(original)
+        changed["windows"][0]["window_duration_ms"] = 9.0
+        mutations.append(("position", changed))
+
+        changed = deepcopy(original)
+        changed["experiment_metadata"]["configuration"]["statistics"]["window_ms"] = 20
+        mutations.append(("window metadata", changed))
+
+        for expected, document in mutations:
+            with self.subTest(expected=expected):
+                output_path.write_text(json.dumps(document), encoding="utf-8")
+                self.assertTrue(
+                    any(expected in item for item in self.audit().discrepancies)
+                )
+
+    def test_resource_sample_interval_requires_exact_integer_100(self) -> None:
+        usage_path = self.run_directory / "experiment_019/attempt_1/resource_usage.json"
+        summary_path = self.run_directory / "resource_summary.json"
+        original_usage = json.loads(usage_path.read_text(encoding="utf-8"))
+        original_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        for invalid in (99, 100.0):
+            with self.subTest(invalid=invalid):
+                usage = deepcopy(original_usage)
+                summary = deepcopy(original_summary)
+                usage["sample_interval_ms"] = invalid
+                summary["attempts"][1]["sample_interval_ms"] = invalid
+                usage_path.write_text(json.dumps(usage), encoding="utf-8")
+                summary_path.write_text(json.dumps(summary), encoding="utf-8")
+                self.assertTrue(
+                    any(
+                        "sample_interval_ms must be integer 100" in item
+                        for item in self.audit().discrepancies
+                    )
+                )
+
+    def test_linux_proc_requires_numeric_rss_and_memory_minima(self) -> None:
+        usage_path = self.run_directory / "experiment_019/attempt_1/resource_usage.json"
+        summary_path = self.run_directory / "resource_summary.json"
+        original_usage = json.loads(usage_path.read_text(encoding="utf-8"))
+        original_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        for field in (
+            "peak_rss_bytes",
+            "minimum_mem_available_bytes",
+            "minimum_mem_available_percent",
+        ):
+            with self.subTest(field=field):
+                usage = deepcopy(original_usage)
+                summary = deepcopy(original_summary)
+                usage[field] = None
+                summary["attempts"][1][field] = None
+                usage_path.write_text(json.dumps(usage), encoding="utf-8")
+                summary_path.write_text(json.dumps(summary), encoding="utf-8")
+                self.assertTrue(
+                    any(
+                        f"linux_proc requires numeric {field}" in item
+                        for item in self.audit().discrepancies
+                    )
+                )
+
+    def test_sequential_fallback_requires_null_resources_and_one_worker(self) -> None:
+        usage_paths = (
+            self.run_directory / "experiment_001/attempt_1/resource_usage.json",
+            self.run_directory / "experiment_019/attempt_1/resource_usage.json",
+        )
+        summary_path = self.run_directory / "resource_summary.json"
+        usages = [json.loads(path.read_text(encoding="utf-8")) for path in usage_paths]
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        nullable_fields = (
+            "peak_rss_bytes",
+            "minimum_mem_available_bytes",
+            "minimum_mem_available_percent",
+        )
+        for usage in usages:
+            usage["monitor_mode"] = "sequential_fallback"
+            for field in nullable_fields:
+                usage[field] = None
+        summary["attempts"] = deepcopy(usages)
+        for field in (
+            "calibrated_peak_rss_bytes",
+            "worker_peak_estimate_bytes",
+            "minimum_mem_available_bytes",
+            "minimum_mem_available_percent",
+        ):
+            summary[field] = None
+        summary["maximum_parallel_workers"] = 1
+
+        for path, usage in zip(usage_paths, usages):
+            path.write_text(json.dumps(usage), encoding="utf-8")
+        summary_path.write_text(json.dumps(summary), encoding="utf-8")
+        self.assertEqual(self.audit().discrepancies, ())
+
+        mutations = [
+            ("peak_rss_bytes", 1),
+            ("minimum_mem_available_bytes", 1),
+            ("minimum_mem_available_percent", 1.0),
+        ]
+        for field, value in mutations:
+            with self.subTest(field=field):
+                changed_usage = deepcopy(usages[1])
+                changed_usage[field] = value
+                usage_paths[1].write_text(json.dumps(changed_usage), encoding="utf-8")
+                changed_summary = deepcopy(summary)
+                changed_summary["attempts"][1][field] = value
+                summary_path.write_text(json.dumps(changed_summary), encoding="utf-8")
+                self.assertTrue(
+                    any(
+                        f"sequential_fallback requires null {field}" in item
+                        for item in self.audit().discrepancies
+                    )
+                )
+                usage_paths[1].write_text(json.dumps(usages[1]), encoding="utf-8")
+
+        for field in (
+            "calibrated_peak_rss_bytes",
+            "worker_peak_estimate_bytes",
+            "minimum_mem_available_bytes",
+            "minimum_mem_available_percent",
+        ):
+            with self.subTest(summary_field=field):
+                changed_summary = deepcopy(summary)
+                changed_summary[field] = 1.0
+                summary_path.write_text(json.dumps(changed_summary), encoding="utf-8")
+                self.assertTrue(
+                    any(
+                        f"sequential_fallback requires null {field}" in item
+                        for item in self.audit().discrepancies
+                    )
+                )
+
+        summary_path.write_text(json.dumps(summary), encoding="utf-8")
+        changed_summary = deepcopy(summary)
+        changed_summary["maximum_parallel_workers"] = 2
+        summary_path.write_text(json.dumps(changed_summary), encoding="utf-8")
+        self.assertTrue(
+            any(
+                "sequential_fallback requires exactly one worker" in item
+                for item in self.audit().discrepancies
+            )
+        )
+
+    def test_number_conversion_failures_become_path_bearing_discrepancies(self) -> None:
+        class TypeFailingInt(int):
+            def __float__(self):
+                raise TypeError("injected conversion failure")
+
+        class ValueFailingInt(int):
+            def __float__(self):
+                raise ValueError("injected conversion failure")
+
+        for value in (10**400, TypeFailingInt(1), ValueFailingInt(1)):
+            with self.subTest(value_type=type(value).__name__):
+                with self.assertRaisesRegex(ValueError, "fixture.json: metric"):
+                    audit_module._number(value, Path("fixture.json"), "metric")
+
+    def test_cli_returns_nonzero_instead_of_crashing_on_huge_json_integer(self) -> None:
+        output_path = self.run_directory / "experiment_001/attempt_1/output.json"
+        document = json.loads(output_path.read_text(encoding="utf-8"))
+        document["windows"][0]["window_start_ms"] = 10**400
+        output_path.write_text(json.dumps(document), encoding="utf-8")
+        output = StringIO()
+        error = StringIO()
+
+        self.assertEqual(main([str(self.run_directory)], output=output, error=error), 1)
+        report = json.loads(output.getvalue())
+        self.assertGreater(report["discrepancy_count"], 0)
+        self.assertTrue(
+            any("window 0 start" in item for item in report["discrepancies"])
+        )
+        self.assertEqual(error.getvalue(), "")
+
     def test_manifest_requires_complete_unique_attempt_lattice(self) -> None:
         dependent = self.run_directory / "experiment_019"
         for path in sorted(dependent.rglob("*"), reverse=True):
@@ -620,6 +961,37 @@ class SaturatedTcpAuditTest(unittest.TestCase):
                 changed[field] = value
                 summary_path.write_text(json.dumps(changed), encoding="utf-8")
                 self.assertTrue(any(field in item for item in self.audit().discrepancies))
+
+    def test_prelaunch_failure_summary_accepts_zero_parallel_workers(self) -> None:
+        for experiment_directory in sorted(
+            self.run_directory.glob("experiment_*"), reverse=True
+        ):
+            for path in sorted(experiment_directory.rglob("*"), reverse=True):
+                if path.is_file():
+                    path.unlink()
+                else:
+                    path.rmdir()
+            experiment_directory.rmdir()
+        (self.run_directory / "results.csv").write_bytes(_encode_rows([_csv_header()]))
+        summary_path = self.run_directory / "resource_summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary["attempts"] = []
+        summary["calibrated_peak_rss_bytes"] = None
+        summary["worker_peak_estimate_bytes"] = None
+        summary["maximum_parallel_workers"] = 0
+        summary["minimum_mem_available_bytes"] = None
+        summary["minimum_mem_available_percent"] = None
+        summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+        report = self.audit()
+
+        self.assertEqual(report.maximum_parallel_workers, 0)
+        self.assertFalse(
+            any(
+                "maximum_parallel_workers is invalid" in item
+                for item in report.discrepancies
+            )
+        )
 
 
 def _encode_rows(rows: list[list[str]]) -> bytes:

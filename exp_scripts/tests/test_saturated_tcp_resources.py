@@ -99,7 +99,6 @@ class ProcParserTest(unittest.TestCase):
                 "MemTotal:       16384 kB\nMemFree: 99 kB\nMemAvailable: 4097 kB\n",
                 encoding="ascii",
             )
-
             self.assertEqual(
                 read_memory_snapshot(meminfo),
                 MemorySnapshot(
@@ -107,6 +106,73 @@ class ProcParserTest(unittest.TestCase):
                     mem_available_bytes=4_195_328,
                 ),
             )
+
+    def test_ascii_decimal_tokens_reject_noncanonical_spelling(self) -> None:
+        for invalid in ("", "+12", "-12", "1_2", " 12", "12 ", "1 2", "１２"):
+            with self.subTest(invalid=invalid), self.assertRaises(ResourceError):
+                resources._parse_ascii_decimal(invalid, "invalid decimal fixture")
+        self.assertEqual(
+            resources._parse_ascii_decimal("0", "invalid decimal fixture"),
+            0,
+        )
+
+    def test_memory_decimal_fields_reject_non_ascii_grammar_and_keep_zero(self) -> None:
+        with TemporaryDirectory() as directory:
+            meminfo = Path(directory) / "meminfo"
+            meminfo.write_text(
+                "MemTotal: 10 kB\nMemAvailable: 0 kB\n",
+                encoding="ascii",
+            )
+            self.assertEqual(read_memory_snapshot(meminfo).mem_available_bytes, 0)
+
+        for invalid in ("", "+12", "-12", "1_2", "1 2", "１２"):
+            with self.subTest(invalid=invalid), TemporaryDirectory() as directory:
+                meminfo = Path(directory) / "meminfo"
+                meminfo.write_text(
+                    f"MemTotal: 10 kB\nMemAvailable: {invalid} kB\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ResourceError, "MemAvailable|non-ASCII"):
+                    read_memory_snapshot(meminfo)
+
+    def test_statm_resident_pages_reject_non_ascii_decimal_tokens(self) -> None:
+        for invalid in ("", "+1", "-1", "1_0", "１"):
+            with self.subTest(invalid=invalid), TemporaryDirectory() as directory:
+                proc_root = Path(directory)
+                _write_process(
+                    proc_root,
+                    200,
+                    rss_kb=None,
+                    statm_contents="1 0\n",
+                )
+                (proc_root / "200/statm").write_text(
+                    f"1 {invalid}\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ResourceError, "statm"):
+                    resources._read_process_rss_bytes(
+                        200,
+                        proc_root,
+                        page_size=4_096,
+                    )
+
+    def test_child_pids_reject_non_ascii_decimal_tokens(self) -> None:
+        for invalid in ("", "+101", "-101", "1_01", "１０１"):
+            with self.subTest(invalid=invalid), TemporaryDirectory() as directory:
+                proc_root = Path(directory)
+                _write_process(
+                    proc_root,
+                    100,
+                    rss_kb=10,
+                    children_by_thread={100: "101"},
+                )
+                children_path = proc_root / "100/task/100/children"
+                children_path.write_text(invalid, encoding="utf-8")
+                if invalid:
+                    with self.assertRaisesRegex(ResourceError, "child PID|non-ASCII"):
+                        process_tree_rss_bytes(100, proc_root)
+                else:
+                    self.assertEqual(process_tree_rss_bytes(100, proc_root), 10_240)
 
     def test_sums_each_recursive_descendant_once_and_tolerates_vanishing_pid(self) -> None:
         with TemporaryDirectory() as directory:

@@ -2386,6 +2386,43 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
             )
             self.assertEqual(summary["attempts"], attempt_records)
 
+    def test_calibration_failure_before_popen_reports_zero_parallel_workers(self) -> None:
+        configuration = build_matrix()[0]
+        timestamp = "calibration_prelaunch_failure"
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            capability = ResourceCapability(
+                LINUX_PROC_MONITOR_MODE,
+                Path("/proc"),
+                Path("/proc/meminfo"),
+                MemorySnapshot(100_000, 90_000),
+                "test Linux proc capability",
+            )
+            process_calls = []
+
+            def fail_snapshot():
+                raise resources.ResourceError("injected calibration snapshot failure")
+
+            with self.assertRaisesRegex(RunnerError, "calibration snapshot failure"):
+                run_benchmark(
+                    ns3_root=root,
+                    config_path=DEFAULT_CONFIG,
+                    timestamp=timestamp,
+                    configurations=(configuration,),
+                    process_factory=lambda *args, **kwargs: process_calls.append(args),
+                    resource_capability=capability,
+                    memory_snapshot_reader=fail_snapshot,
+                    active_rss_reader=lambda process_ids: (),
+                    output=StringIO(),
+                )
+
+            summary = read_json(
+                root / f"run/scripted_exp_{timestamp}/resource_summary.json"
+            )
+            self.assertEqual(process_calls, [])
+            self.assertEqual(summary["attempts"], [])
+            self.assertEqual(summary["maximum_parallel_workers"], 0)
+
     def test_retains_resource_records_and_partial_summary_on_process_failures(self) -> None:
         configuration = build_matrix()[0]
         cases = (

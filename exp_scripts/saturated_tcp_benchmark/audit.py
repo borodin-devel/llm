@@ -29,7 +29,10 @@ _MEASUREMENT_SEMANTICS = {
     "station_role": "per-station transmitted data PPDU detail",
     "parent_child_duplication": "intentional",
     "phy_observation_scope": "qualifying station-transmitted unicast data PPDUs",
-    "phy_rate_source": "actual fixed-invariant WifiTxVector NSS and MCS",
+    "phy_rate_source": (
+        "actual WifiTxVector channel width, NSS, and MCS with fixed "
+        "HE SU/GI 3200 ns invariants"
+    ),
     "effective_phy_rate": "transmitted data PSDU bits per data PPDU airtime",
     "data_tx_rate_over_interval": "transmitted data PSDU bits per statistics interval",
     "data_tx_opportunity_gap": "time outside station data PPDU airtime",
@@ -65,6 +68,12 @@ _STATION_FIELDS = (
     "mean_effective_phy_rate_mbps",
     "aggregate_data_tx_rate_over_interval_mbps",
 )
+_PHY_FIELDS = _STATION_FIELDS + (
+    "busy_time_us",
+    "channel_utilization_percent",
+    "uplink",
+    "downlink",
+)
 _RESOURCE_USAGE_KEYS = (
     "schema_version",
     "experiment_id",
@@ -92,6 +101,27 @@ _RESOURCE_SUMMARY_KEYS = (
     "attempts",
 )
 _TARGET_RSSI_DBM = {"high": -41.5, "medium": -50.0, "low": -60.0}
+_FIXED_WIFI_METADATA = {
+    "band": "5GHz",
+    "channel_number": 42,
+    "bandwidth_mhz": 80,
+    "primary_20_index": 0,
+    "tx_power_dbm": 20.0,
+    "rate_manager": "ns3::MinstrelHtWifiManager",
+    "guard_interval_ns": 3200,
+    "rts_cts_threshold_bytes": 0,
+    "antennas": 2,
+    "max_tx_spatial_streams": 2,
+    "max_rx_spatial_streams": 2,
+}
+_FIXED_TCP_METADATA = {
+    "congestion_control": "ns3::TcpHighSpeed",
+    "segment_size_bytes": 1460,
+    "send_buffer_bytes": 33554432,
+    "receive_buffer_bytes": 33554432,
+    "wired_rate": "10Gbps",
+    "wired_delay": "0.1ms",
+}
 _TOLERANCE = 1e-9
 
 
@@ -237,7 +267,10 @@ def _load_json(path: Path) -> dict[str, object]:
 def _number(value: object, path: Path, name: str, *, minimum: float | None = None) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         _fail(path, f"{name} must be a finite number")
-    result = float(value)
+    try:
+        result = float(value)
+    except (OverflowError, TypeError, ValueError):
+        _fail(path, f"{name} must be a finite number")
     if not math.isfinite(result) or (minimum is not None and result < minimum):
         _fail(path, f"{name} must be finite and >= {minimum}")
     return result
@@ -259,6 +292,17 @@ def _optional_number(
 
 def _near(left: float, right: float) -> bool:
     return abs(left - right) <= _TOLERANCE * max(1.0, abs(left), abs(right))
+
+
+def _exact_scalar_object(value: object, expected: dict[str, object]) -> bool:
+    return (
+        type(value) is dict
+        and tuple(value) == tuple(expected)
+        and all(
+            type(value[key]) is type(expected_value) and value[key] == expected_value
+            for key, expected_value in expected.items()
+        )
+    )
 
 
 def _same_optional(left: float | None, right: float | None) -> bool:
@@ -312,7 +356,7 @@ def _parse_profile(value: object, path: Path, name: str) -> tuple[_Profile, ...]
 def _parse_station_phy(
     phy: object, interval_us: float, path: Path, name: str
 ) -> _Station:
-    if type(phy) is not dict or tuple(phy)[:9] != _STATION_FIELDS:
+    if type(phy) is not dict or tuple(phy) != _PHY_FIELDS:
         _fail(path, f"{name} station PHY field order is invalid")
     for field in _STATION_FIELDS:
         if field not in phy:
@@ -369,7 +413,7 @@ def _parse_station_phy(
 
 
 def _parse_bss_phy(phy: object, path: Path, name: str) -> _Bss:
-    if type(phy) is not dict or tuple(phy)[:9] != _STATION_FIELDS:
+    if type(phy) is not dict or tuple(phy) != _PHY_FIELDS:
         _fail(path, f"{name} BSS PHY field order is invalid")
     for field in _STATION_FIELDS[:5]:
         if phy[field] is not None:
@@ -411,7 +455,7 @@ def _parse_attempt(
     root = _load_json(path)
     if tuple(root) != _ROOT_KEYS:
         _fail(path, "output root keys/order are invalid")
-    if root["schema_version"] != 2:
+    if type(root["schema_version"]) is not int or root["schema_version"] != 2:
         _fail(path, "schema_version must be integer 2")
     semantics = root["measurement_semantics"]
     if (
@@ -459,18 +503,13 @@ def _parse_attempt(
     if simulation != {"rng_seed": 12345, "rng_run": repetition_attempt}:
         _fail(path, "simulation seed/run metadata is invalid")
     wifi = actual.get("wifi")
-    if type(wifi) is not dict or any(
-        wifi.get(key) != value
-        for key, value in (
-            ("bandwidth_mhz", 80),
-            ("guard_interval_ns", 3200),
-            ("rts_cts_threshold_bytes", 0),
-            ("max_tx_spatial_streams", 2),
-        )
-    ):
-        _fail(path, "Wi-Fi fixed invariants are invalid")
+    if not _exact_scalar_object(wifi, _FIXED_WIFI_METADATA):
+        _fail(path, "wifi fixed metadata is invalid")
+    tcp = actual.get("tcp")
+    if not _exact_scalar_object(tcp, _FIXED_TCP_METADATA):
+        _fail(path, "tcp fixed metadata is invalid")
     statistics = actual.get("statistics")
-    if type(statistics) is not dict or statistics.get("window_ms") != window_ms:
+    if not _exact_scalar_object(statistics, {"window_ms": window_ms}):
         _fail(path, "statistics window metadata mismatch")
 
     inventory = metadata.get("entity_inventory")
@@ -510,6 +549,8 @@ def _parse_attempt(
         raw_bsses = window.get("access_points")
         if type(raw_stations) is not list or type(raw_bsses) is not list:
             _fail(path, f"window {window_position} entity arrays are missing")
+        if not raw_stations and not raw_bsses:
+            _fail(path, f"window {window_position} is an empty sparse window")
         station_map: dict[tuple[int, int], _Station] = {}
         for raw_station in raw_stations:
             key = _identity_key(raw_station, path, f"window {window_position} station", True)
@@ -727,8 +768,10 @@ def _resource_selection(
 ) -> tuple[list[int], list[dict[str, object]]]:
     if tuple(summary) != _RESOURCE_SUMMARY_KEYS:
         discrepancies.append(f"{path}: resource manifest summary keys/order are invalid")
-    if summary.get("schema_version") != 1:
-        discrepancies.append(f"{path}: resource manifest schema_version must be 1")
+    if type(summary.get("schema_version")) is not int or summary.get("schema_version") != 1:
+        discrepancies.append(
+            f"{path}: resource manifest schema_version must be integer 1"
+        )
     requested = summary.get("requested_experiment_ids")
     executed = summary.get("executed_experiment_ids")
     automatic = summary.get("auto_included_baseline_ids")
@@ -823,6 +866,25 @@ def _validate_resource_summary_aggregates(
     path: Path,
     discrepancies: list[str],
 ) -> None:
+    monitor_modes = {record["monitor_mode"] for record in usage_records}
+    if len(monitor_modes) > 1:
+        discrepancies.append(f"{path}: resource monitor modes must be consistent")
+    if monitor_modes == {"sequential_fallback"}:
+        for field in (
+            "calibrated_peak_rss_bytes",
+            "worker_peak_estimate_bytes",
+            "minimum_mem_available_bytes",
+            "minimum_mem_available_percent",
+        ):
+            if summary.get(field) is not None:
+                discrepancies.append(
+                    f"{path}: sequential_fallback requires null {field}"
+                )
+        if summary.get("maximum_parallel_workers") != 1:
+            discrepancies.append(
+                f"{path}: sequential_fallback requires exactly one worker"
+            )
+
     reserve = summary.get("memory_reserve_percent")
     if type(reserve) is not int or not 15 <= reserve <= 50:
         discrepancies.append(
@@ -999,26 +1061,64 @@ def audit_run_directory(run_directory: str | Path) -> AuditReport:
                 usage = _load_json(usage_path)
                 if tuple(usage) != _RESOURCE_USAGE_KEYS:
                     _fail(usage_path, "resource usage schema keys/order are invalid")
-                if usage.get("schema_version") != 1 or usage.get("experiment_id") != experiment_id or usage.get("repetition_attempt") != repetition:
-                    _fail(usage_path, "resource usage identity/schema is invalid")
-                _integer(usage.get("sample_interval_ms"), usage_path, "sample_interval_ms", minimum=1)
-                peak = usage.get("peak_rss_bytes")
-                if peak is not None:
-                    _integer(peak, usage_path, "peak_rss_bytes")
-                minimum_bytes = usage.get("minimum_mem_available_bytes")
-                if minimum_bytes is not None:
-                    _integer(minimum_bytes, usage_path, "minimum_mem_available_bytes")
-                minimum_percent = usage.get("minimum_mem_available_percent")
-                if minimum_percent is not None:
-                    value = _number(minimum_percent, usage_path, "minimum_mem_available_percent", minimum=0.0)
+                if type(usage.get("schema_version")) is not int or usage.get("schema_version") != 1:
+                    _fail(
+                        usage_path,
+                        "resource usage schema_version must be integer 1",
+                    )
+                if (
+                    _integer(usage.get("experiment_id"), usage_path, "experiment_id")
+                    != experiment_id
+                    or _integer(
+                        usage.get("repetition_attempt"),
+                        usage_path,
+                        "repetition_attempt",
+                        minimum=1,
+                    )
+                    != repetition
+                ):
+                    _fail(usage_path, "resource usage identity is invalid")
+                sample_interval_ms = usage.get("sample_interval_ms")
+                if type(sample_interval_ms) is not int or sample_interval_ms != 100:
+                    _fail(usage_path, "sample_interval_ms must be integer 100")
+                monitor_mode = usage.get("monitor_mode")
+                if monitor_mode not in ("linux_proc", "sequential_fallback"):
+                    _fail(usage_path, "resource monitor_mode is invalid")
+                resource_fields = (
+                    "peak_rss_bytes",
+                    "minimum_mem_available_bytes",
+                    "minimum_mem_available_percent",
+                )
+                if monitor_mode == "linux_proc":
+                    _integer(
+                        usage.get("peak_rss_bytes"),
+                        usage_path,
+                        "linux_proc requires numeric peak_rss_bytes",
+                    )
+                    _integer(
+                        usage.get("minimum_mem_available_bytes"),
+                        usage_path,
+                        "linux_proc requires numeric minimum_mem_available_bytes",
+                    )
+                    value = _number(
+                        usage.get("minimum_mem_available_percent"),
+                        usage_path,
+                        "linux_proc requires numeric minimum_mem_available_percent",
+                        minimum=0.0,
+                    )
                     if value > 100.0:
                         _fail(usage_path, "minimum_mem_available_percent exceeds 100")
+                else:
+                    for field in resource_fields:
+                        if usage.get(field) is not None:
+                            _fail(
+                                usage_path,
+                                f"sequential_fallback requires null {field}",
+                            )
                 _number(usage.get("wall_time_seconds"), usage_path, "wall_time_seconds", minimum=0.0)
                 exit_code = _integer(usage.get("exit_code"), usage_path, "exit_code")
                 if exit_code != 0:
                     _fail(usage_path, "exit_code must be zero for an accepted attempt")
-                if usage.get("monitor_mode") not in ("linux_proc", "sequential_fallback"):
-                    _fail(usage_path, "resource monitor_mode is invalid")
                 usage_records.append(usage)
             except _AuditInputError as error:
                 discrepancies.append(str(error))
@@ -1087,7 +1187,12 @@ def audit_run_directory(run_directory: str | Path) -> AuditReport:
                 value for value in (derived_minimum, summary_minimum_value) if value is not None
             )
     maximum_workers = summary.get("maximum_parallel_workers")
-    if type(maximum_workers) is not int or maximum_workers < 1:
+    if (
+        type(maximum_workers) is not int
+        or maximum_workers < 0
+        or (expected_attempt_count == 0 and maximum_workers != 0)
+        or (expected_attempt_count > 0 and maximum_workers < 1)
+    ):
         discrepancies.append(f"{summary_path}: maximum_parallel_workers is invalid")
         maximum_workers = None
     null_cells = sum(cell == "" for row in data_rows for cell in row)

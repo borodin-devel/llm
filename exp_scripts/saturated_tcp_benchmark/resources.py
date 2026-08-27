@@ -93,6 +93,12 @@ class ResourceMeasurement:
         )
 
 
+def _parse_ascii_decimal(value: str, error_message: str) -> int:
+    if not value or any(character < "0" or character > "9" for character in value):
+        raise ResourceError(error_message)
+    return int(value, 10)
+
+
 def _parse_kibibyte_field(contents: str, field: str, source: Path) -> int:
     prefix = f"{field}:"
     for line in contents.splitlines():
@@ -101,12 +107,10 @@ def _parse_kibibyte_field(contents: str, field: str, source: Path) -> int:
         parts = line[len(prefix) :].split()
         if len(parts) != 2 or parts[1] != "kB":
             raise ResourceError(f"malformed {field} field in {source}")
-        try:
-            value = int(parts[0], 10)
-        except ValueError as error:
-            raise ResourceError(f"malformed {field} field in {source}") from error
-        if value < 0:
-            raise ResourceError(f"malformed {field} field in {source}")
+        value = _parse_ascii_decimal(
+            parts[0],
+            f"malformed {field} field in {source}",
+        )
         return value * _KIBIBYTE
     raise ResourceError(f"missing {field} field in {source}")
 
@@ -125,6 +129,10 @@ def read_memory_snapshot(meminfo_path: Path = Path("/proc/meminfo")) -> MemorySn
         contents = path.read_text(encoding="ascii")
     except OSError as error:
         raise ResourceError(f"memory information is unavailable at {path}: {error}") from error
+    except UnicodeError as error:
+        raise ResourceError(
+            f"malformed memory information at {path}: non-ASCII data"
+        ) from error
     mem_total_bytes = _parse_kibibyte_field(contents, "MemTotal", path)
     mem_available_bytes = _parse_kibibyte_field(contents, "MemAvailable", path)
     if mem_total_bytes <= 0:
@@ -175,14 +183,13 @@ def _read_statm_resident_pages(
         return None
 
     fields = contents.split()
-    if len(fields) < 2 or not fields[1] or any(
-        character < "0" or character > "9" for character in fields[1]
-    ):
-        raise ResourceError(
-            f"malformed process statm for PID {process_id} at {statm_path}: "
-            f"statm={_bounded_proc_diagnostic(contents)}"
-        )
-    return int(fields[1], 10)
+    diagnostic = (
+        f"malformed process statm for PID {process_id} at {statm_path}: "
+        f"statm={_bounded_proc_diagnostic(contents)}"
+    )
+    if len(fields) < 2:
+        raise ResourceError(diagnostic)
+    return _parse_ascii_decimal(fields[1], diagnostic)
 
 
 def _read_process_rss_bytes(
@@ -287,13 +294,16 @@ def _read_process_children(process_id: int, proc_root: Path) -> tuple[int, ...]:
                 f"cannot read process children for PID {process_id} at "
                 f"{children_path}: {error}"
             ) from error
+        except UnicodeError as error:
+            raise ResourceError(
+                f"malformed process children for PID {process_id} at "
+                f"{children_path}: non-ASCII data"
+            ) from error
         for field in fields:
-            try:
-                child = int(field, 10)
-            except ValueError as error:
-                raise ResourceError(
-                    f"malformed child PID {field!r} in {children_path}"
-                ) from error
+            child = _parse_ascii_decimal(
+                field,
+                f"malformed child PID {field!r} in {children_path}",
+            )
             if child <= 0:
                 raise ResourceError(f"malformed child PID {field!r} in {children_path}")
             children.append(child)

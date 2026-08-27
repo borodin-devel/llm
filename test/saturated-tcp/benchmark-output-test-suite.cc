@@ -561,6 +561,11 @@ class SaturatedTcpBenchmarkJsonTestCase : public TestCase
         NS_TEST_ASSERT_MSG_EQ(GetKeys(document) == expectedRoots,
                               true,
                               "Benchmark root order changed");
+        NS_TEST_ASSERT_MSG_EQ(
+            document.at("measurement_semantics").at("phy_rate_source"),
+            "actual WifiTxVector channel width, NSS, and MCS with fixed HE SU/GI 3200 ns "
+            "invariants",
+            "Benchmark PHY rate source does not name the actual profile dimensions");
         const auto& station = document.at("windows").at(0).at("stations").at(0).at("phy_stats");
         NS_TEST_ASSERT_MSG_EQ(station.at("dominant_data_phy_rate_mbps"),
                               1000.0,

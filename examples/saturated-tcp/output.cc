@@ -507,7 +507,8 @@ WriteSaturatedMeasurementSemantics(JsonWriter& writer)
     writer.Key("phy_observation_scope");
     writer.Value("qualifying station-transmitted unicast data PPDUs");
     writer.Key("phy_rate_source");
-    writer.Value("actual fixed-invariant WifiTxVector NSS and MCS");
+    writer.Value("actual WifiTxVector channel width, NSS, and MCS with fixed HE SU/GI 3200 ns "
+                 "invariants");
     writer.Key("effective_phy_rate");
     writer.Value("transmitted data PSDU bits per data PPDU airtime");
     writer.Key("data_tx_rate_over_interval");

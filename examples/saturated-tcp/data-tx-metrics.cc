@@ -49,6 +49,22 @@ GetQualifyingDataPsduBytes(const WifiPsdu& psdu, Mac48Address transmitterAddress
     return qualifyingMpdus == presentMpdus ? psdu.GetSize() : qualifyingBytes;
 }
 
+int64_t
+ValidateMeasurementDurationNs(int64_t measurementStartNs, int64_t measurementEndNs)
+{
+    if (measurementEndNs <= measurementStartNs)
+    {
+        throw std::invalid_argument("data TX measurement epoch must be non-empty");
+    }
+    const uint64_t durationNs =
+        static_cast<uint64_t>(measurementEndNs) - static_cast<uint64_t>(measurementStartNs);
+    if (durationNs > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+    {
+        throw std::invalid_argument("data TX measurement epoch exceeds nanosecond range");
+    }
+    return static_cast<int64_t>(durationNs);
+}
+
 } // namespace
 
 void
@@ -138,17 +154,14 @@ StationDataTxMetricRecorder::StationDataTxMetricRecorder(int64_t measurementStar
                                                          int64_t windowDurationNs)
     : m_measurementStartNs(measurementStartNs),
       m_measurementEndNs(measurementEndNs),
+      m_measurementDurationNs(ValidateMeasurementDurationNs(measurementStartNs, measurementEndNs)),
       m_windowDurationNs(windowDurationNs)
 {
-    if (measurementEndNs <= measurementStartNs)
-    {
-        throw std::invalid_argument("data TX measurement epoch must be non-empty");
-    }
     if (windowDurationNs <= 0)
     {
         throw std::invalid_argument("data TX profile window duration must be positive");
     }
-    if ((measurementEndNs - measurementStartNs) % windowDurationNs != 0)
+    if (m_measurementDurationNs % windowDurationNs != 0)
     {
         throw std::invalid_argument("data TX measurement epoch must contain complete windows");
     }
@@ -174,8 +187,7 @@ StationDataTxMetricRecorder::RegisterStation(uint32_t stationId, Mac48Address tr
         }
     }
 
-    const auto windowCount =
-        static_cast<std::size_t>((m_measurementEndNs - m_measurementStartNs) / m_windowDurationNs);
+    const auto windowCount = static_cast<std::size_t>(m_measurementDurationNs / m_windowDurationNs);
     m_stations.emplace(
         stationId,
         RegisteredStation{transmitterAddress, std::vector<DataTxProfileMap>(windowCount), {}});

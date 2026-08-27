@@ -75,7 +75,8 @@ class StationDataTxMetricRecorder
      * Record one observed PPDU attempt from a registered station trace.
      *
      * Unknown station identifiers and PPDUs without qualifying data are ignored. Qualifying data
-     * must use HE modulation, 80 MHz, and a 3200 ns guard interval.
+     * must use HE SU modulation, a 20, 40, or 80 MHz data vector under the 80 MHz operating
+     * channel, and a 3200 ns guard interval.
      *
      * @param stationId Bound registered station identifier.
      * @param ppduStartNs PPDU start time in nanoseconds.
@@ -118,9 +119,10 @@ class StationDataTxMetricRecorder
         DataTxProfileMap overall;              ///< Independently accumulated epoch profiles.
     };
 
-    int64_t m_measurementStartNs; ///< Inclusive measurement start in nanoseconds.
-    int64_t m_measurementEndNs;   ///< Exclusive measurement end in nanoseconds.
-    int64_t m_windowDurationNs;   ///< Fixed profile window duration in nanoseconds.
+    int64_t m_measurementStartNs;    ///< Inclusive measurement start in nanoseconds.
+    int64_t m_measurementEndNs;      ///< Exclusive measurement end in nanoseconds.
+    int64_t m_measurementDurationNs; ///< Validated measurement duration in nanoseconds.
+    int64_t m_windowDurationNs;      ///< Fixed profile window duration in nanoseconds.
     std::map<uint32_t, RegisteredStation> m_stations; ///< Registered station profile state.
 };
 

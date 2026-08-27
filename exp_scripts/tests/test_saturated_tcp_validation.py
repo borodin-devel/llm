@@ -338,7 +338,10 @@ def make_output_document(
             "station_role": "per-station transmitted data PPDU detail",
             "parent_child_duplication": "intentional",
             "phy_observation_scope": "qualifying station-transmitted unicast data PPDUs",
-            "phy_rate_source": "actual fixed-invariant WifiTxVector NSS and MCS",
+            "phy_rate_source": (
+                "actual WifiTxVector channel width, NSS, and MCS with fixed "
+                "HE SU/GI 3200 ns invariants"
+            ),
             "effective_phy_rate": "transmitted data PSDU bits per data PPDU airtime",
             "data_tx_rate_over_interval": "transmitted data PSDU bits per statistics interval",
             "data_tx_opportunity_gap": "time outside station data PPDU airtime",

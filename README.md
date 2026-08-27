@@ -1117,8 +1117,16 @@ attempt records. A subset therefore cannot be mistaken for a full matrix.
 Failure stops admissions and retains created JSON, logs, and resource files;
 only the contiguous validated CSV prefix is published.
 
+If `/proc` is unavailable at startup, the runner prints a diagnostic and uses
+exactly one sequential worker. Each `sequential_fallback` attempt records
+`monitor_mode` as `sequential_fallback` and sets `peak_rss_bytes`,
+`minimum_mem_available_bytes`, and `minimum_mem_available_percent` to `null`.
+The summary likewise sets `calibrated_peak_rss_bytes`,
+`worker_peak_estimate_bytes`, `minimum_mem_available_bytes`, and
+`minimum_mem_available_percent` to `null`.
+
 The Linux monitor parses a present per-PID `VmRSS` strictly. Only when that
-field is absent, it pins and revalidates PID identity around
+field is absent, its current-RSS fallback pins and revalidates PID identity around
 `/proc/PID/statm`, converts exact resident pages with the host page size, and
 accepts numeric zero; malformed present `VmRSS` or live `statm` remains an
 error.
