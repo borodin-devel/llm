@@ -1,32 +1,24 @@
-#include "../../examples/saturated-tcp/access-tracking-sta-wifi-mac.h"
-#include "../../examples/saturated-tcp/access-wait-tracker.h"
 #include "../../examples/saturated-tcp/benchmark-statistics.h"
 #include "../../examples/saturated-tcp/config.h"
-#include "../../examples/statistics/json/writer.h"
 #include "../llm-test-suite.h"
 
 #include "ns3/boolean.h"
-#include "ns3/channel-access-manager.h"
-#include "ns3/default-power-save-manager.h"
 #include "ns3/enum.h"
 #include "ns3/json.hpp"
 #include "ns3/node.h"
 #include "ns3/pointer.h"
 #include "ns3/qos-txop.h"
 #include "ns3/simulator.h"
+#include "ns3/sta-wifi-mac.h"
 #include "ns3/wifi-net-device.h"
 #include "ns3/yans-wifi-phy.h"
 
 #include <array>
-#include <cmath>
-#include <cstddef>
 #include <filesystem>
 #include <fstream>
-#include <functional>
 #include <iterator>
 #include <limits>
 #include <map>
-#include <memory>
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
@@ -40,91 +32,9 @@ using namespace ns3;
 namespace
 {
 
-using RawStationWindows = std::map<uint32_t, std::vector<StationPhyMetricAccumulator>>;
-using RawStationOverall = std::map<uint32_t, StationPhyMetricAccumulator>;
+using RawStationWindows = std::map<uint32_t, std::vector<DataTxProfileMap>>;
+using RawStationOverall = std::map<uint32_t, DataTxProfileMap>;
 
-/** Power-save manager that accepts test access requests without PHY side effects. */
-class BenchmarkStatsPowerSaveManager : public DefaultPowerSaveManager
-{
-  public:
-    /**
-     * Get the object TypeId.
-     *
-     * @return Object TypeId.
-     */
-    static TypeId GetTypeId();
-
-  private:
-    void DoNotifyRequestAccess(Ptr<Txop> txop, linkId_t linkId) override;
-};
-
-NS_OBJECT_ENSURE_REGISTERED(BenchmarkStatsPowerSaveManager);
-
-TypeId
-BenchmarkStatsPowerSaveManager::GetTypeId()
-{
-    static TypeId tid = TypeId("ns3::BenchmarkStatsPowerSaveManager")
-                            .SetParent<DefaultPowerSaveManager>()
-                            .AddConstructor<BenchmarkStatsPowerSaveManager>()
-                            .HideFromDocumentation();
-    return tid;
-}
-
-void
-BenchmarkStatsPowerSaveManager::DoNotifyRequestAccess(Ptr<Txop> txop, linkId_t linkId)
-{
-    static_cast<void>(txop);
-    static_cast<void>(linkId);
-}
-
-/** Station MAC probe that can emit a real access-request trace. */
-class BenchmarkStatsStaWifiMacProbe : public AccessTrackingStaWifiMac
-{
-  public:
-    /**
-     * Get the object TypeId.
-     *
-     * @return Object TypeId.
-     */
-    static TypeId GetTypeId();
-
-    /**
-     * Invoke the protected access-request notification.
-     *
-     * @param txop Requesting channel-access function.
-     * @param linkId Link identifier.
-     */
-    void InvokeNotifyRequestAccess(Ptr<Txop> txop, uint8_t linkId);
-};
-
-NS_OBJECT_ENSURE_REGISTERED(BenchmarkStatsStaWifiMacProbe);
-
-TypeId
-BenchmarkStatsStaWifiMacProbe::GetTypeId()
-{
-    static TypeId tid = TypeId("ns3::BenchmarkStatsStaWifiMacProbe")
-                            .SetParent<AccessTrackingStaWifiMac>()
-                            .AddConstructor<BenchmarkStatsStaWifiMacProbe>()
-                            .HideFromDocumentation();
-    return tid;
-}
-
-void
-BenchmarkStatsStaWifiMacProbe::InvokeNotifyRequestAccess(Ptr<Txop> txop, uint8_t linkId)
-{
-    NotifyRequestAccess(txop, linkId);
-}
-
-/** Count one access-request trace event. */
-void
-CountAccessRequest(uint32_t* count, uint8_t ac, uint8_t linkId)
-{
-    static_cast<void>(ac);
-    static_cast<void>(linkId);
-    ++*count;
-}
-
-/** Stream buffer that rejects every body write. */
 class RejectingStreamBuffer : public std::streambuf
 {
   private:
@@ -139,41 +49,19 @@ class RejectingStreamBuffer : public std::streambuf
     }
 };
 
-/**
- * Set literal raw metrics for one complete 10 ms window.
- *
- * @param windows Raw station windows.
- * @param nodeId Station node identifier.
- * @param windowIndex Window index to populate.
- * @param theoreticalMbps Desired theoretical rate, or a negative value for no PPDU.
- * @param practicalMbps Desired practical rate, ignored when no PPDU is requested.
- * @param contentionNs Literal contention duration in nanoseconds.
- */
 void
-SetRawWindow(RawStationWindows& windows,
-             uint32_t nodeId,
-             std::size_t windowIndex,
-             double theoreticalMbps,
-             double practicalMbps,
-             int64_t contentionNs)
+SetRawProfile(RawStationWindows& windows,
+              uint32_t nodeId,
+              std::size_t windowIndex,
+              DataTxProfileKey key,
+              long double bytes,
+              uint64_t attempts,
+              int64_t airtimeNs,
+              long double rateBps)
 {
-    auto& raw = windows.at(nodeId).at(windowIndex);
-    if (theoreticalMbps >= 0.0)
-    {
-        constexpr int64_t airtimeNs = 1'000'000;
-        raw.nominalRateBpsNs = static_cast<long double>(theoreticalMbps) * 1'000'000.0L * airtimeNs;
-        raw.psduBits = static_cast<long double>(practicalMbps) * airtimeNs / 1000.0L;
-        raw.ppduAirtimeNs = airtimeNs;
-    }
-    raw.contentionNs = contentionNs;
+    windows.at(nodeId).at(windowIndex)[key] = {bytes, attempts, airtimeNs, rateBps};
 }
 
-/**
- * Merge literal raw station windows independently.
- *
- * @param windows Raw station windows.
- * @return Raw overall values keyed by node identifier.
- */
 RawStationOverall
 MergeRawWindows(const RawStationWindows& windows)
 {
@@ -183,41 +71,15 @@ MergeRawWindows(const RawStationWindows& windows)
         auto& stationOverall = overall[nodeId];
         for (const auto& window : stationWindows)
         {
-            stationOverall.Merge(window);
+            for (const auto& [key, value] : window)
+            {
+                stationOverall[key].Merge(value);
+            }
         }
     }
     return overall;
 }
 
-/**
- * Find an access point output by BSS identifier.
- *
- * @param accessPoints Access point outputs.
- * @param accessPointId Desired BSS identifier.
- * @return Matching output.
- */
-const AccessPointStatisticsOutput&
-FindAccessPoint(const std::vector<AccessPointStatisticsOutput>& accessPoints,
-                uint32_t accessPointId)
-{
-    for (const auto& accessPoint : accessPoints)
-    {
-        if (accessPoint.accessPointId == accessPointId)
-        {
-            return accessPoint;
-        }
-    }
-    throw std::runtime_error("access point fixture is missing");
-}
-
-/**
- * Find a station output by BSS and station index.
- *
- * @param stations Station outputs.
- * @param accessPointId Parent BSS identifier.
- * @param stationIndex Desired station index.
- * @return Matching output.
- */
 const StationStatisticsOutput&
 FindStation(const std::vector<StationStatisticsOutput>& stations,
             uint32_t accessPointId,
@@ -233,102 +95,110 @@ FindStation(const std::vector<StationStatisticsOutput>& stations,
     throw std::runtime_error("station fixture is missing");
 }
 
-/**
- * Set the four benchmark PHY fields.
- *
- * @param statistics Entity statistics to populate.
- * @param theoreticalMbps Theoretical PHY rate.
- * @param practicalMbps Practical PHY rate.
- * @param contentionFraction Contention fraction.
- */
-void
-SetBenchmarkPhy(EntityStatisticsOutput& statistics,
-                double theoreticalMbps,
-                double practicalMbps,
-                double contentionFraction)
+const AccessPointStatisticsOutput&
+FindAccessPoint(const std::vector<AccessPointStatisticsOutput>& accessPoints,
+                uint32_t accessPointId)
 {
-    auto& phy = statistics.phyStats;
-    phy.averageTheoreticalPhyRateMbps = theoreticalMbps;
-    phy.averagePracticalPhyRateMbps = practicalMbps;
-    phy.channelEfficiency = practicalMbps / theoreticalMbps;
-    phy.contentionFraction = contentionFraction;
+    for (const auto& accessPoint : accessPoints)
+    {
+        if (accessPoint.accessPointId == accessPointId)
+        {
+            return accessPoint;
+        }
+    }
+    throw std::runtime_error("access point fixture is missing");
 }
 
-/**
- * Construct one literal benchmark summary with one sparse window.
- *
- * @return Complete three-BSS summary.
- */
+PhyCategoryOutput
+MakeStationPhy(double bytes, uint64_t attempts, double airtimeUs, int64_t intervalNs)
+{
+    DataTxProfileMap profiles{
+        {{80, 2, 11},
+         {bytes, attempts, static_cast<int64_t>(airtimeUs * 1000.0), 1'000'000'000.0L}}};
+    return DeriveStationDataTxMetrics(profiles, intervalNs);
+}
+
 UnifiedExperimentSummary
 MakeLiteralSummary()
 {
     UnifiedExperimentSummary summary;
     summary.statisticsWindowMs = 10;
-
-    ExperimentWindowOutput window;
-    window.windowIndex = 0;
-    window.windowStartMs = 0.0;
-    window.windowDurationMs = 10.0;
+    ExperimentWindowOutput window{0, 0.0, 10.0, {}, {}};
     for (uint32_t accessPointId = 0; accessPointId < 3; ++accessPointId)
     {
-        const uint32_t accessPointNodeId = 100 + accessPointId;
+        const uint32_t apNodeId = 100 + accessPointId;
         const uint32_t stationNodeId = 200 + accessPointId;
-        const double theoreticalMbps = 100.0 * (accessPointId + 1);
-        const double practicalMbps = theoreticalMbps / 2.0;
-        const double contentionFraction = 0.1 * (accessPointId + 1);
-
-        ExperimentEntityIdentity accessPointIdentity{ExperimentEntityKind::ACCESS_POINT,
-                                                     accessPointId,
-                                                     std::nullopt,
-                                                     accessPointNodeId,
-                                                     "AP" + std::to_string(accessPointId),
-                                                     "10.1." + std::to_string(accessPointId) +
-                                                         ".1"};
+        ExperimentEntityIdentity apIdentity{ExperimentEntityKind::ACCESS_POINT,
+                                            accessPointId,
+                                            std::nullopt,
+                                            apNodeId,
+                                            "AP" + std::to_string(accessPointId),
+                                            "10.1." + std::to_string(accessPointId) + ".1"};
         ExperimentEntityIdentity stationIdentity{ExperimentEntityKind::STATION,
                                                  accessPointId,
                                                  0,
                                                  stationNodeId,
                                                  "AP" + std::to_string(accessPointId) + "/STA0",
                                                  "10.1." + std::to_string(accessPointId) + ".2"};
-        summary.accessPointInventory.push_back(accessPointIdentity);
+        summary.accessPointInventory.push_back(apIdentity);
         summary.stationInventory.push_back(stationIdentity);
 
-        AccessPointStatisticsOutput accessPoint{accessPointId,
-                                                accessPointNodeId,
-                                                accessPointIdentity.nodeLabel,
-                                                accessPointIdentity.ipv4,
-                                                {}};
-        StationStatisticsOutput station{accessPointId,
-                                        0,
-                                        stationNodeId,
-                                        stationIdentity.nodeLabel,
-                                        stationIdentity.ipv4,
-                                        {}};
-        SetBenchmarkPhy(accessPoint.statistics, theoreticalMbps, practicalMbps, contentionFraction);
-        SetBenchmarkPhy(station.statistics, theoreticalMbps, practicalMbps, contentionFraction);
-        window.accessPoints.push_back(accessPoint);
-        window.stations.push_back(station);
-        SetBenchmarkPhy(accessPoint.statistics,
-                        theoreticalMbps,
-                        practicalMbps,
-                        contentionFraction / 100.0);
-        SetBenchmarkPhy(station.statistics,
-                        theoreticalMbps,
-                        practicalMbps,
-                        contentionFraction / 100.0);
-        summary.overall.accessPoints.push_back(accessPoint);
-        summary.overall.stations.push_back(station);
+        const auto windowPhy = MakeStationPhy(1000.0 * (accessPointId + 1), 2, 100.0, 10'000'000);
+        const auto overallPhy =
+            MakeStationPhy(1000.0 * (accessPointId + 1), 2, 100.0, 1'000'000'000);
+        StationStatisticsOutput windowStation{accessPointId,
+                                              0,
+                                              stationNodeId,
+                                              stationIdentity.nodeLabel,
+                                              stationIdentity.ipv4,
+                                              {}};
+        windowStation.statistics.phyStats = windowPhy;
+        StationStatisticsOutput overallStation = windowStation;
+        overallStation.statistics.phyStats = overallPhy;
+        AccessPointStatisticsOutput windowAp{accessPointId,
+                                             apNodeId,
+                                             apIdentity.nodeLabel,
+                                             apIdentity.ipv4,
+                                             {}};
+        windowAp.statistics.phyStats = DeriveBssDataTxMetrics({windowPhy});
+        AccessPointStatisticsOutput overallAp = windowAp;
+        overallAp.statistics.phyStats = DeriveBssDataTxMetrics({overallPhy});
+        window.accessPoints.push_back(windowAp);
+        window.stations.push_back(windowStation);
+        summary.overall.accessPoints.push_back(overallAp);
+        summary.overall.stations.push_back(overallStation);
     }
     summary.windows.push_back(window);
     return summary;
 }
 
-/**
- * Get object keys in their serialized order.
- *
- * @param object Ordered JSON object.
- * @return Ordered member names.
- */
+Ptr<WifiNetDevice>
+MakeStationDevice(Ptr<Node> node, bool omitPhy = false)
+{
+    const auto makeQosTxop = [](AcIndex ac) {
+        return CreateObjectWithAttributes<QosTxop>("AcIndex", EnumValue(ac));
+    };
+    auto mac = CreateObjectWithAttributes<StaWifiMac>("QosSupported",
+                                                      BooleanValue(true),
+                                                      "BE_Txop",
+                                                      PointerValue(makeQosTxop(AC_BE)),
+                                                      "BK_Txop",
+                                                      PointerValue(makeQosTxop(AC_BK)),
+                                                      "VI_Txop",
+                                                      PointerValue(makeQosTxop(AC_VI)),
+                                                      "VO_Txop",
+                                                      PointerValue(makeQosTxop(AC_VO)));
+    mac->SetAddress(Mac48Address::Allocate());
+    auto device = CreateObject<WifiNetDevice>();
+    device->SetMac(mac);
+    if (!omitPhy)
+    {
+        device->SetPhy(CreateObject<YansWifiPhy>());
+    }
+    node->AddDevice(device);
+    return device;
+}
+
 std::vector<std::string>
 GetKeys(const nlohmann::ordered_json& object)
 {
@@ -341,58 +211,118 @@ GetKeys(const nlohmann::ordered_json& object)
     return keys;
 }
 
-/**
- * Construct a minimally connected benchmark station device.
- *
- * @param node Device owner.
- * @param address Station MAC address.
- * @return Wi-Fi device with the benchmark station MAC, QoS TXOPs, and one PHY.
- */
-Ptr<WifiNetDevice>
-MakeStationDevice(Ptr<Node> node, Mac48Address address, bool omitPhy = false)
-{
-    const auto makeQosTxop = [](AcIndex ac) {
-        return CreateObjectWithAttributes<QosTxop>("AcIndex", EnumValue(ac));
-    };
-    auto mac =
-        CreateObjectWithAttributes<BenchmarkStatsStaWifiMacProbe>("QosSupported",
-                                                                  BooleanValue(true),
-                                                                  "BE_Txop",
-                                                                  PointerValue(makeQosTxop(AC_BE)),
-                                                                  "BK_Txop",
-                                                                  PointerValue(makeQosTxop(AC_BK)),
-                                                                  "VI_Txop",
-                                                                  PointerValue(makeQosTxop(AC_VI)),
-                                                                  "VO_Txop",
-                                                                  PointerValue(makeQosTxop(AC_VO)));
-    mac->SetAddress(address);
-    mac->SetPowerSaveManager(CreateObject<BenchmarkStatsPowerSaveManager>());
-    mac->SetChannelAccessManagers({CreateObject<ChannelAccessManager>()});
-    for (const auto ac : {AC_BE, AC_BK, AC_VI, AC_VO})
-    {
-        if (const auto txop = mac->GetQosTxop(ac))
-        {
-            txop->SetWifiMac(mac);
-        }
-    }
-
-    auto device = CreateObject<WifiNetDevice>();
-    device->SetMac(mac);
-    if (!omitPhy)
-    {
-        device->SetPhy(CreateObject<YansWifiPhy>());
-    }
-    node->AddDevice(device);
-    return device;
-}
-
 } // namespace
 
-/**
- * @ingroup tests
- *
- * Verify station DTO derivation, BSS means, sparse windows, and dense overall values.
- */
+/** @ingroup tests Verify profile formulas, tie-breaks, raw validation, and BSS aggregation. */
+class SaturatedTcpDataTxDerivationTestCase : public TestCase
+{
+  public:
+    SaturatedTcpDataTxDerivationTestCase()
+        : TestCase("derive saturated station and BSS data TX metrics")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        DataTxProfileMap profiles{
+            {{20, 1, 9}, {100.0L, 2, 40'000, 400'000'000.0L}},
+            {{80, 2, 11}, {300.0L, 4, 120'000, 1'000'000'000.0L}},
+        };
+        const auto output = DeriveStationDataTxMetrics(profiles, 10'000'000);
+        NS_TEST_ASSERT_MSG_EQ_TOL(output.dominantDataPhyRateMbps.value(),
+                                  1000.0,
+                                  1e-12,
+                                  "Greatest-byte profile was not dominant");
+        NS_TEST_ASSERT_MSG_EQ_TOL(output.dominantDataProfileShare.value(),
+                                  0.75,
+                                  1e-12,
+                                  "Dominant byte share is wrong");
+        NS_TEST_ASSERT_MSG_EQ_TOL(output.effectivePhyRateMbps.value(),
+                                  20.0,
+                                  1e-12,
+                                  "Effective rate is not 8B/Tdata");
+        NS_TEST_ASSERT_MSG_EQ_TOL(output.dataTxRateOverIntervalMbps.value(),
+                                  0.32,
+                                  1e-12,
+                                  "Interval rate is not 8B/Tinterval");
+        NS_TEST_ASSERT_MSG_EQ_TOL(output.dataTxOpportunityGapFraction.value(),
+                                  0.984,
+                                  1e-12,
+                                  "Opportunity gap is wrong");
+        NS_TEST_ASSERT_MSG_EQ(+output.dataTxProfile.front().channelWidthMhz,
+                              20,
+                              "Profiles are not ascending by width");
+        NS_TEST_ASSERT_MSG_EQ(+output.dataTxProfile.front().nss,
+                              1,
+                              "Profiles are not ascending by NSS");
+
+        profiles.at({20, 1, 9}).transmittedPsduBytes = 300.0L;
+        profiles.at({20, 1, 9}).nominalRateBps = 900'000'000.0L;
+        NS_TEST_ASSERT_MSG_EQ_TOL(
+            DeriveStationDataTxMetrics(profiles, 10'000'000).dominantDataPhyRateMbps.value(),
+            1000.0,
+            1e-12,
+            "Byte tie did not prefer greatest nominal rate");
+        profiles.at({20, 1, 9}).nominalRateBps = 1'000'000'000.0L;
+        NS_TEST_ASSERT_MSG_EQ_TOL(
+            DeriveStationDataTxMetrics(profiles, 10'000'000).dominantDataPhyRateMbps.value(),
+            1000.0,
+            1e-12,
+            "Exact tie changed the ascending-key dominant rate");
+
+        const auto zero = DeriveStationDataTxMetrics({}, 10'000'000);
+        NS_TEST_ASSERT_MSG_EQ(zero.dominantDataPhyRateMbps.has_value(), false, "Zero has dominant");
+        NS_TEST_ASSERT_MSG_EQ(zero.effectivePhyRateMbps.has_value(), false, "Zero has effective");
+        NS_TEST_ASSERT_MSG_EQ(zero.dataTxRateOverIntervalMbps.value(), 0.0, "Zero lacks interval");
+        NS_TEST_ASSERT_MSG_EQ(zero.dataTxProfile.empty(), true, "Zero has profile entries");
+
+        auto second = output;
+        second.dominantDataPhyRateMbps = 500.0;
+        second.effectivePhyRateMbps = 10.0;
+        second.dataTxRateOverIntervalMbps = 0.08;
+        const auto bss = DeriveBssDataTxMetrics({output, second, zero});
+        NS_TEST_ASSERT_MSG_EQ_TOL(bss.meanDominantDataPhyRateMbps.value(),
+                                  750.0,
+                                  1e-12,
+                                  "BSS dominant mean included undefined station");
+        NS_TEST_ASSERT_MSG_EQ_TOL(bss.meanEffectivePhyRateMbps.value(),
+                                  15.0,
+                                  1e-12,
+                                  "BSS effective mean included undefined station");
+        NS_TEST_ASSERT_MSG_EQ_TOL(bss.aggregateDataTxRateOverIntervalMbps.value(),
+                                  0.4,
+                                  1e-12,
+                                  "BSS interval sum omitted a station");
+        const auto idleBss = DeriveBssDataTxMetrics({zero, zero});
+        NS_TEST_ASSERT_MSG_EQ(idleBss.meanDominantDataPhyRateMbps.has_value(),
+                              false,
+                              "Idle BSS has dominant mean");
+        NS_TEST_ASSERT_MSG_EQ(idleBss.aggregateDataTxRateOverIntervalMbps.value(),
+                              0.0,
+                              "Idle BSS lacks numeric zero aggregate");
+
+        for (const auto invalid : {
+                 DataTxProfileAccumulator{-1.0L, 1, 1, 1.0L},
+                 DataTxProfileAccumulator{1.0L, 1, -1, 1.0L},
+                 DataTxProfileAccumulator{1.0L, 1, 1, std::numeric_limits<long double>::infinity()},
+             })
+        {
+            bool rejected = false;
+            try
+            {
+                static_cast<void>(DeriveStationDataTxMetrics({{{80, 1, 0}, invalid}}, 10'000'000));
+            }
+            catch (const std::invalid_argument&)
+            {
+                rejected = true;
+            }
+            NS_TEST_ASSERT_MSG_EQ(rejected, true, "Invalid raw profile was accepted");
+        }
+    }
+};
+
+/** @ingroup tests Verify sparse windows, dense overall, and BSS derivation. */
 class SaturatedTcpBenchmarkSummaryTestCase : public TestCase
 {
   public:
@@ -402,209 +332,7 @@ class SaturatedTcpBenchmarkSummaryTestCase : public TestCase
     void DoRun() override;
 };
 
-SaturatedTcpBenchmarkSummaryTestCase::SaturatedTcpBenchmarkSummaryTestCase()
-    : TestCase("build station-only saturated TCP BSS summaries")
-{
-}
-
-void
-SaturatedTcpBenchmarkSummaryTestCase::DoRun()
-{
-    SaturatedTcpStatistics statistics(10);
-    statistics.RegisterAccessPoint(2, 102, "AP2", "10.1.2.1");
-    statistics.RegisterAccessPoint(0, 100, "AP0", "10.1.0.1");
-    statistics.RegisterAccessPoint(1, 101, "AP1", "10.1.1.1");
-    statistics.RegisterStation(0, 1, 11, "AP0/STA1", "10.1.0.3");
-    statistics.RegisterStation(2, 0, 30, "AP2/STA0", "10.1.2.2");
-    statistics.RegisterStation(0, 0, 10, "AP0/STA0", "10.1.0.2");
-    statistics.RegisterStation(0, 2, 12, "AP0/STA2", "10.1.0.4");
-    statistics.RegisterStation(1, 0, 20, "AP1/STA0", "10.1.1.2");
-
-    RawStationWindows rawWindows;
-    for (const uint32_t nodeId : {10, 11, 12, 20, 30, 100})
-    {
-        rawWindows.emplace(nodeId, std::vector<StationPhyMetricAccumulator>(100));
-    }
-    SetRawWindow(rawWindows, 10, 0, 100.0, 80.0, 1'000'000);
-    SetRawWindow(rawWindows, 11, 0, -1.0, 0.0, 2'000'000);
-    SetRawWindow(rawWindows, 11, 1, 300.0, 150.0, 0);
-    SetRawWindow(rawWindows, 30, 0, 400.0, 200.0, 5'000'000);
-    SetRawWindow(rawWindows, 100, 0, 900.0, 900.0, 9'000'000);
-
-    const auto summary = statistics.BuildSummaryFromRaw(rawWindows);
-    NS_TEST_ASSERT_MSG_EQ(summary.statisticsWindowMs, 10, "Wrong statistics window width");
-    NS_TEST_ASSERT_MSG_EQ(summary.windows.size(), 2, "Inactive windows were not sparse");
-    NS_TEST_ASSERT_MSG_EQ(summary.windows.at(0).windowIndex, 0, "Wrong first window index");
-    NS_TEST_ASSERT_MSG_EQ(summary.windows.at(1).windowIndex, 1, "Wrong second window index");
-    NS_TEST_ASSERT_MSG_EQ(summary.windows.at(0).stations.size(),
-                          3,
-                          "Active station window entries were lost");
-    NS_TEST_ASSERT_MSG_EQ(summary.windows.at(1).stations.size(),
-                          1,
-                          "Inactive station was emitted in the second window");
-
-    const auto& station0 = FindStation(summary.windows.at(0).stations, 0, 0);
-    NS_TEST_ASSERT_MSG_EQ_TOL(station0.statistics.phyStats.averageTheoreticalPhyRateMbps.value(),
-                              100.0,
-                              1e-12,
-                              "Station theoretical rate was not copied from the derived value");
-    NS_TEST_ASSERT_MSG_EQ_TOL(station0.statistics.phyStats.averagePracticalPhyRateMbps.value(),
-                              80.0,
-                              1e-12,
-                              "Station practical rate was not copied from the derived value");
-    NS_TEST_ASSERT_MSG_EQ_TOL(station0.statistics.phyStats.channelEfficiency.value(),
-                              0.8,
-                              1e-12,
-                              "Station efficiency was not copied from the derived value");
-    NS_TEST_ASSERT_MSG_EQ_TOL(station0.statistics.phyStats.contentionFraction.value(),
-                              0.1,
-                              1e-12,
-                              "Station contention was not copied from the derived value");
-
-    const auto& station1 = FindStation(summary.windows.at(0).stations, 0, 1);
-    NS_TEST_ASSERT_MSG_EQ(station1.statistics.phyStats.averageTheoreticalPhyRateMbps.has_value(),
-                          false,
-                          "No-PPDU station window has a theoretical rate");
-    NS_TEST_ASSERT_MSG_EQ(station1.statistics.phyStats.averagePracticalPhyRateMbps.has_value(),
-                          false,
-                          "No-PPDU station window has a practical rate");
-    NS_TEST_ASSERT_MSG_EQ(station1.statistics.phyStats.channelEfficiency.has_value(),
-                          false,
-                          "No-PPDU station window has an efficiency");
-    NS_TEST_ASSERT_MSG_EQ_TOL(station1.statistics.phyStats.contentionFraction.value(),
-                              0.2,
-                              1e-12,
-                              "Contention-only station window was not retained");
-
-    const auto& accessPoint0 = FindAccessPoint(summary.windows.at(0).accessPoints, 0);
-    NS_TEST_ASSERT_MSG_EQ_TOL(
-        accessPoint0.statistics.phyStats.averageTheoreticalPhyRateMbps.value(),
-        100.0,
-        1e-12,
-        "AP theoretical mean included a null station rate or AP-originated raw data");
-    NS_TEST_ASSERT_MSG_EQ_TOL(
-        accessPoint0.statistics.phyStats.averagePracticalPhyRateMbps.value(),
-        80.0,
-        1e-12,
-        "AP practical mean included a null station rate or AP-originated raw data");
-    NS_TEST_ASSERT_MSG_EQ_TOL(accessPoint0.statistics.phyStats.channelEfficiency.value(),
-                              0.8,
-                              1e-12,
-                              "AP efficiency is not practical divided by theoretical");
-    NS_TEST_ASSERT_MSG_EQ_TOL(accessPoint0.statistics.phyStats.contentionFraction.value(),
-                              0.1,
-                              1e-12,
-                              "AP contention excluded an inactive child station");
-
-    NS_TEST_ASSERT_MSG_EQ(summary.overall.accessPoints.size(), 3, "Overall AP output is not dense");
-    NS_TEST_ASSERT_MSG_EQ(summary.overall.stations.size(),
-                          5,
-                          "Overall station output is not dense");
-    const auto& idleMixedStation = FindStation(summary.overall.stations, 0, 2);
-    NS_TEST_ASSERT_MSG_EQ(
-        idleMixedStation.statistics.phyStats.averageTheoreticalPhyRateMbps.has_value(),
-        false,
-        "Idle overall station has a theoretical PHY rate");
-    NS_TEST_ASSERT_MSG_EQ(
-        idleMixedStation.statistics.phyStats.averagePracticalPhyRateMbps.has_value(),
-        false,
-        "Idle overall station has a practical PHY rate");
-    NS_TEST_ASSERT_MSG_EQ(idleMixedStation.statistics.phyStats.channelEfficiency.has_value(),
-                          false,
-                          "Idle overall station has an efficiency");
-    NS_TEST_ASSERT_MSG_EQ_TOL(idleMixedStation.statistics.phyStats.contentionFraction.value(),
-                              0.0,
-                              1e-12,
-                              "Idle overall station contention is not numeric zero");
-    const auto& overallAccessPoint0 = FindAccessPoint(summary.overall.accessPoints, 0);
-    NS_TEST_ASSERT_MSG_EQ_TOL(
-        overallAccessPoint0.statistics.phyStats.averageTheoreticalPhyRateMbps.value(),
-        200.0,
-        1e-12,
-        "Overall AP theoretical rate is not the station arithmetic mean");
-    NS_TEST_ASSERT_MSG_EQ_TOL(
-        overallAccessPoint0.statistics.phyStats.averagePracticalPhyRateMbps.value(),
-        115.0,
-        1e-12,
-        "Overall AP practical rate is not the station arithmetic mean");
-    NS_TEST_ASSERT_MSG_EQ_TOL(overallAccessPoint0.statistics.phyStats.channelEfficiency.value(),
-                              0.575,
-                              1e-12,
-                              "Overall AP efficiency is not the ratio of AP rates");
-    NS_TEST_ASSERT_MSG_EQ_TOL(overallAccessPoint0.statistics.phyStats.contentionFraction.value(),
-                              0.001,
-                              1e-12,
-                              "Overall AP contention excluded an idle child station");
-
-    const auto& allIdleAccessPoint = FindAccessPoint(summary.overall.accessPoints, 1);
-    NS_TEST_ASSERT_MSG_EQ(
-        allIdleAccessPoint.statistics.phyStats.averageTheoreticalPhyRateMbps.has_value(),
-        false,
-        "All-idle BSS has a theoretical PHY rate");
-    NS_TEST_ASSERT_MSG_EQ(
-        allIdleAccessPoint.statistics.phyStats.averagePracticalPhyRateMbps.has_value(),
-        false,
-        "All-idle BSS has a practical PHY rate");
-    NS_TEST_ASSERT_MSG_EQ(allIdleAccessPoint.statistics.phyStats.channelEfficiency.has_value(),
-                          false,
-                          "All-idle BSS has an efficiency");
-    NS_TEST_ASSERT_MSG_EQ_TOL(allIdleAccessPoint.statistics.phyStats.contentionFraction.value(),
-                              0.0,
-                              1e-12,
-                              "All-idle BSS contention is not numeric zero");
-
-    NS_TEST_ASSERT_MSG_EQ(summary.validation.entityInventoryReferencesValid,
-                          true,
-                          "Valid station parents failed inventory validation");
-    NS_TEST_ASSERT_MSG_EQ(summary.validation.overallMatchesWindows,
-                          true,
-                          "Raw overall did not match merged windows");
-
-    auto mismatchedOverall = MergeRawWindows(rawWindows);
-    mismatchedOverall.at(10).contentionNs += 1'000'000;
-    const auto mismatchedSummary = statistics.BuildSummaryFromRaw(rawWindows, mismatchedOverall);
-    NS_TEST_ASSERT_MSG_EQ(mismatchedSummary.validation.overallMatchesWindows,
-                          false,
-                          "Independent overall mismatch passed raw-window validation");
-    NS_TEST_ASSERT_MSG_EQ_TOL(
-        FindStation(mismatchedSummary.overall.stations, 0, 0)
-            .statistics.phyStats.contentionFraction.value(),
-        0.002,
-        1e-12,
-        "Overall DTO was not derived from the independent one-window recorder");
-
-    auto splitRoundingOverall = MergeRawWindows(rawWindows);
-    auto& roundedBits = splitRoundingOverall.at(10).psduBits;
-    roundedBits = std::nextafter(roundedBits, std::numeric_limits<long double>::infinity());
-    const auto splitRoundingSummary =
-        statistics.BuildSummaryFromRaw(rawWindows, splitRoundingOverall);
-    NS_TEST_ASSERT_MSG_EQ(splitRoundingSummary.validation.overallMatchesWindows,
-                          true,
-                          "One-ULP window-split rounding failed overall reconstruction");
-
-    splitRoundingOverall.at(10).psduBits += 1.0L;
-    const auto materialMismatchSummary =
-        statistics.BuildSummaryFromRaw(rawWindows, splitRoundingOverall);
-    NS_TEST_ASSERT_MSG_EQ(materialMismatchSummary.validation.overallMatchesWindows,
-                          false,
-                          "Material independent-overall bit mismatch passed validation");
-
-    SaturatedTcpStatistics invalidInventory(10);
-    invalidInventory.RegisterAccessPoint(0, 500, "AP0", "10.2.0.1");
-    invalidInventory.RegisterStation(9, 0, 501, "AP9/STA0", "10.2.9.2");
-    RawStationWindows invalidRaw{{501, std::vector<StationPhyMetricAccumulator>(100)}};
-    SetRawWindow(invalidRaw, 501, 0, 100.0, 50.0, 0);
-    const auto invalidSummary = invalidInventory.BuildSummaryFromRaw(invalidRaw);
-    NS_TEST_ASSERT_MSG_EQ(invalidSummary.validation.entityInventoryReferencesValid,
-                          false,
-                          "Missing station parent passed inventory validation");
-}
-
-/**
- * @ingroup tests
- *
- * Verify station-only trace connection and exact, idempotent measurement lifecycle handling.
- */
+/** @ingroup tests Verify ordinary station trace ownership and idle lifecycle. */
 class SaturatedTcpBenchmarkLifecycleTestCase : public TestCase
 {
   public:
@@ -614,604 +342,249 @@ class SaturatedTcpBenchmarkLifecycleTestCase : public TestCase
     void DoRun() override;
 };
 
+SaturatedTcpBenchmarkSummaryTestCase::SaturatedTcpBenchmarkSummaryTestCase()
+    : TestCase("build sparse data-only windows and dense station-derived BSS summaries")
+{
+}
+
+void
+SaturatedTcpBenchmarkSummaryTestCase::DoRun()
+{
+    SaturatedTcpStatistics statistics(10);
+    for (uint32_t accessPointId = 0; accessPointId < 3; ++accessPointId)
+    {
+        statistics.RegisterAccessPoint(accessPointId,
+                                       100 + accessPointId,
+                                       "AP" + std::to_string(accessPointId),
+                                       "10.1." + std::to_string(accessPointId) + ".1");
+    }
+    statistics.RegisterStation(0, 0, 10, "AP0/STA0", "10.1.0.2");
+    statistics.RegisterStation(0, 1, 11, "AP0/STA1", "10.1.0.3");
+    statistics.RegisterStation(0, 2, 12, "AP0/STA2", "10.1.0.4");
+    statistics.RegisterStation(1, 0, 20, "AP1/STA0", "10.1.1.2");
+    statistics.RegisterStation(2, 0, 30, "AP2/STA0", "10.1.2.2");
+
+    RawStationWindows rawWindows;
+    for (const uint32_t nodeId : {10, 11, 12, 20, 30, 100})
+    {
+        rawWindows.emplace(nodeId, std::vector<DataTxProfileMap>(100));
+    }
+    SetRawProfile(rawWindows, 10, 0, {20, 1, 9}, 1000.0L, 2, 100'000, 400'000'000.0L);
+    SetRawProfile(rawWindows, 11, 0, {80, 2, 11}, 2000.0L, 3, 200'000, 800'000'000.0L);
+    SetRawProfile(rawWindows, 11, 1, {40, 1, 9}, 500.0L, 1, 50'000, 400'000'000.0L);
+    SetRawProfile(rawWindows, 30, 0, {80, 2, 11}, 3000.0L, 4, 300'000, 1'000'000'000.0L);
+    SetRawProfile(rawWindows, 100, 0, {80, 2, 11}, 9000.0L, 9, 900'000, 1'000'000'000.0L);
+
+    const auto summary = statistics.BuildSummaryFromRaw(rawWindows);
+    NS_TEST_ASSERT_MSG_EQ(summary.windows.size(), 2, "Inactive windows were not sparse");
+    NS_TEST_ASSERT_MSG_EQ(summary.windows.at(0).stations.size(), 3, "Active stations were lost");
+    NS_TEST_ASSERT_MSG_EQ(summary.windows.at(0).accessPoints.size(), 2, "Inactive BSS was emitted");
+    NS_TEST_ASSERT_MSG_EQ(summary.windows.at(1).stations.size(), 1, "Inactive station was emitted");
+    const auto& bss0 = FindAccessPoint(summary.windows.at(0).accessPoints, 0).statistics.phyStats;
+    NS_TEST_ASSERT_MSG_EQ_TOL(bss0.meanDominantDataPhyRateMbps.value(),
+                              600.0,
+                              1e-12,
+                              "BSS dominant mean is wrong");
+    NS_TEST_ASSERT_MSG_EQ_TOL(bss0.meanEffectivePhyRateMbps.value(),
+                              80.0,
+                              1e-12,
+                              "BSS effective mean is wrong");
+    NS_TEST_ASSERT_MSG_EQ_TOL(bss0.aggregateDataTxRateOverIntervalMbps.value(),
+                              2.4,
+                              1e-12,
+                              "BSS interval sum is wrong");
+    NS_TEST_ASSERT_MSG_EQ(summary.overall.stations.size(), 5, "Overall stations are not dense");
+    NS_TEST_ASSERT_MSG_EQ(summary.overall.accessPoints.size(),
+                          3,
+                          "Overall BSS values are not dense");
+    const auto& idleStation = FindStation(summary.overall.stations, 1, 0).statistics.phyStats;
+    NS_TEST_ASSERT_MSG_EQ(idleStation.dataTxRateOverIntervalMbps.value(),
+                          0.0,
+                          "Idle overall station lacks numeric zero interval rate");
+    const auto& idleBss = FindAccessPoint(summary.overall.accessPoints, 1).statistics.phyStats;
+    NS_TEST_ASSERT_MSG_EQ(idleBss.meanDominantDataPhyRateMbps.has_value(),
+                          false,
+                          "All-idle BSS has a defined dominant mean");
+    NS_TEST_ASSERT_MSG_EQ(idleBss.aggregateDataTxRateOverIntervalMbps.value(),
+                          0.0,
+                          "All-idle BSS lacks numeric zero aggregate");
+    NS_TEST_ASSERT_MSG_EQ(
+        FindStation(summary.overall.stations, 0, 1).statistics.phyStats.dataTxProfile.size(),
+        2,
+        "Overall profile did not merge distinct window keys");
+
+    auto mismatchedOverall = MergeRawWindows(rawWindows);
+    ++mismatchedOverall.at(10).at({20, 1, 9}).ppduAttemptCount;
+    const auto mismatch = statistics.BuildSummaryFromRaw(rawWindows, mismatchedOverall);
+    NS_TEST_ASSERT_MSG_EQ(mismatch.validation.overallMatchesWindows,
+                          false,
+                          "Attempt-count mismatch did not fail raw reconstruction");
+}
+
 SaturatedTcpBenchmarkLifecycleTestCase::SaturatedTcpBenchmarkLifecycleTestCase()
-    : TestCase("connect and finalize saturated TCP station statistics")
+    : TestCase("connect only ordinary station PHY traces and finalize dense idle output")
 {
 }
 
 void
 SaturatedTcpBenchmarkLifecycleTestCase::DoRun()
 {
-    auto accessPointNode = CreateObject<Node>();
-    auto stationNode = CreateObject<Node>();
-    auto accessPointDevice = MakeStationDevice(accessPointNode, Mac48Address("00:00:00:00:00:01"));
-    auto stationDevice = MakeStationDevice(stationNode, Mac48Address("00:00:00:00:00:02"));
-    const uint32_t stationNodeId = stationNode->GetId();
-    Callback<void, uint8_t, uint8_t> savedAccessCallback;
-    {
-        SaturatedTcpStatistics statistics(10);
-        statistics.RegisterAccessPoint(0, accessPointNode->GetId(), "AP0", "10.1.0.1");
-        statistics.RegisterStation(0, 0, stationNodeId, "AP0/STA0", "10.1.0.2");
-        try
-        {
-            statistics.ConnectStation(accessPointDevice);
-            NS_TEST_ASSERT_MSG_EQ(true, false, "Registered AP device was connected as a station");
-        }
-        catch (const std::invalid_argument&)
-        {
-        }
-        statistics.ConnectStation(stationDevice);
-        savedAccessCallback =
-            statistics.m_traceConnections.at(stationNodeId).accessRequestedCallback;
-        try
-        {
-            statistics.ConnectStation(stationDevice);
-            NS_TEST_ASSERT_MSG_EQ(true, false, "Station device was connected twice");
-        }
-        catch (const std::invalid_argument&)
-        {
-        }
-
-        statistics.NotifyAccessRequested(stationNodeId, AC_BE, 0);
-        statistics.Start(0);
-        try
-        {
-            statistics.Start(0);
-            NS_TEST_ASSERT_MSG_EQ(true, false, "Statistics measurement started twice");
-        }
-        catch (const std::logic_error&)
-        {
-        }
-
-        statistics.NotifyAccessRequested(stationNodeId, AC_BE_NQOS, 0);
-        statistics.NotifyAccessRequested(stationNodeId, AC_BE, 0);
-        statistics.NotifyTxopGranted(stationNodeId, AC_BE, MilliSeconds(2), MilliSeconds(1), 0);
-        statistics.m_accessWaitTrackers.at(stationNodeId)
-            ->NotifyRequest(AC_BE, 0, MilliSeconds(5).GetNanoSeconds());
-
-        try
-        {
-            statistics.Finalize(999'999'999);
-            NS_TEST_ASSERT_MSG_EQ(true, false, "Non-one-second endpoint was accepted");
-        }
-        catch (const std::invalid_argument&)
-        {
-        }
-        statistics.Finalize(1'000'000'000);
-        statistics.Finalize(1'000'000'000);
-        const auto finalizedRaw = statistics.m_phyRecorder->BuildOverallAccumulator(stationNodeId);
-        NS_TEST_ASSERT_MSG_EQ(
-            finalizedRaw.contentionNs,
-            997'000'000,
-            "DCF or pre-start callback contributed, or pending wait closed at the wrong end");
-
-        statistics.NotifyAccessRequested(stationNodeId, AC_BE, 0);
-        statistics.Finalize(1'000'000'000);
-        NS_TEST_ASSERT_MSG_EQ(
-            statistics.m_phyRecorder->BuildOverallAccumulator(stationNodeId).contentionNs,
-            finalizedRaw.contentionNs,
-            "Post-finalization callback or repeated finalization changed raw state");
-    }
-
-    const auto stationMac = DynamicCast<BenchmarkStatsStaWifiMacProbe>(stationDevice->GetMac());
-    uint32_t survivingObserverCount = 0;
-    stationMac->TraceConnectWithoutContext(
-        "AccessRequested",
-        MakeBoundCallback(&CountAccessRequest, &survivingObserverCount));
-    stationMac->InvokeNotifyRequestAccess(stationMac->GetQosTxop(AC_BE), 0);
-    NS_TEST_ASSERT_MSG_EQ(survivingObserverCount,
-                          1,
-                          "Station device did not outlive and emit after statistics destruction");
-    stationMac->TraceDisconnectWithoutContext("AccessRequested", savedAccessCallback);
-
-    auto reusedOwnerNode = CreateObject<Node>();
-    auto oldOwnerDevice = MakeStationDevice(reusedOwnerNode, Mac48Address("00:00:00:00:00:05"));
-    auto replacementOwnerDevice =
-        MakeStationDevice(reusedOwnerNode, Mac48Address("00:00:00:00:00:06"));
-    alignas(SaturatedTcpStatistics) std::array<std::byte, sizeof(SaturatedTcpStatistics)>
-        ownerStorage{};
-    auto* oldOwner =
-        std::construct_at(reinterpret_cast<SaturatedTcpStatistics*>(ownerStorage.data()), 10);
-    oldOwner->RegisterAccessPoint(0, 910, "AP0", "10.10.0.1");
-    oldOwner->RegisterStation(0, 0, reusedOwnerNode->GetId(), "AP0/STA0", "10.10.0.2");
-    oldOwner->ConnectStation(oldOwnerDevice);
-    std::destroy_at(oldOwner);
-
-    auto* replacementOwner =
-        std::construct_at(reinterpret_cast<SaturatedTcpStatistics*>(ownerStorage.data()), 10);
-    replacementOwner->RegisterAccessPoint(0, 910, "AP0", "10.10.0.1");
-    replacementOwner->RegisterStation(0, 0, reusedOwnerNode->GetId(), "AP0/STA0", "10.10.0.2");
-    replacementOwner->ConnectStation(replacementOwnerDevice);
-    replacementOwner->Start(0);
-    const auto oldOwnerMac = DynamicCast<BenchmarkStatsStaWifiMacProbe>(oldOwnerDevice->GetMac());
-    oldOwnerMac->InvokeNotifyRequestAccess(oldOwnerMac->GetQosTxop(AC_BE), 0);
-    replacementOwner->Finalize(1'000'000'000);
+    auto node = CreateObject<Node>();
+    auto device = MakeStationDevice(node);
+    SaturatedTcpStatistics statistics(10);
+    statistics.RegisterAccessPoint(0, 100, "AP0", "10.1.0.1");
+    statistics.RegisterStation(0, 0, node->GetId(), "AP0/STA0", "10.1.0.2");
+    statistics.ConnectStation(device);
+    statistics.Start(0);
+    statistics.Finalize(1'000'000'000);
+    const auto summary = statistics.BuildSummary();
+    NS_TEST_ASSERT_MSG_EQ(summary.windows.empty(), true, "Idle data-only window was emitted");
+    NS_TEST_ASSERT_MSG_EQ(summary.overall.stations.size(), 1, "Idle overall station was lost");
     NS_TEST_ASSERT_MSG_EQ(
-        replacementOwner->m_phyRecorder->BuildOverallAccumulator(reusedOwnerNode->GetId())
-            .contentionNs,
-        0,
-        "Destroyed owner callback reached a replacement statistics object at the same address");
-    std::destroy_at(replacementOwner);
-    oldOwnerDevice->Dispose();
-    replacementOwnerDevice->Dispose();
+        summary.overall.stations.at(0).statistics.phyStats.dataTxRateOverIntervalMbps.value(),
+        0.0,
+        "Idle connected station lacks numeric zero interval rate");
 
-    auto partialNode = CreateObject<Node>();
-    auto partialDevice = MakeStationDevice(partialNode, Mac48Address("00:00:00:00:00:03"), true);
-    {
-        SaturatedTcpStatistics partialStatistics(10);
-        partialStatistics.RegisterAccessPoint(0, 900, "AP0", "10.9.0.1");
-        partialStatistics.RegisterStation(0, 0, partialNode->GetId(), "AP0/STA0", "10.9.0.2");
-        try
-        {
-            partialStatistics.ConnectStation(partialDevice);
-            NS_TEST_ASSERT_MSG_EQ(true, false, "Missing late PHY did not fail trace connection");
-        }
-        catch (const std::invalid_argument&)
-        {
-        }
-
-        auto repairedDevice = MakeStationDevice(partialNode, Mac48Address("00:00:00:00:00:04"));
-        partialStatistics.ConnectStation(repairedDevice);
-        partialStatistics.Start(0);
-        const auto partialMac = DynamicCast<BenchmarkStatsStaWifiMacProbe>(partialDevice->GetMac());
-        partialMac->InvokeNotifyRequestAccess(partialMac->GetQosTxop(AC_BE), 0);
-        partialStatistics.Finalize(1'000'000'000);
-        NS_TEST_ASSERT_MSG_EQ(
-            partialStatistics.m_phyRecorder->BuildOverallAccumulator(partialNode->GetId())
-                .contentionNs,
-            0,
-            "Failed connection leaked an access callback into the repaired station owner");
-        repairedDevice->Dispose();
-    }
-
-    auto insertionNode = CreateObject<Node>();
-    auto insertionFailureDevice =
-        MakeStationDevice(insertionNode, Mac48Address("00:00:00:00:00:07"));
-    auto insertionReplacementDevice =
-        MakeStationDevice(insertionNode, Mac48Address("00:00:00:00:00:08"));
-    alignas(SaturatedTcpStatistics) std::array<std::byte, sizeof(SaturatedTcpStatistics)>
-        insertionOwnerStorage{};
-    auto* insertionFailureOwner =
-        std::construct_at(reinterpret_cast<SaturatedTcpStatistics*>(insertionOwnerStorage.data()),
-                          10);
-    insertionFailureOwner->RegisterAccessPoint(0, 920, "AP0", "10.11.0.1");
-    insertionFailureOwner->RegisterStation(0, 0, insertionNode->GetId(), "AP0/STA0", "10.11.0.2");
-    insertionFailureOwner->m_subscriptionOwnershipHook = [] { throw std::bad_alloc(); };
+    bool duplicateRejected = false;
     try
     {
-        insertionFailureOwner->ConnectStation(insertionFailureDevice);
-        NS_TEST_ASSERT_MSG_EQ(true, false, "Injected ownership-insertion failure did not escape");
+        statistics.ConnectStation(device);
     }
-    catch (const std::bad_alloc&)
+    catch (const std::logic_error&)
     {
+        duplicateRejected = true;
     }
-    std::destroy_at(insertionFailureOwner);
+    NS_TEST_ASSERT_MSG_EQ(duplicateRejected, true, "Post-start station connection was accepted");
 
-    auto* insertionReplacementOwner =
-        std::construct_at(reinterpret_cast<SaturatedTcpStatistics*>(insertionOwnerStorage.data()),
-                          10);
-    insertionReplacementOwner->RegisterAccessPoint(0, 920, "AP0", "10.11.0.1");
-    insertionReplacementOwner->RegisterStation(0,
-                                               0,
-                                               insertionNode->GetId(),
-                                               "AP0/STA0",
-                                               "10.11.0.2");
-    insertionReplacementOwner->ConnectStation(insertionReplacementDevice);
-    insertionReplacementOwner->Start(0);
-    const auto insertionFailureMac =
-        DynamicCast<BenchmarkStatsStaWifiMacProbe>(insertionFailureDevice->GetMac());
-    insertionFailureMac->InvokeNotifyRequestAccess(insertionFailureMac->GetQosTxop(AC_BE), 0);
-    insertionReplacementOwner->Finalize(1'000'000'000);
-    NS_TEST_ASSERT_MSG_EQ(
-        insertionReplacementOwner->m_phyRecorder->BuildOverallAccumulator(insertionNode->GetId())
-            .contentionNs,
-        0,
-        "Insertion failure leaked a fully connected callback into the replacement owner");
-    std::destroy_at(insertionReplacementOwner);
-    insertionFailureDevice->Dispose();
-    insertionReplacementDevice->Dispose();
-
-    accessPointDevice->Dispose();
-    stationDevice->Dispose();
-    partialDevice->Dispose();
+    auto missingPhyNode = CreateObject<Node>();
+    auto missingPhy = MakeStationDevice(missingPhyNode, true);
+    SaturatedTcpStatistics missingPhyStatistics(10);
+    missingPhyStatistics.RegisterStation(0, 0, missingPhyNode->GetId(), "AP0/STA0", "10.1.0.2");
+    bool missingPhyRejected = false;
+    try
+    {
+        missingPhyStatistics.ConnectStation(missingPhy);
+    }
+    catch (const std::invalid_argument&)
+    {
+        missingPhyRejected = true;
+    }
+    NS_TEST_ASSERT_MSG_EQ(missingPhyRejected, true, "Station without a PHY was accepted");
+    device->Dispose();
+    missingPhy->Dispose();
     Simulator::Destroy();
 }
 
 namespace
 {
 
-/**
- * @ingroup tests
- *
- * Verify benchmark JSON sections, hierarchy values, and output lifecycle.
- */
+/** @ingroup tests Verify schema v2 JSON roles and validation before output ownership. */
 class SaturatedTcpBenchmarkJsonTestCase : public TestCase
 {
   public:
-    SaturatedTcpBenchmarkJsonTestCase();
+    SaturatedTcpBenchmarkJsonTestCase()
+        : TestCase("write validated schema v2 saturated TCP benchmark JSON")
+    {
+    }
 
   private:
-    void DoRun() override;
-    void CheckKeys(const nlohmann::ordered_json& object,
-                   const std::vector<std::string>& expected,
-                   std::string_view objectName);
-    void CheckPathFailure(const std::filesystem::path& outputPath,
-                          const UnifiedExperimentSummary& summary,
-                          const SaturatedTcpConfig& config,
-                          std::string_view description);
+    void DoRun() override
+    {
+        const auto summary = MakeLiteralSummary();
+        SaturatedTcpConfig config;
+        config.general.runFolder = "run/benchmark-fixture";
+        config.benchmark.stationCountPerBss = 1;
+        config.benchmark.rssiRange = SaturatedRssiRange::MEDIUM;
+        config.benchmark.interferenceMode = SaturatedInterferenceMode::AP_ONLY_COCHANNEL;
+        config.benchmark.trafficMode = SaturatedTrafficMode::UL_DL;
+
+        std::ostringstream output;
+        WriteSaturatedTcpExperimentJson(output, summary, config);
+        const auto document = nlohmann::ordered_json::parse(output.str());
+        NS_TEST_ASSERT_MSG_EQ(document.at("schema_version"), 2, "Wrong benchmark schema version");
+        const std::vector<std::string> expectedRoots{"schema_version",
+                                                     "measurement_semantics",
+                                                     "statistics_window_ms",
+                                                     "windows",
+                                                     "overall",
+                                                     "validation",
+                                                     "experiment_metadata"};
+        NS_TEST_ASSERT_MSG_EQ(GetKeys(document) == expectedRoots,
+                              true,
+                              "Benchmark root order changed");
+        const auto& station = document.at("windows").at(0).at("stations").at(0).at("phy_stats");
+        NS_TEST_ASSERT_MSG_EQ(station.at("dominant_data_phy_rate_mbps"),
+                              1000.0,
+                              "Wrong station dominant rate JSON");
+        NS_TEST_ASSERT_MSG_EQ(station.at("data_tx_profile").at(0).at("channel_width_mhz"),
+                              80,
+                              "Wrong structured profile width");
+        NS_TEST_ASSERT_MSG_EQ(station.at("data_tx_profile").at(0).at("nss"),
+                              2,
+                              "Wrong structured profile NSS");
+        NS_TEST_ASSERT_MSG_EQ(station.at("mean_dominant_data_phy_rate_mbps").is_null(),
+                              true,
+                              "Station contains BSS field");
+        const auto& bss = document.at("windows").at(0).at("access_points").at(0).at("phy_stats");
+        NS_TEST_ASSERT_MSG_EQ(bss.at("dominant_data_phy_rate_mbps").is_null(),
+                              true,
+                              "BSS contains station field");
+        NS_TEST_ASSERT_MSG_EQ(bss.at("data_tx_profile").empty(), true, "BSS contains profile");
+        NS_TEST_ASSERT_MSG_EQ(bss.at("mean_dominant_data_phy_rate_mbps"),
+                              1000.0,
+                              "Wrong BSS mean JSON");
+
+        auto inconsistent = summary;
+        inconsistent.overall.stations.at(0).statistics.phyStats.effectivePhyRateMbps = 81.0;
+        bool inconsistentRejected = false;
+        try
+        {
+            std::ostringstream rejected;
+            WriteSaturatedTcpExperimentJson(rejected, inconsistent, config);
+        }
+        catch (const std::invalid_argument&)
+        {
+            inconsistentRejected = true;
+        }
+        NS_TEST_ASSERT_MSG_EQ(inconsistentRejected,
+                              true,
+                              "Material profile formula mismatch was accepted");
+
+        RejectingStreamBuffer buffer;
+        std::ostream rejectingOutput(&buffer);
+        WriteSaturatedTcpExperimentJson(rejectingOutput, summary, config);
+        NS_TEST_ASSERT_MSG_EQ(rejectingOutput.fail(), true, "Rejected stream write was hidden");
+
+        const auto collisionPath = CreateTempDirFilename("llm-saturated-existing-output.json");
+        constexpr std::string_view sentinel{"existing benchmark must survive\n"};
+        {
+            std::ofstream collisionOutput(collisionPath);
+            collisionOutput << sentinel;
+        }
+        bool collisionRejected = false;
+        try
+        {
+            WriteSaturatedTcpExperimentJson(collisionPath, summary, config);
+        }
+        catch (const std::runtime_error&)
+        {
+            collisionRejected = true;
+        }
+        NS_TEST_ASSERT_MSG_EQ(collisionRejected, true, "Existing output was accepted");
+        std::ifstream collisionInput(collisionPath);
+        const std::string preserved((std::istreambuf_iterator<char>(collisionInput)),
+                                    std::istreambuf_iterator<char>());
+        NS_TEST_ASSERT_MSG_EQ(preserved, sentinel, "Existing output was replaced");
+    }
 };
-
-SaturatedTcpBenchmarkJsonTestCase::SaturatedTcpBenchmarkJsonTestCase()
-    : TestCase("write shared saturated TCP benchmark JSON exclusively")
-{
-}
-
-void
-SaturatedTcpBenchmarkJsonTestCase::CheckKeys(const nlohmann::ordered_json& object,
-                                             const std::vector<std::string>& expected,
-                                             std::string_view objectName)
-{
-    const auto actual = GetKeys(object);
-    NS_TEST_ASSERT_MSG_EQ(actual.size(), expected.size(), "Wrong key count in " << objectName);
-    if (actual.size() != expected.size())
-    {
-        return;
-    }
-    for (std::size_t index = 0; index < expected.size(); ++index)
-    {
-        NS_TEST_ASSERT_MSG_EQ(actual.at(index),
-                              expected.at(index),
-                              "Wrong key at index " << index << " in " << objectName);
-    }
-}
-
-void
-SaturatedTcpBenchmarkJsonTestCase::CheckPathFailure(const std::filesystem::path& outputPath,
-                                                    const UnifiedExperimentSummary& summary,
-                                                    const SaturatedTcpConfig& config,
-                                                    std::string_view description)
-{
-    try
-    {
-        WriteSaturatedTcpExperimentJson(outputPath.string(), summary, config);
-        NS_TEST_ASSERT_MSG_EQ(true, false, "Writer failure was ignored: " << description);
-    }
-    catch (const std::runtime_error& error)
-    {
-        NS_TEST_ASSERT_MSG_NE(std::string(error.what()).find(outputPath.string()),
-                              std::string::npos,
-                              "Writer error lacks output path for " << description << ": "
-                                                                    << error.what());
-    }
-}
-
-void
-SaturatedTcpBenchmarkJsonTestCase::DoRun()
-{
-    const auto summary = MakeLiteralSummary();
-    SaturatedTcpConfig config;
-    config.general.runFolder = "run/benchmark-fixture";
-    config.benchmark.stationCountPerBss = 1;
-    config.benchmark.rssiRange = SaturatedRssiRange::MEDIUM;
-    config.benchmark.interferenceMode = SaturatedInterferenceMode::AP_ONLY_COCHANNEL;
-    config.benchmark.trafficMode = SaturatedTrafficMode::UL_DL;
-
-    const std::filesystem::path outputPath =
-        CreateTempDirFilename("llm-saturated-benchmark-output.json");
-    WriteSaturatedTcpExperimentJson(outputPath.string(), summary, config);
-    std::ifstream input(outputPath);
-    const std::string text((std::istreambuf_iterator<char>(input)),
-                           std::istreambuf_iterator<char>());
-    NS_TEST_ASSERT_MSG_EQ(text.ends_with("\n"), true, "Benchmark JSON lacks a final newline");
-    NS_TEST_ASSERT_MSG_EQ(text.ends_with("\n\n"), false, "Benchmark JSON has extra newlines");
-
-    const auto document = nlohmann::ordered_json::parse(text);
-    const std::vector<std::string> expectedRoots{"schema_version",
-                                                 "measurement_semantics",
-                                                 "statistics_window_ms",
-                                                 "windows",
-                                                 "overall",
-                                                 "validation",
-                                                 "experiment_metadata"};
-    CheckKeys(document, expectedRoots, "benchmark root");
-    NS_TEST_ASSERT_MSG_EQ(document.at("schema_version"), 1, "Benchmark schema version changed");
-    NS_TEST_ASSERT_MSG_EQ(document.at("measurement_semantics").at("phy_observation_scope"),
-                          "qualifying station-transmitted PPDUs",
-                          "Benchmark semantics do not identify station-transmitted PPDUs");
-    NS_TEST_ASSERT_MSG_EQ(
-        document.at("measurement_semantics").at("undefined_derived_values").is_null(),
-        true,
-        "Undefined benchmark derived values are not JSON null");
-
-    const auto& configuration = document.at("experiment_metadata").at("configuration");
-    const std::vector<std::string> expectedSections{"general",
-                                                    "script",
-                                                    "simulation",
-                                                    "benchmark",
-                                                    "wifi",
-                                                    "tcp",
-                                                    "statistics",
-                                                    "logging"};
-    CheckKeys(configuration, expectedSections, "benchmark configuration");
-    NS_TEST_ASSERT_MSG_EQ(configuration.at("benchmark").at("sta_count_per_bss"),
-                          1,
-                          "Wrong station-count metadata");
-    NS_TEST_ASSERT_MSG_EQ(configuration.at("benchmark").at("rssi_range"),
-                          "medium",
-                          "Wrong RSSI metadata");
-    NS_TEST_ASSERT_MSG_EQ(configuration.at("benchmark").at("interference_mode"),
-                          "ap_only_cochannel",
-                          "Wrong interference metadata");
-    NS_TEST_ASSERT_MSG_EQ(configuration.at("benchmark").at("traffic_mode"),
-                          "ul_dl",
-                          "Wrong traffic metadata");
-
-    const auto& station = document.at("windows").at(0).at("stations").at(0);
-    const auto& stationPhy = station.at("phy_stats");
-    NS_TEST_ASSERT_MSG_EQ(stationPhy.at("average_theoretical_phy_rate_mbps"),
-                          100.0,
-                          "Wrong station theoretical JSON field");
-    NS_TEST_ASSERT_MSG_EQ(stationPhy.at("average_practical_phy_rate_mbps"),
-                          50.0,
-                          "Wrong station practical JSON field");
-    NS_TEST_ASSERT_MSG_EQ(stationPhy.at("channel_efficiency"),
-                          0.5,
-                          "Wrong station efficiency JSON field");
-    NS_TEST_ASSERT_MSG_EQ(stationPhy.at("contention_fraction"),
-                          0.1,
-                          "Wrong station contention JSON field");
-    const auto& accessPointPhy =
-        document.at("windows").at(0).at("access_points").at(0).at("phy_stats");
-    NS_TEST_ASSERT_MSG_EQ(accessPointPhy,
-                          stationPhy,
-                          "One-station AP fields are not exact station-derived values");
-
-    const std::vector<std::string> expectedEntityKeys{"access_point_id",
-                                                      "station_index",
-                                                      "node_id",
-                                                      "node_label",
-                                                      "ipv4",
-                                                      "general_stats",
-                                                      "app_stats",
-                                                      "tcp_stats",
-                                                      "mac_stats",
-                                                      "phy_stats"};
-    CheckKeys(station, expectedEntityKeys, "station entity");
-    for (const auto category : {"general_stats", "app_stats", "tcp_stats", "mac_stats"})
-    {
-        CheckKeys(station.at(category), {"uplink", "downlink"}, category);
-    }
-    NS_TEST_ASSERT_MSG_EQ(
-        station.at("general_stats").at("uplink").at("estimated_transmitted_tcp_payload_bytes"),
-        0,
-        "Benchmark populated unrelated general statistics");
-    NS_TEST_ASSERT_MSG_EQ(station.at("app_stats").at("uplink").at("agents").empty(),
-                          true,
-                          "Benchmark populated unrelated application statistics");
-    NS_TEST_ASSERT_MSG_EQ(station.at("tcp_stats").at("uplink").at("connections").empty(),
-                          true,
-                          "Benchmark populated unrelated TCP statistics");
-    NS_TEST_ASSERT_MSG_EQ(station.at("mac_stats").at("uplink").at("peers").empty(),
-                          true,
-                          "Benchmark populated unrelated MAC statistics");
-
-    const auto& validation = document.at("validation");
-    constexpr std::array validationKeys{
-        "entity_inventory_references_valid",
-        "app_agent_totals_consistent",
-        "app_peer_totals_consistent",
-        "mac_peer_totals_consistent",
-        "phy_peer_totals_consistent",
-        "ap_station_sender_totals_consistent",
-        "overall_matches_windows",
-        "unique_phy_payload_within_tagged_payload",
-    };
-    NS_TEST_ASSERT_MSG_EQ(validation.size(), 8, "Benchmark validation shape changed");
-    for (const auto key : validationKeys)
-    {
-        NS_TEST_ASSERT_MSG_EQ(validation.at(key), true, "Validation flag is false: " << key);
-    }
-
-    auto nullableSummary = summary;
-    nullableSummary.windows.at(0).stations.pop_back();
-    nullableSummary.windows.at(0).accessPoints.pop_back();
-    auto& nullableStation = nullableSummary.overall.stations.at(2).statistics.phyStats;
-    nullableStation.averageTheoreticalPhyRateMbps.reset();
-    nullableStation.averagePracticalPhyRateMbps.reset();
-    nullableStation.channelEfficiency.reset();
-    nullableStation.contentionFraction = 0.0;
-    auto& nullableAccessPoint = nullableSummary.overall.accessPoints.at(2).statistics.phyStats;
-    nullableAccessPoint.averageTheoreticalPhyRateMbps.reset();
-    nullableAccessPoint.averagePracticalPhyRateMbps.reset();
-    nullableAccessPoint.channelEfficiency.reset();
-    nullableAccessPoint.contentionFraction = 0.0;
-    std::ostringstream nullableOutput;
-    WriteSaturatedTcpExperimentJson(nullableOutput, nullableSummary, config);
-    const auto nullableDocument = nlohmann::ordered_json::parse(nullableOutput.str());
-    const auto& nullableStationPhy =
-        nullableDocument.at("overall").at("stations").at(2).at("phy_stats");
-    NS_TEST_ASSERT_MSG_EQ(nullableStationPhy.at("average_theoretical_phy_rate_mbps").is_null(),
-                          true,
-                          "Undefined overall station theoretical rate is not JSON null");
-    NS_TEST_ASSERT_MSG_EQ(nullableStationPhy.at("average_practical_phy_rate_mbps").is_null(),
-                          true,
-                          "Undefined overall station practical rate is not JSON null");
-    NS_TEST_ASSERT_MSG_EQ(nullableStationPhy.at("channel_efficiency").is_null(),
-                          true,
-                          "Undefined overall station efficiency is not JSON null");
-    NS_TEST_ASSERT_MSG_EQ(nullableStationPhy.at("contention_fraction"),
-                          0.0,
-                          "Undefined overall station contention is not numeric zero");
-    const auto& nullableAccessPointPhy =
-        nullableDocument.at("overall").at("access_points").at(2).at("phy_stats");
-    NS_TEST_ASSERT_MSG_EQ(nullableAccessPointPhy.at("average_theoretical_phy_rate_mbps").is_null(),
-                          true,
-                          "All-undefined BSS theoretical rate is not JSON null");
-    NS_TEST_ASSERT_MSG_EQ(nullableAccessPointPhy.at("average_practical_phy_rate_mbps").is_null(),
-                          true,
-                          "All-undefined BSS practical rate is not JSON null");
-    NS_TEST_ASSERT_MSG_EQ(nullableAccessPointPhy.at("channel_efficiency").is_null(),
-                          true,
-                          "All-undefined BSS efficiency is not JSON null");
-    NS_TEST_ASSERT_MSG_EQ(nullableAccessPointPhy.at("contention_fraction"),
-                          0.0,
-                          "All-undefined BSS contention is not numeric zero");
-
-    RejectingStreamBuffer buffer;
-    std::ostream rejectingOutput(&buffer);
-    WriteSaturatedTcpExperimentJson(rejectingOutput, summary, config);
-    NS_TEST_ASSERT_MSG_EQ(rejectingOutput.fail(),
-                          true,
-                          "Rejected benchmark hierarchy write was not observable");
-
-    const std::filesystem::path collisionPath =
-        CreateTempDirFilename("llm-saturated-existing-output.json");
-    constexpr std::string_view sentinel{"existing benchmark must survive\n"};
-    {
-        std::ofstream collisionOutput(collisionPath);
-        collisionOutput << sentinel;
-    }
-    CheckPathFailure(collisionPath, summary, config, "existing output collision");
-    std::ifstream collisionInput(collisionPath);
-    const std::string preserved((std::istreambuf_iterator<char>(collisionInput)),
-                                std::istreambuf_iterator<char>());
-    NS_TEST_ASSERT_MSG_EQ(preserved,
-                          sentinel,
-                          "Existing benchmark output was replaced on collision");
-
-    const std::filesystem::path missingParentPath =
-        std::filesystem::path(CreateTempDirFilename("missing-saturated-parent")) / "output.json";
-    NS_TEST_ASSERT_MSG_EQ(std::filesystem::exists(missingParentPath.parent_path()),
-                          false,
-                          "Missing-parent fixture unexpectedly exists");
-    CheckPathFailure(missingParentPath, summary, config, "missing output parent");
-    NS_TEST_ASSERT_MSG_EQ(std::filesystem::exists(missingParentPath),
-                          false,
-                          "Failed benchmark writer created an output file");
-
-    auto inconsistent = summary;
-    inconsistent.overall.accessPoints.at(0).statistics.phyStats.averagePracticalPhyRateMbps = 51.0;
-    const std::filesystem::path invalidPath =
-        CreateTempDirFilename("llm-saturated-invalid-output.json");
-    try
-    {
-        WriteSaturatedTcpExperimentJson(invalidPath.string(), inconsistent, config);
-        NS_TEST_ASSERT_MSG_EQ(true, false, "Inconsistent AP summary was written");
-    }
-    catch (const std::invalid_argument&)
-    {
-    }
-    NS_TEST_ASSERT_MSG_EQ(std::filesystem::exists(invalidPath),
-                          false,
-                          "Invalid summary created an output file before rejection");
-
-    auto nonDefaultCategory = summary;
-    nonDefaultCategory.overall.stations.at(0).statistics.appStats.uplink.acceptedSendCount = 1;
-    try
-    {
-        std::ostringstream rejected;
-        WriteSaturatedTcpExperimentJson(rejected, nonDefaultCategory, config);
-        NS_TEST_ASSERT_MSG_EQ(true, false, "Non-default benchmark category was accepted");
-    }
-    catch (const std::invalid_argument&)
-    {
-    }
-
-    auto nonFiniteUnrelatedField = summary;
-    nonFiniteUnrelatedField.windows.at(0)
-        .stations.at(0)
-        .statistics.phyStats.channelUtilizationPercent = std::numeric_limits<double>::quiet_NaN();
-    try
-    {
-        std::ostringstream rejected;
-        WriteSaturatedTcpExperimentJson(rejected, nonFiniteUnrelatedField, config);
-        NS_TEST_ASSERT_MSG_EQ(true,
-                              false,
-                              "Present non-finite unrelated benchmark field was accepted");
-    }
-    catch (const std::invalid_argument&)
-    {
-    }
-
-    auto emptyWindow = summary;
-    emptyWindow.windows.push_back({1, 10.0, 10.0, {}, {}});
-    try
-    {
-        std::ostringstream rejected;
-        WriteSaturatedTcpExperimentJson(rejected, emptyWindow, config);
-        NS_TEST_ASSERT_MSG_EQ(true, false, "Empty sparse benchmark window was accepted");
-    }
-    catch (const std::invalid_argument&)
-    {
-    }
-
-    auto overallWithoutWindows = summary;
-    overallWithoutWindows.windows.clear();
-    try
-    {
-        std::ostringstream rejected;
-        WriteSaturatedTcpExperimentJson(rejected, overallWithoutWindows, config);
-        NS_TEST_ASSERT_MSG_EQ(true,
-                              false,
-                              "Nonzero overall benchmark output without windows was accepted");
-    }
-    catch (const std::invalid_argument&)
-    {
-    }
-
-    auto inconsistentOverall = summary;
-    inconsistentOverall.overall.stations.at(0).statistics.phyStats.contentionFraction = 0.002;
-    inconsistentOverall.overall.accessPoints.at(0).statistics.phyStats.contentionFraction = 0.002;
-    try
-    {
-        std::ostringstream rejected;
-        WriteSaturatedTcpExperimentJson(rejected, inconsistentOverall, config);
-        NS_TEST_ASSERT_MSG_EQ(true,
-                              false,
-                              "Overall contention inconsistent with sparse windows was accepted");
-    }
-    catch (const std::invalid_argument&)
-    {
-    }
-
-    const std::filesystem::path partialPath =
-        CreateTempDirFilename("llm-saturated-partial-output.json");
-    try
-    {
-        saturated_tcp_internal::WriteExclusiveJsonFile(partialPath.string(),
-                                                       [](std::ostream& output) {
-                                                           output << "partial";
-                                                           output.setstate(std::ios::badbit);
-                                                       });
-        NS_TEST_ASSERT_MSG_EQ(true, false, "Injected output failure was ignored");
-    }
-    catch (const std::runtime_error& error)
-    {
-        NS_TEST_ASSERT_MSG_NE(std::string(error.what()).find(partialPath.string()),
-                              std::string::npos,
-                              "Injected output error lacks its path");
-    }
-    NS_TEST_ASSERT_MSG_EQ(std::filesystem::exists(partialPath),
-                          false,
-                          "Failed owned output path retained a partial file");
-
-    saturated_tcp_internal::WriteExclusiveJsonFile(partialPath.string(), [](std::ostream& output) {
-        output << "retry succeeded\n";
-    });
-    std::ifstream retryInput(partialPath);
-    const std::string retryText((std::istreambuf_iterator<char>(retryInput)),
-                                std::istreambuf_iterator<char>());
-    NS_TEST_ASSERT_MSG_EQ(retryText,
-                          "retry succeeded\n",
-                          "Retry after owned-file cleanup did not create complete output");
-}
 
 } // namespace
 
 std::vector<TestCase*>
 CreateSaturatedTcpBenchmarkOutputTestCases()
 {
-    return {new SaturatedTcpBenchmarkSummaryTestCase,
+    return {new SaturatedTcpDataTxDerivationTestCase,
+            new SaturatedTcpBenchmarkSummaryTestCase,
             new SaturatedTcpBenchmarkLifecycleTestCase,
             new SaturatedTcpBenchmarkJsonTestCase};
 }

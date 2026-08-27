@@ -3,7 +3,7 @@
 
 #include "../statistics/output-types.h"
 #include "../statistics/types.h"
-#include "sta-phy-metrics.h"
+#include "data-tx-metrics.h"
 
 #include "ns3/callback.h"
 #include "ns3/nstime.h"
@@ -23,13 +23,30 @@ class SaturatedTcpBenchmarkLifecycleTestCase;
 namespace ns3
 {
 
-class AccessTrackingStaWifiMac;
-class AccessWaitTracker;
 class JsonWriter;
-class QosTxop;
 class WifiNetDevice;
 class WifiPhy;
 struct SaturatedTcpConfig;
+
+/**
+ * Derive public station metrics from one ordered raw data TX profile map.
+ *
+ * @param profiles Ordered raw width/NSS/MCS profiles.
+ * @param intervalDurationNs Statistics interval duration in nanoseconds.
+ * @return Station-role PHY category fields.
+ * @throws std::invalid_argument if the duration or raw values are invalid.
+ */
+PhyCategoryOutput DeriveStationDataTxMetrics(const DataTxProfileMap& profiles,
+                                             int64_t intervalDurationNs);
+
+/**
+ * Derive BSS metrics from all configured station-role PHY values.
+ *
+ * @param stations Station PHY values, including inactive stations.
+ * @return BSS-role PHY category fields.
+ * @throws std::invalid_argument if a station has an invalid role or interval rate.
+ */
+PhyCategoryOutput DeriveBssDataTxMetrics(const std::vector<PhyCategoryOutput>& stations);
 
 /** Own station-only saturated TCP benchmark measurement and aggregation state. */
 class SaturatedTcpStatistics
@@ -75,14 +92,14 @@ class SaturatedTcpStatistics
                          std::string ipv4);
 
     /**
-     * Connect one registered station device's MAC, TXOP, and PHY traces.
+     * Connect one registered station device's PHY traces.
      *
-     * Access point devices and devices without the benchmark station MAC are rejected. Every PHY
-     * owned by the station device is connected; no access point trace is ever connected.
+     * Access point devices are rejected. Every PHY owned by the ordinary station device is
+     * connected; no access point trace is ever connected.
      *
      * @param device Registered station Wi-Fi device.
      * @throws std::invalid_argument if the device is null, unregistered, not a station, lacks the
-     *         required MAC/PHY/TXOP objects, or was already connected.
+     *         ordinary station MAC or PHY objects, or was already connected.
      */
     void ConnectStation(Ptr<WifiNetDevice> device);
 
@@ -99,7 +116,7 @@ class SaturatedTcpStatistics
     void Start(int64_t experimentStartNs);
 
     /**
-     * Close pending access waits and finalize station raw state.
+     * Finalize station raw state.
      *
      * Repeated calls after successful finalization have no effect.
      *
@@ -129,7 +146,7 @@ class SaturatedTcpStatistics
      * @return Complete shared-schema benchmark summary.
      */
     UnifiedExperimentSummary BuildSummaryFromRaw(
-        const std::map<uint32_t, std::vector<StationPhyMetricAccumulator>>& rawWindows) const;
+        const std::map<uint32_t, std::vector<DataTxProfileMap>>& rawWindows) const;
 
     /**
      * Build the public summary from configured windows and independent overall raw state.
@@ -139,16 +156,8 @@ class SaturatedTcpStatistics
      * @return Complete shared-schema benchmark summary.
      */
     UnifiedExperimentSummary BuildSummaryFromRaw(
-        const std::map<uint32_t, std::vector<StationPhyMetricAccumulator>>& rawWindows,
-        const std::map<uint32_t, StationPhyMetricAccumulator>& rawOverall) const;
-
-    /** One exact QoS TXOP trace subscription. */
-    struct TxopTraceConnection
-    {
-        Ptr<QosTxop> source;                          ///< Subscribed QoS TXOP.
-        Callback<void, Time, Time, uint8_t> callback; ///< Exact connected callback.
-        bool connected{false};                        ///< Whether the callback was connected.
-    };
+        const std::map<uint32_t, std::vector<DataTxProfileMap>>& rawWindows,
+        const std::map<uint32_t, DataTxProfileMap>& rawOverall) const;
 
     /** One exact station PHY trace subscription. */
     struct PhyTraceConnection
@@ -162,12 +171,7 @@ class SaturatedTcpStatistics
     /** Every trace subscription owned for one connected station. */
     struct StationTraceConnections
     {
-        Ptr<AccessTrackingStaWifiMac> mac; ///< Subscribed benchmark station MAC.
-        Callback<void, uint8_t, uint8_t>
-            accessRequestedCallback;                 ///< Exact access-request callback.
-        bool accessRequestedConnected{false};        ///< Whether the MAC callback was connected.
-        std::vector<TxopTraceConnection> txopTraces; ///< Exact per-AC TXOP subscriptions.
-        std::vector<PhyTraceConnection> phyTraces;   ///< Exact per-PHY subscriptions.
+        std::vector<PhyTraceConnection> phyTraces; ///< Exact per-PHY subscriptions.
     };
 
     /** Disconnect locally owned subscriptions unless durable ownership is transferred. */
@@ -203,30 +207,6 @@ class SaturatedTcpStatistics
     void DisconnectAllTraceConnections() noexcept;
 
     /**
-     * Record a station channel-access request callback.
-     *
-     * @param stationNodeId Bound station node identifier.
-     * @param ac Access category.
-     * @param linkId Link identifier.
-     */
-    void NotifyAccessRequested(uint32_t stationNodeId, uint8_t ac, uint8_t linkId);
-
-    /**
-     * Record a station historical TXOP grant callback.
-     *
-     * @param stationNodeId Bound station node identifier.
-     * @param ac Bound access category.
-     * @param start Historical TXOP start.
-     * @param duration Historical TXOP duration.
-     * @param linkId Link identifier.
-     */
-    void NotifyTxopGranted(uint32_t stationNodeId,
-                           uint8_t ac,
-                           Time start,
-                           Time duration,
-                           uint8_t linkId);
-
-    /**
      * Record one station PHY transmission callback.
      *
      * @param stationNodeId Bound station node identifier.
@@ -249,11 +229,7 @@ class SaturatedTcpStatistics
         m_traceConnections; ///< Exact subscriptions by station node ID.
     std::function<void()>
         m_subscriptionOwnershipHook; ///< Injected post-connection ownership-transfer seam.
-    std::unique_ptr<StationPhyMetricRecorder> m_phyRecorder; ///< Task 5 raw PPDU recorder.
-    std::unique_ptr<StationPhyMetricRecorder>
-        m_overallPhyRecorder; ///< Independent one-window Task 5 overall recorder.
-    std::map<uint32_t, std::unique_ptr<AccessWaitTracker>>
-        m_accessWaitTrackers;       ///< Task 4 wait trackers by station node ID.
+    std::unique_ptr<StationDataTxMetricRecorder> m_dataTxRecorder; ///< Data-only profile recorder.
     int64_t m_experimentStartNs{0}; ///< Inclusive measurement start in nanoseconds.
     int64_t m_experimentEndNs{0};   ///< Exclusive one-second endpoint in nanoseconds.
     bool m_started{false};          ///< Whether the measurement epoch has opened.

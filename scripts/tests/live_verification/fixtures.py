@@ -82,10 +82,15 @@ def entity(access_point_id=0, station_index=None, node_id=1, ipv4="10.1.0.1"):
         "tcp_stats": {"uplink": copy.deepcopy(tcp), "downlink": copy.deepcopy(tcp)},
         "mac_stats": {"uplink": copy.deepcopy(mac), "downlink": copy.deepcopy(mac)},
         "phy_stats": {
-            "average_theoretical_phy_rate_mbps": 960.8,
-            "average_practical_phy_rate_mbps": 720.6,
-            "channel_efficiency": 0.75,
-            "contention_fraction": 0.2,
+            "dominant_data_phy_rate_mbps": None,
+            "dominant_data_profile_share": None,
+            "effective_phy_rate_mbps": None,
+            "data_tx_rate_over_interval_mbps": None,
+            "data_tx_opportunity_gap_fraction": None,
+            "data_tx_profile": [],
+            "mean_dominant_data_phy_rate_mbps": None,
+            "mean_effective_phy_rate_mbps": None,
+            "aggregate_data_tx_rate_over_interval_mbps": None,
             "busy_time_us": 0,
             "channel_utilization_percent": 0.0,
             "uplink": copy.deepcopy(phy_direction),
@@ -224,7 +229,7 @@ def valid_document(trace_path, run_directory="/tmp/llm-trace-live.test.random"):
         },
     }
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "measurement_semantics": {
             "access_point_role": "BSS parent aggregate",
             "station_role": "per-station child detail",

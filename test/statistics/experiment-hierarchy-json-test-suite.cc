@@ -73,10 +73,6 @@ PopulateDirectionOutputs(EntityStatisticsOutput& statistics)
                  {9, "10.1.0.3", 2, 200, 0.16, 2, 160, 0.128, 3, 300, 3, 3, {{9, 3}}}};
 
     auto& phy = statistics.phyStats;
-    phy.averageTheoreticalPhyRateMbps = 960.8;
-    phy.averagePracticalPhyRateMbps = 720.6;
-    phy.channelEfficiency = 0.75;
-    phy.contentionFraction = 0.2;
     phy.busyTimeUs = 4500;
     phy.channelUtilizationPercent = 45.0;
     phy.uplink = {600, 500, 8, 900, 10, 2, 2500.0, 54.0, 0.48, {}};
@@ -95,6 +91,10 @@ MakeAccessPointOutput()
 {
     AccessPointStatisticsOutput output{0, 7, "AP-\"zero", "10.1.0.1", {}};
     PopulateDirectionOutputs(output.statistics);
+    auto& phy = output.statistics.phyStats;
+    phy.meanDominantDataPhyRateMbps = 960.8;
+    phy.meanEffectivePhyRateMbps = 720.6;
+    phy.aggregateDataTxRateOverIntervalMbps = 180.15;
     return output;
 }
 
@@ -103,6 +103,13 @@ MakeStationOutput()
 {
     StationStatisticsOutput output{0, 0, 8, "STA-\\zero", "10.1.0.2", {}};
     PopulateDirectionOutputs(output.statistics);
+    auto& phy = output.statistics.phyStats;
+    phy.dominantDataPhyRateMbps = 960.8;
+    phy.dominantDataProfileShare = 0.75;
+    phy.effectivePhyRateMbps = 720.6;
+    phy.dataTxRateOverIntervalMbps = 180.15;
+    phy.dataTxOpportunityGapFraction = 0.75;
+    phy.dataTxProfile = {{20, 1, 9, 100.5, 2, 40.25}, {80, 2, 11, 300.75, 4, 120.5}};
     return output;
 }
 
@@ -151,10 +158,16 @@ class ExperimentHierarchyJsonTestCase : public TestCase
 
     void RejectOldKeys(const nlohmann::json& value, bool insideConfiguration = false)
     {
-        static const std::set<std::string> removed{"wifi_windows",
-                                                   "wifi_summary",
-                                                   "transmission_summary",
-                                                   "cross_layer_summary"};
+        static const std::set<std::string> removed{
+            "wifi_windows",
+            "wifi_summary",
+            "transmission_summary",
+            "cross_layer_summary",
+            "average_theoretical_phy_rate_mbps",
+            "average_practical_phy_rate_mbps",
+            "channel_efficiency",
+            "contention_fraction",
+        };
         if (value.is_object())
         {
             for (const auto& [key, child] : value.items())
@@ -198,7 +211,7 @@ class ExperimentHierarchyStreamingScaleTestCase : public TestCase
 /**
  * @ingroup tests
  *
- * Verify default AP and station PHY benchmark fields serialize as null.
+ * Verify ordinary default AP and station PHY benchmark fields serialize as null or empty.
  */
 class ExperimentHierarchyDefaultPhyJsonTestCase : public TestCase
 {
@@ -223,7 +236,7 @@ ExperimentHierarchyJsonTestCase::DoRun()
     std::ostringstream output;
     WriteExperimentHierarchyJson(output, MakeLiteralSummary(), config);
     const std::string text = output.str();
-    NS_TEST_ASSERT_MSG_EQ(text.starts_with("{\n  \"schema_version\": 1,"),
+    NS_TEST_ASSERT_MSG_EQ(text.starts_with("{\n  \"schema_version\": 2,"),
                           true,
                           "Root is not two-space formatted");
     NS_TEST_ASSERT_MSG_EQ(text.ends_with("\n}\n"), true, "Document lacks one final newline");
@@ -248,7 +261,7 @@ ExperimentHierarchyJsonTestCase::DoRun()
         NS_TEST_ASSERT_MSG_EQ(position >= prior, true, "Wrong physical root order for " << root);
         prior = position;
     }
-    NS_TEST_ASSERT_MSG_EQ(document.at("schema_version"), 1, "Wrong schema version");
+    NS_TEST_ASSERT_MSG_EQ(document.at("schema_version"), 2, "Wrong schema version");
     NS_TEST_ASSERT_MSG_EQ(document.at("statistics_window_ms"), 10, "Wrong window width");
 
     const auto& window = document.at("windows").at(0);
@@ -291,11 +304,16 @@ ExperimentHierarchyJsonTestCase::DoRun()
     {
         AssertExactKeys(ap.at(category), directions, category);
     }
-    constexpr std::array<std::string_view, 8> phyKeys{
-        "average_theoretical_phy_rate_mbps",
-        "average_practical_phy_rate_mbps",
-        "channel_efficiency",
-        "contention_fraction",
+    constexpr std::array<std::string_view, 13> phyKeys{
+        "dominant_data_phy_rate_mbps",
+        "dominant_data_profile_share",
+        "effective_phy_rate_mbps",
+        "data_tx_rate_over_interval_mbps",
+        "data_tx_opportunity_gap_fraction",
+        "data_tx_profile",
+        "mean_dominant_data_phy_rate_mbps",
+        "mean_effective_phy_rate_mbps",
+        "aggregate_data_tx_rate_over_interval_mbps",
         "busy_time_us",
         "channel_utilization_percent",
         "uplink",
@@ -303,18 +321,79 @@ ExperimentHierarchyJsonTestCase::DoRun()
     };
     AssertExactKeys(ap.at("phy_stats"), phyKeys, "AP phy_stats");
     AssertExactKeys(station.at("phy_stats"), phyKeys, "station phy_stats");
-    for (const auto* entity : {&ap, &station})
+    std::size_t phyKeyPosition = text.find("\"phy_stats\"");
+    for (const auto key : phyKeys)
     {
-        const auto& phy = entity->at("phy_stats");
-        NS_TEST_ASSERT_MSG_EQ(phy.at("average_theoretical_phy_rate_mbps"),
-                              960.8,
-                              "Wrong theoretical PHY rate");
-        NS_TEST_ASSERT_MSG_EQ(phy.at("average_practical_phy_rate_mbps"),
-                              720.6,
-                              "Wrong practical PHY rate");
-        NS_TEST_ASSERT_MSG_EQ(phy.at("channel_efficiency"), 0.75, "Wrong channel efficiency");
-        NS_TEST_ASSERT_MSG_EQ(phy.at("contention_fraction"), 0.2, "Wrong contention fraction");
+        phyKeyPosition = text.find('"' + std::string(key) + '"', phyKeyPosition);
+        NS_TEST_ASSERT_MSG_NE(phyKeyPosition,
+                              std::string::npos,
+                              "Missing physically ordered PHY key " << key);
     }
+    const auto& apPhy = ap.at("phy_stats");
+    NS_TEST_ASSERT_MSG_EQ(apPhy.at("dominant_data_phy_rate_mbps").is_null(),
+                          true,
+                          "BSS has a station dominant data rate");
+    NS_TEST_ASSERT_MSG_EQ(apPhy.at("data_tx_profile").empty(),
+                          true,
+                          "BSS has a station data profile");
+    NS_TEST_ASSERT_MSG_EQ(apPhy.at("mean_dominant_data_phy_rate_mbps"),
+                          960.8,
+                          "Wrong BSS mean dominant data rate");
+    NS_TEST_ASSERT_MSG_EQ(apPhy.at("mean_effective_phy_rate_mbps"),
+                          720.6,
+                          "Wrong BSS mean effective PHY rate");
+    NS_TEST_ASSERT_MSG_EQ(apPhy.at("aggregate_data_tx_rate_over_interval_mbps"),
+                          180.15,
+                          "Wrong BSS aggregate interval rate");
+
+    const auto& stationPhy = station.at("phy_stats");
+    NS_TEST_ASSERT_MSG_EQ(stationPhy.at("dominant_data_phy_rate_mbps"),
+                          960.8,
+                          "Wrong station dominant data rate");
+    NS_TEST_ASSERT_MSG_EQ(stationPhy.at("dominant_data_profile_share"),
+                          0.75,
+                          "Wrong station dominant profile share");
+    NS_TEST_ASSERT_MSG_EQ(stationPhy.at("effective_phy_rate_mbps"),
+                          720.6,
+                          "Wrong station effective PHY rate");
+    NS_TEST_ASSERT_MSG_EQ(stationPhy.at("data_tx_rate_over_interval_mbps"),
+                          180.15,
+                          "Wrong station interval data rate");
+    NS_TEST_ASSERT_MSG_EQ(stationPhy.at("data_tx_opportunity_gap_fraction"),
+                          0.75,
+                          "Wrong station opportunity gap");
+    NS_TEST_ASSERT_MSG_EQ(stationPhy.at("mean_dominant_data_phy_rate_mbps").is_null(),
+                          true,
+                          "Station has a BSS mean dominant data rate");
+    const auto& profile = stationPhy.at("data_tx_profile");
+    NS_TEST_ASSERT_MSG_EQ(profile.size(), 2, "Wrong station data profile size");
+    constexpr std::array<std::string_view, 6> profileKeys{
+        "channel_width_mhz",
+        "nss",
+        "mcs",
+        "transmitted_psdu_bytes",
+        "ppdu_attempt_count",
+        "ppdu_airtime_us",
+    };
+    for (std::size_t index = 0; index < profile.size(); ++index)
+    {
+        AssertExactKeys(profile.at(index), profileKeys, "data TX profile entry");
+    }
+    NS_TEST_ASSERT_MSG_EQ(profile.at(0).at("channel_width_mhz"), 20, "Wrong first profile width");
+    NS_TEST_ASSERT_MSG_EQ(profile.at(0).at("nss"), 1, "Wrong first profile NSS");
+    NS_TEST_ASSERT_MSG_EQ(profile.at(0).at("mcs"), 9, "Wrong first profile MCS");
+    NS_TEST_ASSERT_MSG_EQ(profile.at(0).at("transmitted_psdu_bytes"),
+                          100.5,
+                          "Wrong first profile byte count");
+    NS_TEST_ASSERT_MSG_EQ(profile.at(0).at("ppdu_attempt_count"),
+                          2,
+                          "Wrong first profile attempt count");
+    NS_TEST_ASSERT_MSG_EQ(profile.at(0).at("ppdu_airtime_us"),
+                          40.25,
+                          "Wrong first profile airtime");
+    NS_TEST_ASSERT_MSG_EQ(profile.at(1).at("channel_width_mhz"), 80, "Wrong second profile width");
+    NS_TEST_ASSERT_MSG_EQ(profile.at(1).at("nss"), 2, "Wrong second profile NSS");
+    NS_TEST_ASSERT_MSG_EQ(profile.at(1).at("mcs"), 11, "Wrong second profile MCS");
 
     AssertExactKeys(ap.at("general_stats").at("uplink"),
                     std::array<std::string_view, 10>{"estimated_transmitted_tcp_payload_bytes",
@@ -526,7 +605,7 @@ ExperimentHierarchyStreamingScaleTestCase::ExperimentHierarchyStreamingScaleTest
 }
 
 ExperimentHierarchyDefaultPhyJsonTestCase::ExperimentHierarchyDefaultPhyJsonTestCase()
-    : TestCase("serialize default AP and station PHY benchmark fields as null")
+    : TestCase("serialize ordinary default AP and station PHY benchmark fields")
 {
 }
 
@@ -544,18 +623,28 @@ ExperimentHierarchyDefaultPhyJsonTestCase::DoRun()
     const auto& stationPhy = overall.at("stations").at(0).at("phy_stats");
     for (const auto* phy : {&accessPointPhy, &stationPhy})
     {
-        NS_TEST_ASSERT_MSG_EQ(phy->at("average_theoretical_phy_rate_mbps").is_null(),
+        constexpr std::array<std::string_view, 8> numericFields{
+            "dominant_data_phy_rate_mbps",
+            "dominant_data_profile_share",
+            "effective_phy_rate_mbps",
+            "data_tx_rate_over_interval_mbps",
+            "data_tx_opportunity_gap_fraction",
+            "mean_dominant_data_phy_rate_mbps",
+            "mean_effective_phy_rate_mbps",
+            "aggregate_data_tx_rate_over_interval_mbps",
+        };
+        for (const auto field : numericFields)
+        {
+            NS_TEST_ASSERT_MSG_EQ(phy->at(field).is_null(),
+                                  true,
+                                  "Default PHY field was not null: " << field);
+        }
+        NS_TEST_ASSERT_MSG_EQ(phy->at("data_tx_profile").is_array(),
                               true,
-                              "Default theoretical PHY rate was not null");
-        NS_TEST_ASSERT_MSG_EQ(phy->at("average_practical_phy_rate_mbps").is_null(),
+                              "Default data TX profile was not an array");
+        NS_TEST_ASSERT_MSG_EQ(phy->at("data_tx_profile").empty(),
                               true,
-                              "Default practical PHY rate was not null");
-        NS_TEST_ASSERT_MSG_EQ(phy->at("channel_efficiency").is_null(),
-                              true,
-                              "Default channel efficiency was not null");
-        NS_TEST_ASSERT_MSG_EQ(phy->at("contention_fraction").is_null(),
-                              true,
-                              "Default contention fraction was not null");
+                              "Default data TX profile was not empty");
     }
 }
 

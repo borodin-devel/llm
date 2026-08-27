@@ -18,10 +18,10 @@ POLICY = {
     },
 }
 
-ROOT_KEYS = {
+ROOT_KEYS = (
     "schema_version", "measurement_semantics", "statistics_window_ms", "windows",
     "overall", "validation", "experiment_metadata",
-}
+)
 MEASUREMENT_SEMANTICS = {
     "access_point_role": "BSS parent aggregate",
     "station_role": "per-station child detail",
@@ -87,7 +87,18 @@ MAC_PEER_KEYS = {
     "data_failure_count", "final_data_failure_count", "mpdu_drops_by_reason",
 }
 MAC_REASON_KEYS = {"reason_code", "drop_count"}
-PHY_KEYS = {"busy_time_us", "channel_utilization_percent", "uplink", "downlink"}
+PHY_KEYS = (
+    "dominant_data_phy_rate_mbps", "dominant_data_profile_share",
+    "effective_phy_rate_mbps", "data_tx_rate_over_interval_mbps",
+    "data_tx_opportunity_gap_fraction", "data_tx_profile",
+    "mean_dominant_data_phy_rate_mbps", "mean_effective_phy_rate_mbps",
+    "aggregate_data_tx_rate_over_interval_mbps", "busy_time_us",
+    "channel_utilization_percent", "uplink", "downlink",
+)
+DATA_TX_PROFILE_KEYS = (
+    "channel_width_mhz", "nss", "mcs", "transmitted_psdu_bytes", "ppdu_attempt_count",
+    "ppdu_airtime_us",
+)
 PHY_DIRECTION_KEYS = {
     "tagged_payload_bytes", "unique_tagged_payload_bytes", "tagged_mpdu_count",
     "complete_tagged_mpdu_bytes", "transmission_attempt_count", "retransmission_count",
@@ -130,7 +141,8 @@ CONFIGURATION_KEYS = {
 }
 REMOVED_KEYS = {
     "wifi_windows", "wifi_summary", "transmission_summary", "cross_layer_summary",
-    "one_second_intervals",
+    "one_second_intervals", "average_theoretical_phy_rate_mbps",
+    "average_practical_phy_rate_mbps", "channel_efficiency", "contention_fraction",
 }
 LEGACY_REPORT_MARKERS = (
     "APGenerator per-second statistics", "StaLlmGenerator per-second statistics",
@@ -194,6 +206,13 @@ def expect_object_keys(value, expected, source_path, json_path):
         if extra:
             details.append("unexpected " + ", ".join(extra))
         fail(source_path, json_path, "wrong fields: " + "; ".join(details))
+
+
+def expect_ordered_object_keys(value, expected, source_path, json_path):
+    """Require an object with exactly the expected insertion-ordered fields."""
+    expect_object_keys(value, expected, source_path, json_path)
+    if tuple(value) != tuple(expected):
+        fail(source_path, json_path, "fields are not in the required order")
 
 
 def expect_list(value, source_path, json_path):

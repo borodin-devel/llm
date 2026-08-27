@@ -174,6 +174,9 @@ class DataTxMetricDataFrameTestCase : public TestCase
     {
         const auto data = Extract(BuildPsdu(WIFI_MAC_DATA, 1000));
         NS_TEST_ASSERT_MSG_EQ(data.has_value(), true, "Unicast station data was excluded");
+        NS_TEST_ASSERT_MSG_EQ(+data->key.channelWidthMhz,
+                              80,
+                              "80 MHz data used the wrong profile width");
         NS_TEST_ASSERT_MSG_EQ(+data->key.nss, 1, "Single-stream data used the wrong profile");
         NS_TEST_ASSERT_MSG_EQ(+data->key.mcs, 9, "HE MCS 9 data used the wrong profile");
         NS_TEST_ASSERT_MSG_EQ(data->transmittedPsduBytes,
@@ -233,7 +236,7 @@ class DataTxMetricAggregateAndProfileTestCase : public TestCase
 {
   public:
     DataTxMetricAggregateAndProfileTestCase()
-        : TestCase("retain A-MPDU bytes and separate NSS-MCS; catches profile-key collapse")
+        : TestCase("retain A-MPDU bytes and separate width-NSS-MCS profiles")
     {
     }
 
@@ -244,8 +247,10 @@ class DataTxMetricAggregateAndProfileTestCase : public TestCase
         recorder.RegisterStation(7, STATION_ADDRESS);
         const auto retry =
             BuildPsdu(WIFI_MAC_DATA, 1000, ACCESS_POINT_ADDRESS, STATION_ADDRESS, true);
-        Record(recorder, 1'000'000, retry);
-        Record(recorder, 2'000'000, retry);
+        Record(recorder, 1'000'000, retry, BuildHeTxVector(HePhy::GetHeMcs9(), 1, MHz_u{20}));
+        Record(recorder, 2'000'000, retry, BuildHeTxVector(HePhy::GetHeMcs9(), 1, MHz_u{40}));
+        Record(recorder, 2'500'000, retry);
+        Record(recorder, 2'750'000, retry);
 
         const auto aggregate = BuildAggregatePsdu();
         NS_TEST_ASSERT_MSG_EQ(aggregate->GetSize(),
@@ -256,18 +261,26 @@ class DataTxMetricAggregateAndProfileTestCase : public TestCase
         Record(recorder, 3'000'000, aggregate, nss2Mcs11);
 
         const auto& profiles = recorder.GetOverallProfiles(7);
-        NS_TEST_ASSERT_MSG_EQ(profiles.size(), 2, "NSS/MCS attempts collapsed into one profile");
-        const auto& first = profiles.at({1, 9});
+        NS_TEST_ASSERT_MSG_EQ(profiles.size(),
+                              4,
+                              "Width/NSS/MCS attempts collapsed into one profile");
+        NS_TEST_ASSERT_MSG_EQ(profiles.at({20, 1, 9}).ppduAttemptCount,
+                              1,
+                              "20 MHz data profile was lost");
+        NS_TEST_ASSERT_MSG_EQ(profiles.at({40, 1, 9}).ppduAttemptCount,
+                              1,
+                              "40 MHz data profile was lost");
+        const auto& first = profiles.at({80, 1, 9});
         NS_TEST_ASSERT_MSG_EQ(first.transmittedPsduBytes,
                               2056.0L,
-                              "Repeated data attempt was deduplicated");
+                              "Repeated 80 MHz data attempt was deduplicated");
         NS_TEST_ASSERT_MSG_EQ(first.ppduAttemptCount,
                               2,
-                              "Repeated data attempt was not counted twice");
+                              "Repeated 80 MHz data attempt was not counted twice");
         NS_TEST_ASSERT_MSG_EQ(first.nominalRateBps,
                               408'333'334.0L,
                               "NSS1/MCS9 nominal rate drifted");
-        const auto& second = profiles.at({2, 11});
+        const auto& second = profiles.at({80, 2, 11});
         NS_TEST_ASSERT_MSG_EQ(second.transmittedPsduBytes,
                               870.0L,
                               "A-MPDU delimiter or padding bytes were lost");
@@ -294,11 +307,20 @@ class DataTxMetricInvariantTestCase : public TestCase
         NS_TEST_ASSERT_MSG_EQ(ThrowsInvalidArgument([&] { Extract(data, BuildLegacyTxVector()); }),
                               true,
                               "Qualifying non-HE data was accepted");
+        NS_TEST_ASSERT_MSG_EQ(
+            Extract(data, BuildHeTxVector(HePhy::GetHeMcs9(), 1, MHz_u{40})).has_value(),
+            true,
+            "Qualifying 40 MHz HE data was rejected");
         NS_TEST_ASSERT_MSG_EQ(ThrowsInvalidArgument([&] {
-                                  Extract(data, BuildHeTxVector(HePhy::GetHeMcs9(), 1, MHz_u{40}));
+                                  Extract(data, BuildHeTxVector(HePhy::GetHeMcs9(), 1, MHz_u{160}));
                               }),
                               true,
-                              "Qualifying HE data with the wrong width was accepted");
+                              "Qualifying data wider than the operating channel was accepted");
+        NS_TEST_ASSERT_MSG_EQ(ThrowsInvalidArgument([&] {
+                                  Extract(data, BuildHeTxVector(HePhy::GetHeMcs9(), 1, MHz_u{10}));
+                              }),
+                              true,
+                              "Qualifying data with an invalid HE width was accepted");
         NS_TEST_ASSERT_MSG_EQ(
             ThrowsInvalidArgument([&] {
                 Extract(data, BuildHeTxVector(HePhy::GetHeMcs9(), 1, MHz_u{80}, NanoSeconds(1600)));
@@ -394,8 +416,8 @@ class DataTxMetricWindowOverallTestCase : public TestCase
         Record(recorder, WINDOW_NS - PPDU_NS / 2, data);
 
         const auto& windows = recorder.GetWindowProfiles(7);
-        const auto& first = windows.at(0).at({1, 9});
-        const auto& second = windows.at(1).at({1, 9});
+        const auto& first = windows.at(0).at({80, 1, 9});
+        const auto& second = windows.at(1).at({80, 1, 9});
         NS_TEST_ASSERT_MSG_EQ(first.transmittedPsduBytes,
                               514.0L,
                               "First window did not receive proportional bytes");
@@ -418,7 +440,7 @@ class DataTxMetricWindowOverallTestCase : public TestCase
         DataTxProfileAccumulator merged;
         merged.Merge(first);
         merged.Merge(second);
-        const auto& overallBeforeClip = recorder.GetOverallProfiles(7).at({1, 9});
+        const auto& overallBeforeClip = recorder.GetOverallProfiles(7).at({80, 1, 9});
         NS_TEST_ASSERT_MSG_EQ(overallBeforeClip.transmittedPsduBytes,
                               merged.transmittedPsduBytes,
                               "Independent overall bytes differ from merged windows");
@@ -433,7 +455,7 @@ class DataTxMetricWindowOverallTestCase : public TestCase
                               "Profile merge changed the nominal rate");
 
         Record(recorder, EPOCH_NS - PPDU_NS / 2, data);
-        const auto& final = windows.at(99).at({1, 9});
+        const auto& final = windows.at(99).at({80, 1, 9});
         NS_TEST_ASSERT_MSG_EQ(final.transmittedPsduBytes,
                               514.0L,
                               "One-second endpoint did not clip proportional bytes");
@@ -443,7 +465,7 @@ class DataTxMetricWindowOverallTestCase : public TestCase
         NS_TEST_ASSERT_MSG_EQ(final.ppduAttemptCount,
                               1,
                               "Clipped PPDU start was not counted in the final window");
-        const auto& overall = recorder.GetOverallProfiles(7).at({1, 9});
+        const auto& overall = recorder.GetOverallProfiles(7).at({80, 1, 9});
         NS_TEST_ASSERT_MSG_EQ(overall.transmittedPsduBytes,
                               1542.0L,
                               "Independent overall did not apply endpoint clipping");

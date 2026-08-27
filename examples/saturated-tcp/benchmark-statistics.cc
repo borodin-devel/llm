@@ -1,13 +1,8 @@
 #include "benchmark-statistics.h"
 
-#include "access-tracking-sta-wifi-mac.h"
-#include "access-wait-tracker.h"
-
-#include "ns3/mac48-address.h"
 #include "ns3/node.h"
-#include "ns3/qos-txop.h"
 #include "ns3/simulator.h"
-#include "ns3/wifi-mac.h"
+#include "ns3/sta-wifi-mac.h"
 #include "ns3/wifi-net-device.h"
 #include "ns3/wifi-phy.h"
 
@@ -28,111 +23,6 @@ namespace
 
 constexpr int64_t MEASUREMENT_DURATION_NS = 1'000'000'000; ///< Fixed benchmark duration.
 
-/** Determine whether one raw station window contains PPDU or contention activity. */
-bool
-HasStationActivity(const StationPhyMetricAccumulator& accumulator)
-{
-    return accumulator.nominalRateBpsNs != 0.0L || accumulator.psduBits != 0.0L ||
-           accumulator.ppduAirtimeNs != 0 || accumulator.contentionNs != 0;
-}
-
-/** Copy one station metric output into the shared PHY DTO. */
-void
-SetPhyMetrics(PhyCategoryOutput& phy, const StationPhyMetricOutput& metrics)
-{
-    phy.averageTheoreticalPhyRateMbps = metrics.averageTheoreticalPhyRateMbps;
-    phy.averagePracticalPhyRateMbps = metrics.averagePracticalPhyRateMbps;
-    phy.channelEfficiency = metrics.channelEfficiency;
-    phy.contentionFraction = metrics.contentionFraction;
-}
-
-/** Construct a shared station DTO from identity and derived metrics. */
-StationStatisticsOutput
-MakeStationOutput(const ExperimentEntityIdentity& identity, const StationPhyMetricOutput& metrics)
-{
-    StationStatisticsOutput output{identity.accessPointId,
-                                   identity.stationIndex.value(),
-                                   identity.nodeId,
-                                   identity.nodeLabel,
-                                   identity.ipv4,
-                                   {}};
-    SetPhyMetrics(output.statistics.phyStats, metrics);
-    return output;
-}
-
-/** Derive station-arithmetic BSS fields. */
-StationPhyMetricOutput
-BuildAccessPointMetrics(const std::vector<StationPhyMetricOutput>& stations)
-{
-    long double theoreticalSum = 0.0L;
-    long double practicalSum = 0.0L;
-    long double contentionSum = 0.0L;
-    std::size_t theoreticalCount = 0;
-    std::size_t practicalCount = 0;
-    std::size_t contentionCount = 0;
-    for (const auto& station : stations)
-    {
-        if (station.averageTheoreticalPhyRateMbps)
-        {
-            theoreticalSum += *station.averageTheoreticalPhyRateMbps;
-            ++theoreticalCount;
-        }
-        if (station.averagePracticalPhyRateMbps)
-        {
-            practicalSum += *station.averagePracticalPhyRateMbps;
-            ++practicalCount;
-        }
-        if (station.contentionFraction)
-        {
-            contentionSum += *station.contentionFraction;
-            ++contentionCount;
-        }
-    }
-
-    StationPhyMetricOutput output;
-    if (theoreticalCount > 0)
-    {
-        output.averageTheoreticalPhyRateMbps =
-            static_cast<double>(theoreticalSum / theoreticalCount);
-    }
-    if (practicalCount > 0)
-    {
-        output.averagePracticalPhyRateMbps = static_cast<double>(practicalSum / practicalCount);
-    }
-    if (output.averageTheoreticalPhyRateMbps && output.averagePracticalPhyRateMbps &&
-        *output.averageTheoreticalPhyRateMbps > 0.0)
-    {
-        output.channelEfficiency =
-            *output.averagePracticalPhyRateMbps / *output.averageTheoreticalPhyRateMbps;
-    }
-    if (contentionCount > 0)
-    {
-        output.contentionFraction = static_cast<double>(contentionSum / contentionCount);
-    }
-    return output;
-}
-
-/** Construct a shared AP DTO from identity and station-derived metrics. */
-AccessPointStatisticsOutput
-MakeAccessPointOutput(const ExperimentEntityIdentity& identity,
-                      const StationPhyMetricOutput& metrics)
-{
-    AccessPointStatisticsOutput output{identity.accessPointId,
-                                       identity.nodeId,
-                                       identity.nodeLabel,
-                                       identity.ipv4,
-                                       {}};
-    SetPhyMetrics(output.statistics.phyStats, metrics);
-    return output;
-}
-
-/**
- * Compare a raw floating accumulator across independent window allocations.
- *
- * @param left Independent overall value.
- * @param right Sum of configured-window values.
- * @return True when values differ only by long-double arithmetic rounding.
- */
 bool
 RawFloatingEqual(long double left, long double right)
 {
@@ -150,16 +40,206 @@ RawFloatingEqual(long double left, long double right)
            ulpFactor * std::numeric_limits<long double>::epsilon() * scale;
 }
 
-/** Compare reconstructed raw station accumulator state. */
 bool
-RawMetricsEqual(const StationPhyMetricAccumulator& left, const StationPhyMetricAccumulator& right)
+RawProfilesEqual(const DataTxProfileMap& left, const DataTxProfileMap& right)
 {
-    return RawFloatingEqual(left.nominalRateBpsNs, right.nominalRateBpsNs) &&
-           RawFloatingEqual(left.psduBits, right.psduBits) &&
-           left.ppduAirtimeNs == right.ppduAirtimeNs && left.contentionNs == right.contentionNs;
+    if (left.size() != right.size())
+    {
+        return false;
+    }
+    auto rightIterator = right.begin();
+    for (const auto& [key, value] : left)
+    {
+        if (rightIterator == right.end() || key != rightIterator->first)
+        {
+            return false;
+        }
+        const auto& other = rightIterator->second;
+        if (!RawFloatingEqual(value.transmittedPsduBytes, other.transmittedPsduBytes) ||
+            value.ppduAttemptCount != other.ppduAttemptCount ||
+            value.ppduAirtimeNs != other.ppduAirtimeNs ||
+            !RawFloatingEqual(value.nominalRateBps, other.nominalRateBps))
+        {
+            return false;
+        }
+        ++rightIterator;
+    }
+    return true;
+}
+
+DataTxProfileMap
+MergeProfiles(const std::vector<DataTxProfileMap>& windows)
+{
+    DataTxProfileMap merged;
+    for (const auto& window : windows)
+    {
+        for (const auto& [key, value] : window)
+        {
+            merged[key].Merge(value);
+        }
+    }
+    return merged;
+}
+
+bool
+HasDataActivity(const DataTxProfileMap& profiles)
+{
+    return std::ranges::any_of(profiles, [](const auto& item) {
+        const auto& value = item.second;
+        return value.transmittedPsduBytes > 0.0L || value.ppduAttemptCount > 0 ||
+               value.ppduAirtimeNs > 0;
+    });
+}
+
+StationStatisticsOutput
+MakeStationOutput(const ExperimentEntityIdentity& identity, const PhyCategoryOutput& phy)
+{
+    StationStatisticsOutput output{identity.accessPointId,
+                                   identity.stationIndex.value(),
+                                   identity.nodeId,
+                                   identity.nodeLabel,
+                                   identity.ipv4,
+                                   {}};
+    output.statistics.phyStats = phy;
+    return output;
+}
+
+AccessPointStatisticsOutput
+MakeAccessPointOutput(const ExperimentEntityIdentity& identity, const PhyCategoryOutput& phy)
+{
+    AccessPointStatisticsOutput output{identity.accessPointId,
+                                       identity.nodeId,
+                                       identity.nodeLabel,
+                                       identity.ipv4,
+                                       {}};
+    output.statistics.phyStats = phy;
+    return output;
 }
 
 } // namespace
+
+PhyCategoryOutput
+DeriveStationDataTxMetrics(const DataTxProfileMap& profiles, int64_t intervalDurationNs)
+{
+    if (intervalDurationNs <= 0)
+    {
+        throw std::invalid_argument("station data TX interval duration must be positive");
+    }
+
+    PhyCategoryOutput output;
+    long double totalBytes = 0.0L;
+    int64_t totalAirtimeNs = 0;
+    std::optional<DataTxProfileKey> dominantKey;
+    long double dominantBytes = 0.0L;
+    long double dominantRateBps = 0.0L;
+    for (const auto& [key, raw] : profiles)
+    {
+        if ((key.channelWidthMhz != 20 && key.channelWidthMhz != 40 && key.channelWidthMhz != 80) ||
+            key.nss == 0 || key.mcs > 11 || !std::isfinite(raw.transmittedPsduBytes) ||
+            raw.transmittedPsduBytes < 0.0L || raw.ppduAirtimeNs < 0 ||
+            !std::isfinite(raw.nominalRateBps) || raw.nominalRateBps < 0.0L)
+        {
+            throw std::invalid_argument("station data TX profile contains an invalid raw value");
+        }
+        if (raw.ppduAirtimeNs > std::numeric_limits<int64_t>::max() - totalAirtimeNs)
+        {
+            throw std::overflow_error("station data TX profile airtime sum overflowed");
+        }
+        const double bytes = static_cast<double>(raw.transmittedPsduBytes);
+        const double airtimeUs = static_cast<double>(raw.ppduAirtimeNs) / 1000.0;
+        if (!std::isfinite(bytes) || !std::isfinite(airtimeUs))
+        {
+            throw std::invalid_argument("station data TX profile exceeds public numeric range");
+        }
+        output.dataTxProfile.push_back(
+            {key.channelWidthMhz, key.nss, key.mcs, bytes, raw.ppduAttemptCount, airtimeUs});
+        totalBytes += raw.transmittedPsduBytes;
+        totalAirtimeNs += raw.ppduAirtimeNs;
+        if (!dominantKey || raw.transmittedPsduBytes > dominantBytes ||
+            (raw.transmittedPsduBytes == dominantBytes && raw.nominalRateBps > dominantRateBps))
+        {
+            dominantKey = key;
+            dominantBytes = raw.transmittedPsduBytes;
+            dominantRateBps = raw.nominalRateBps;
+        }
+    }
+
+    if (totalBytes == 0.0L)
+    {
+        output.dataTxRateOverIntervalMbps = 0.0;
+        return output;
+    }
+    if (!std::isfinite(totalBytes) || totalBytes < 0.0L || totalAirtimeNs <= 0 || !dominantKey ||
+        dominantRateBps <= 0.0L)
+    {
+        throw std::invalid_argument("populated station data TX profile has invalid totals");
+    }
+
+    const long double dominantRateMbps = dominantRateBps / 1'000'000.0L;
+    const long double dominantShare = dominantBytes / totalBytes;
+    const long double effectiveMbps = totalBytes * 8000.0L / totalAirtimeNs;
+    const long double intervalMbps = totalBytes * 8000.0L / intervalDurationNs;
+    long double gap = 1.0L - static_cast<long double>(totalAirtimeNs) / intervalDurationNs;
+    constexpr long double boundaryTolerance = 1e-12L;
+    if (gap < -boundaryTolerance || gap > 1.0L + boundaryTolerance)
+    {
+        throw std::invalid_argument("station data TX opportunity gap is outside [0, 1]");
+    }
+    gap = std::clamp(gap, 0.0L, 1.0L);
+    for (const auto value : {dominantRateMbps, dominantShare, effectiveMbps, intervalMbps, gap})
+    {
+        if (!std::isfinite(value) || value < 0.0L)
+        {
+            throw std::invalid_argument("station derived data TX metric is invalid");
+        }
+    }
+    output.dominantDataPhyRateMbps = static_cast<double>(dominantRateMbps);
+    output.dominantDataProfileShare = static_cast<double>(dominantShare);
+    output.effectivePhyRateMbps = static_cast<double>(effectiveMbps);
+    output.dataTxRateOverIntervalMbps = static_cast<double>(intervalMbps);
+    output.dataTxOpportunityGapFraction = static_cast<double>(gap);
+    return output;
+}
+
+PhyCategoryOutput
+DeriveBssDataTxMetrics(const std::vector<PhyCategoryOutput>& stations)
+{
+    PhyCategoryOutput output;
+    long double dominantSum = 0.0L;
+    long double effectiveSum = 0.0L;
+    long double intervalSum = 0.0L;
+    std::size_t dominantCount = 0;
+    std::size_t effectiveCount = 0;
+    for (const auto& station : stations)
+    {
+        if (station.meanDominantDataPhyRateMbps || station.meanEffectivePhyRateMbps ||
+            station.aggregateDataTxRateOverIntervalMbps || !station.dataTxRateOverIntervalMbps)
+        {
+            throw std::invalid_argument("BSS derivation requires station-role PHY values");
+        }
+        if (station.dominantDataPhyRateMbps)
+        {
+            dominantSum += *station.dominantDataPhyRateMbps;
+            ++dominantCount;
+        }
+        if (station.effectivePhyRateMbps)
+        {
+            effectiveSum += *station.effectivePhyRateMbps;
+            ++effectiveCount;
+        }
+        intervalSum += *station.dataTxRateOverIntervalMbps;
+    }
+    if (dominantCount > 0)
+    {
+        output.meanDominantDataPhyRateMbps = static_cast<double>(dominantSum / dominantCount);
+    }
+    if (effectiveCount > 0)
+    {
+        output.meanEffectivePhyRateMbps = static_cast<double>(effectiveSum / effectiveCount);
+    }
+    output.aggregateDataTxRateOverIntervalMbps = static_cast<double>(intervalSum);
+    return output;
+}
 
 SaturatedTcpStatistics::SaturatedTcpStatistics(uint32_t windowMs)
     : m_windowMs(windowMs),
@@ -239,7 +319,6 @@ SaturatedTcpStatistics::ConnectStation(Ptr<WifiNetDevice> device)
     {
         throw std::invalid_argument("station statistics require a device attached to a node");
     }
-
     const uint32_t nodeId = device->GetNode()->GetId();
     const auto* identity = m_registry.FindByNodeId(nodeId);
     if (!identity || identity->kind != ExperimentEntityKind::STATION)
@@ -250,45 +329,17 @@ SaturatedTcpStatistics::ConnectStation(Ptr<WifiNetDevice> device)
     {
         throw std::invalid_argument("station statistics device is already connected");
     }
-
-    const auto mac = DynamicCast<AccessTrackingStaWifiMac>(device->GetMac());
-    if (!mac)
+    if (!DynamicCast<StaWifiMac>(device->GetMac()))
     {
-        throw std::invalid_argument("station statistics require AccessTrackingStaWifiMac");
-    }
-    StationTraceConnections connections;
-    connections.mac = mac;
-    connections.accessRequestedCallback =
-        MakeCallback(&SaturatedTcpStatistics::NotifyAccessRequested, this).Bind(nodeId);
-    StationTraceConnectionGuard connectionGuard(connections);
-    if (!mac->TraceConnectWithoutContext("AccessRequested", connections.accessRequestedCallback))
-    {
-        throw std::invalid_argument("station AccessRequested trace could not be connected");
-    }
-    connections.accessRequestedConnected = true;
-    for (const auto ac : {AC_BE, AC_BK, AC_VI, AC_VO})
-    {
-        const auto txop = mac->GetQosTxop(ac);
-        if (!txop)
-        {
-            throw std::invalid_argument("station statistics require every QoS TXOP");
-        }
-        connections.txopTraces.push_back(
-            {txop,
-             MakeCallback(&SaturatedTcpStatistics::NotifyTxopGranted, this)
-                 .Bind(nodeId, static_cast<uint8_t>(ac)),
-             false});
-        auto& connection = connections.txopTraces.back();
-        if (!txop->TraceConnectWithoutContext("TxopTrace", connection.callback))
-        {
-            throw std::invalid_argument("station TXOP trace could not be connected");
-        }
-        connection.connected = true;
+        throw std::invalid_argument("station statistics require ordinary StaWifiMac");
     }
     if (device->GetNPhys() == 0)
     {
         throw std::invalid_argument("station statistics require at least one station PHY");
     }
+
+    StationTraceConnections connections;
+    StationTraceConnectionGuard connectionGuard(connections);
     for (const auto& phy : device->GetPhys())
     {
         if (!phy)
@@ -307,30 +358,18 @@ SaturatedTcpStatistics::ConnectStation(Ptr<WifiNetDevice> device)
         }
         connection.connected = true;
     }
-
     if (m_subscriptionOwnershipHook)
     {
         m_subscriptionOwnershipHook();
     }
-
-    const auto [deviceIterator, deviceInserted] = m_stationDevices.emplace(nodeId, device);
-    if (!deviceInserted)
-    {
-        throw std::logic_error("station device ownership insertion failed");
-    }
+    m_stationDevices.emplace(nodeId, device);
     try
     {
-        const auto [connectionIterator, connectionInserted] =
-            m_traceConnections.emplace(nodeId, connections);
-        static_cast<void>(connectionIterator);
-        if (!connectionInserted)
-        {
-            throw std::logic_error("station trace ownership insertion failed");
-        }
+        m_traceConnections.emplace(nodeId, connections);
     }
     catch (...)
     {
-        m_stationDevices.erase(deviceIterator);
+        m_stationDevices.erase(nodeId);
         throw;
     }
     connectionGuard.Disarm();
@@ -339,19 +378,6 @@ SaturatedTcpStatistics::ConnectStation(Ptr<WifiNetDevice> device)
 void
 SaturatedTcpStatistics::DisconnectTraceConnections(StationTraceConnections& connections) noexcept
 {
-    if (connections.mac && connections.accessRequestedConnected &&
-        !connections.accessRequestedCallback.IsNull())
-    {
-        connections.mac->TraceDisconnectWithoutContext("AccessRequested",
-                                                       connections.accessRequestedCallback);
-    }
-    for (auto& connection : connections.txopTraces)
-    {
-        if (connection.source && connection.connected)
-        {
-            connection.source->TraceDisconnectWithoutContext("TxopTrace", connection.callback);
-        }
-    }
     for (auto& connection : connections.phyTraces)
     {
         if (connection.source && connection.connected)
@@ -359,11 +385,7 @@ SaturatedTcpStatistics::DisconnectTraceConnections(StationTraceConnections& conn
             connection.source->TraceDisconnectWithoutContext("PhyTxPsduBegin", connection.callback);
         }
     }
-    connections.txopTraces.clear();
     connections.phyTraces.clear();
-    connections.mac = nullptr;
-    connections.accessRequestedCallback = {};
-    connections.accessRequestedConnected = false;
 }
 
 void
@@ -392,23 +414,15 @@ SaturatedTcpStatistics::Start(int64_t experimentStartNs)
     {
         throw std::overflow_error("saturated TCP experiment endpoint exceeds nanosecond range");
     }
-
     m_experimentStartNs = experimentStartNs;
     m_experimentEndNs = experimentStartNs + MEASUREMENT_DURATION_NS;
-    m_phyRecorder = std::make_unique<StationPhyMetricRecorder>(m_experimentStartNs,
-                                                               m_experimentEndNs,
-                                                               m_windowNs);
-    m_overallPhyRecorder = std::make_unique<StationPhyMetricRecorder>(m_experimentStartNs,
-                                                                      m_experimentEndNs,
-                                                                      MEASUREMENT_DURATION_NS);
+    m_dataTxRecorder = std::make_unique<StationDataTxMetricRecorder>(m_experimentStartNs,
+                                                                     m_experimentEndNs,
+                                                                     m_windowNs);
     for (const auto& station : m_registry.GetStations())
     {
         const auto device = m_stationDevices.at(station.nodeId);
-        m_phyRecorder->RegisterStation(station.nodeId, device->GetMac()->GetAddress());
-        m_overallPhyRecorder->RegisterStation(station.nodeId, device->GetMac()->GetAddress());
-        m_accessWaitTrackers.emplace(
-            station.nodeId,
-            std::make_unique<AccessWaitTracker>(m_experimentStartNs, m_experimentEndNs));
+        m_dataTxRecorder->RegisterStation(station.nodeId, device->GetMac()->GetAddress());
     }
     m_started = true;
 }
@@ -428,57 +442,42 @@ SaturatedTcpStatistics::Finalize(int64_t experimentEndNs)
     {
         throw std::invalid_argument("saturated TCP statistics must finalize at exactly one second");
     }
-
-    for (const auto& station : m_registry.GetStations())
-    {
-        auto& tracker = *m_accessWaitTrackers.at(station.nodeId);
-        tracker.Finalize(m_traceConnections.at(station.nodeId).mac->GetActiveTxopStartTimes());
-        m_phyRecorder->IngestContentionIntervals(station.nodeId, tracker.GetUnionIntervals());
-        m_overallPhyRecorder->IngestContentionIntervals(station.nodeId,
-                                                        tracker.GetUnionIntervals());
-    }
     m_finalized = true;
 }
 
 UnifiedExperimentSummary
 SaturatedTcpStatistics::BuildSummary() const
 {
-    if (!m_finalized || !m_phyRecorder || !m_overallPhyRecorder)
+    if (!m_finalized || !m_dataTxRecorder)
     {
         throw std::logic_error("cannot build saturated TCP summary before finalization");
     }
-
-    std::map<uint32_t, std::vector<StationPhyMetricAccumulator>> rawWindows;
-    std::map<uint32_t, StationPhyMetricAccumulator> rawOverall;
+    std::map<uint32_t, std::vector<DataTxProfileMap>> rawWindows;
+    std::map<uint32_t, DataTxProfileMap> rawOverall;
     for (const auto& station : m_registry.GetStations())
     {
-        rawWindows.emplace(station.nodeId, m_phyRecorder->GetWindowAccumulators(station.nodeId));
-        rawOverall.emplace(station.nodeId,
-                           m_overallPhyRecorder->BuildOverallAccumulator(station.nodeId));
+        rawWindows.emplace(station.nodeId, m_dataTxRecorder->GetWindowProfiles(station.nodeId));
+        rawOverall.emplace(station.nodeId, m_dataTxRecorder->GetOverallProfiles(station.nodeId));
     }
     return BuildSummaryFromRaw(rawWindows, rawOverall);
 }
 
 UnifiedExperimentSummary
 SaturatedTcpStatistics::BuildSummaryFromRaw(
-    const std::map<uint32_t, std::vector<StationPhyMetricAccumulator>>& rawWindows) const
+    const std::map<uint32_t, std::vector<DataTxProfileMap>>& rawWindows) const
 {
-    std::map<uint32_t, StationPhyMetricAccumulator> rawOverall;
+    std::map<uint32_t, DataTxProfileMap> rawOverall;
     for (const auto& [nodeId, windows] : rawWindows)
     {
-        auto& overall = rawOverall[nodeId];
-        for (const auto& window : windows)
-        {
-            overall.Merge(window);
-        }
+        rawOverall.emplace(nodeId, MergeProfiles(windows));
     }
     return BuildSummaryFromRaw(rawWindows, rawOverall);
 }
 
 UnifiedExperimentSummary
 SaturatedTcpStatistics::BuildSummaryFromRaw(
-    const std::map<uint32_t, std::vector<StationPhyMetricAccumulator>>& rawWindows,
-    const std::map<uint32_t, StationPhyMetricAccumulator>& rawOverall) const
+    const std::map<uint32_t, std::vector<DataTxProfileMap>>& rawWindows,
+    const std::map<uint32_t, DataTxProfileMap>& rawOverall) const
 {
     const std::size_t windowCount = static_cast<std::size_t>(1000 / m_windowMs);
     for (const auto& station : m_registry.GetStations())
@@ -498,13 +497,12 @@ SaturatedTcpStatistics::BuildSummaryFromRaw(
     summary.statisticsWindowMs = m_windowMs;
     summary.accessPointInventory = m_registry.GetAccessPoints();
     summary.stationInventory = m_registry.GetStations();
-
     std::set<uint32_t> accessPointIds;
-    for (const auto& accessPoint : m_registry.GetAccessPoints())
+    for (const auto& accessPoint : summary.accessPointInventory)
     {
         accessPointIds.insert(accessPoint.accessPointId);
     }
-    for (const auto& station : m_registry.GetStations())
+    for (const auto& station : summary.stationInventory)
     {
         if (!accessPointIds.contains(station.accessPointId))
         {
@@ -514,31 +512,31 @@ SaturatedTcpStatistics::BuildSummaryFromRaw(
 
     for (std::size_t windowIndex = 0; windowIndex < windowCount; ++windowIndex)
     {
-        ExperimentWindowOutput window;
-        window.windowIndex = windowIndex;
-        window.windowStartMs = static_cast<double>(windowIndex) * m_windowMs;
-        window.windowDurationMs = m_windowMs;
-        std::map<uint32_t, std::vector<StationPhyMetricOutput>> metricsByAccessPoint;
+        ExperimentWindowOutput window{windowIndex,
+                                      static_cast<double>(windowIndex * m_windowMs),
+                                      static_cast<double>(m_windowMs),
+                                      {},
+                                      {}};
+        std::map<uint32_t, std::vector<PhyCategoryOutput>> metricsByAccessPoint;
         std::set<uint32_t> activeAccessPoints;
-
-        for (const auto& station : m_registry.GetStations())
+        for (const auto& station : summary.stationInventory)
         {
-            const auto& raw = rawWindows.at(station.nodeId).at(windowIndex);
-            const auto metrics = DeriveStationPhyMetrics(raw, m_windowNs);
+            const auto& profiles = rawWindows.at(station.nodeId).at(windowIndex);
+            const auto metrics = DeriveStationDataTxMetrics(profiles, m_windowNs);
             metricsByAccessPoint[station.accessPointId].push_back(metrics);
-            if (HasStationActivity(raw))
+            if (HasDataActivity(profiles))
             {
                 window.stations.push_back(MakeStationOutput(station, metrics));
                 activeAccessPoints.insert(station.accessPointId);
             }
         }
-        for (const auto& accessPoint : m_registry.GetAccessPoints())
+        for (const auto& accessPoint : summary.accessPointInventory)
         {
             if (activeAccessPoints.contains(accessPoint.accessPointId))
             {
                 window.accessPoints.push_back(MakeAccessPointOutput(
                     accessPoint,
-                    BuildAccessPointMetrics(metricsByAccessPoint[accessPoint.accessPointId])));
+                    DeriveBssDataTxMetrics(metricsByAccessPoint[accessPoint.accessPointId])));
             }
         }
         if (!window.stations.empty())
@@ -547,60 +545,25 @@ SaturatedTcpStatistics::BuildSummaryFromRaw(
         }
     }
 
-    std::map<uint32_t, std::vector<StationPhyMetricOutput>> overallMetricsByAccessPoint;
-    for (const auto& station : m_registry.GetStations())
+    std::map<uint32_t, std::vector<PhyCategoryOutput>> overallByAccessPoint;
+    for (const auto& station : summary.stationInventory)
     {
-        StationPhyMetricAccumulator mergedWindows;
-        for (const auto& window : rawWindows.at(station.nodeId))
-        {
-            mergedWindows.Merge(window);
-        }
+        const auto merged = MergeProfiles(rawWindows.at(station.nodeId));
         summary.validation.overallMatchesWindows =
             summary.validation.overallMatchesWindows &&
-            RawMetricsEqual(rawOverall.at(station.nodeId), mergedWindows);
-
+            RawProfilesEqual(rawOverall.at(station.nodeId), merged);
         const auto metrics =
-            DeriveStationPhyMetrics(rawOverall.at(station.nodeId), MEASUREMENT_DURATION_NS);
-        overallMetricsByAccessPoint[station.accessPointId].push_back(metrics);
+            DeriveStationDataTxMetrics(rawOverall.at(station.nodeId), MEASUREMENT_DURATION_NS);
+        overallByAccessPoint[station.accessPointId].push_back(metrics);
         summary.overall.stations.push_back(MakeStationOutput(station, metrics));
     }
-    for (const auto& accessPoint : m_registry.GetAccessPoints())
+    for (const auto& accessPoint : summary.accessPointInventory)
     {
         summary.overall.accessPoints.push_back(MakeAccessPointOutput(
             accessPoint,
-            BuildAccessPointMetrics(overallMetricsByAccessPoint[accessPoint.accessPointId])));
+            DeriveBssDataTxMetrics(overallByAccessPoint[accessPoint.accessPointId])));
     }
     return summary;
-}
-
-void
-SaturatedTcpStatistics::NotifyAccessRequested(uint32_t stationNodeId, uint8_t ac, uint8_t linkId)
-{
-    if (!m_started || m_finalized)
-    {
-        return;
-    }
-    if (ac == AC_BE_NQOS)
-    {
-        return;
-    }
-    m_accessWaitTrackers.at(stationNodeId)
-        ->NotifyRequest(ac, linkId, Simulator::Now().GetNanoSeconds());
-}
-
-void
-SaturatedTcpStatistics::NotifyTxopGranted(uint32_t stationNodeId,
-                                          uint8_t ac,
-                                          Time start,
-                                          Time duration,
-                                          uint8_t linkId)
-{
-    static_cast<void>(duration);
-    if (!m_started || m_finalized)
-    {
-        return;
-    }
-    m_accessWaitTrackers.at(stationNodeId)->NotifyGrant(ac, linkId, start.GetNanoSeconds());
 }
 
 void
@@ -615,16 +578,11 @@ SaturatedTcpStatistics::NotifyPhyTxPsduBegin(uint32_t stationNodeId,
     {
         return;
     }
-    m_phyRecorder->RecordPpduAttempt(stationNodeId,
-                                     Simulator::Now().GetNanoSeconds(),
-                                     band,
-                                     psduMap,
-                                     txVector);
-    m_overallPhyRecorder->RecordPpduAttempt(stationNodeId,
-                                            Simulator::Now().GetNanoSeconds(),
-                                            band,
-                                            psduMap,
-                                            txVector);
+    m_dataTxRecorder->RecordPpduAttempt(stationNodeId,
+                                        Simulator::Now().GetNanoSeconds(),
+                                        band,
+                                        psduMap,
+                                        txVector);
 }
 
 } // namespace ns3

@@ -46,8 +46,6 @@ LlmTestSuite::LlmTestSuite()
     AddCases(CreateScenarioTopologyTestCases());
     AddCases(CreateSaturatedTcpConfigTestCases());
     AddCases(CreateSaturatedTcpPropagationTestCases());
-    AddCases(CreateSaturatedTcpAccessWaitTestCases());
-    AddCases(CreateSaturatedTcpStaPhyMetricTestCases());
     AddCases(CreateSaturatedTcpDataTxMetricTestCases());
     AddCases(CreateSaturatedTcpBenchmarkOutputTestCases());
     AddCases(CreateSaturatedTcpTrafficTestCases());

@@ -374,6 +374,7 @@ ExperimentJsonSectionsTestCase::DoRun()
     std::ostringstream output;
     WriteExperimentHierarchyJson(output, {}, sections);
     const auto document = nlohmann::json::parse(output.str());
+    NS_TEST_ASSERT_MSG_EQ(document.at("schema_version"), 2, "Wrong generic schema version");
     NS_TEST_ASSERT_MSG_EQ(document.at("measurement_semantics"),
                           "literal semantics",
                           "Measurement-semantics callback wrote at the wrong position");

@@ -172,16 +172,32 @@ struct PhyDirectionOutput
     std::vector<PhyPeerOutput> peers;          ///< Peers in node-ID order.
 };
 
+/** One ordered station-transmitted data width/NSS/MCS profile. */
+struct DataTxProfileOutput
+{
+    uint16_t channelWidthMhz{0};      ///< Actual data TxVector channel width in MHz.
+    uint8_t nss{0};                   ///< Number of spatial streams.
+    uint8_t mcs{0};                   ///< HE MCS index.
+    double transmittedPsduBytes{0.0}; ///< Attributed transmitted data PSDU bytes.
+    uint64_t ppduAttemptCount{0};     ///< PPDU attempts starting in the interval.
+    double ppduAirtimeUs{0.0};        ///< Attributed complete-PPDU airtime.
+};
+
 /** PHY category statistics including local channel state. */
 struct PhyCategoryOutput
 {
+    std::optional<double> dominantDataPhyRateMbps;      ///< Dominant station data profile rate.
+    std::optional<double> dominantDataProfileShare;     ///< Dominant station data byte share.
+    std::optional<double> effectivePhyRateMbps;         ///< Data bits per data PPDU airtime.
+    std::optional<double> dataTxRateOverIntervalMbps;   ///< Data bits per statistics interval.
+    std::optional<double> dataTxOpportunityGapFraction; ///< Time outside data PPDU airtime.
+    std::vector<DataTxProfileOutput> dataTxProfile; ///< Profiles in ascending width/NSS/MCS order.
     std::optional<double>
-        averageTheoreticalPhyRateMbps; ///< Average theoretical PHY rate in Mbps, if defined.
+        meanDominantDataPhyRateMbps; ///< BSS mean of defined station dominant rates.
     std::optional<double>
-        averagePracticalPhyRateMbps; ///< Average practical PHY rate in Mbps, if defined.
+        meanEffectivePhyRateMbps; ///< BSS mean of defined station effective rates.
     std::optional<double>
-        channelEfficiency; ///< Practical-to-theoretical PHY rate fraction, if defined.
-    std::optional<double> contentionFraction;        ///< Contention loss fraction, if defined.
+        aggregateDataTxRateOverIntervalMbps;         ///< BSS sum of station interval rates.
     uint64_t busyTimeUs{0};                          ///< Local PHY busy duration.
     std::optional<double> channelUtilizationPercent; ///< Local channel utilization.
     PhyDirectionOutput uplink;                       ///< Uplink PHY statistics.

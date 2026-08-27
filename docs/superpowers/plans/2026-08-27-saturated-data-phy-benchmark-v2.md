@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace blended station PHY metrics with data-only NSS/MCS profiles and derived rates, add one-STA baselines, and produce a resource-aware parallel 126-experiment benchmark with a deterministic 193-column CSV.
+**Goal:** Replace blended station PHY metrics with data-only width/NSS/MCS profiles and derived rates, add one-STA baselines, and produce a resource-aware parallel 126-experiment benchmark with a deterministic 193-column CSV.
 
-**Architecture:** C++ observes station `PhyTxPsduBegin` events and reduces qualifying HE data PPDU attempts into per-window NSS/MCS profiles. Shared JSON schema version 2 carries structured station profiles and station-derived BSS values. A Python controller validates every JSON, computes matching-baseline results, measures process-tree RSS, schedules independent simulations under a RAM reserve, and remains the sole ordered CSV writer.
+**Architecture:** C++ observes station `PhyTxPsduBegin` events and reduces qualifying HE data PPDU attempts into per-window width/NSS/MCS profiles. Shared JSON schema version 2 carries structured station profiles and station-derived BSS values. A Python controller validates every JSON, computes matching-baseline results, measures process-tree RSS, schedules independent simulations under a RAM reserve, and remains the sole ordered CSV writer.
 
 **Tech Stack:** ns-3 C++/CMake, nlohmann JSON through the existing streaming writer, Python 3 standard library, Linux `/proc`, semicolon CSV with UTF-8 BOM and CRLF.
 
@@ -16,7 +16,7 @@
 - Preserve every pre-existing run directory and the published v1 results until a v2 full run passes audit; never overwrite an attempt directory or result file.
 - Use TDD for every behavior change: record the focused RED command and expected failure before production edits, then GREEN output in the task report.
 - Keep the existing three-BSS topology, native RSSI placement, AP-only cochannel filter, exact one-second epoch, 10 ms default windows, SU-only mode, MinstrelHt, TcpHighSpeed, and station-only observation scope.
-- Fix HE data at 80 MHz and 3200 ns GI; enable RTS/CTS with a zero-byte threshold; reject a qualifying non-HE/wrong-width/wrong-GI data TxVector.
+- Fix the operating channel at 80 MHz and HE data at 3200 ns GI; enable RTS/CTS with a zero-byte threshold; profile Minstrel-selected 20/40/80 MHz data widths and reject non-HE/invalid-width/wrong-GI data TxVectors.
 - Count only STA-transmitted unicast data MPDUs, including TCP ACK data and every data retransmission; exclude all control and management frames.
 - JSON root order is unchanged but `schema_version` is exactly `2`; no backward compatibility aliases for the four removed benchmark PHY fields.
 - CSV is exactly 193 columns, semicolon-delimited, UTF-8 BOM, CRLF, decimal dot, deterministic experiment/attempt/BSS order, and one atomic three-BSS publication per attempt.
@@ -99,7 +99,7 @@ git commit -m "llm: Fix saturated Wi-Fi invariants"
 
 ---
 
-### Task 2: Collect data-only NSS/MCS profiles
+### Task 2: Collect data-only width/NSS/MCS profiles
 
 **Files:**
 - Create: `examples/saturated-tcp/data-tx-metrics.h`
@@ -115,6 +115,7 @@ git commit -m "llm: Fix saturated Wi-Fi invariants"
 ```cpp
 struct DataTxProfileKey
 {
+    uint16_t channelWidthMhz;
     uint8_t nss;
     uint8_t mcs;
     auto operator<=>(const DataTxProfileKey&) const = default;
@@ -133,7 +134,7 @@ using DataTxProfileMap = std::map<DataTxProfileKey, DataTxProfileAccumulator>;
 ```
 
 - Produces: `StationDataTxMetricRecorder` with station registration, `RecordPpduAttempt`, window access, and independent overall accumulation.
-- Consumes: exact 80 MHz and 3200 ns invariants from Task 1.
+- Consumes: exact 80 MHz operating-width and 3200 ns guard-interval invariants from Task 1.
 
 - [ ] **Step 1: Write failing extraction tests**
 
@@ -144,8 +145,8 @@ Use real `WifiPsdu`, `WifiMpdu`, and `WifiTxVector` fixtures with hand-derived b
 - MAC ACK, BlockAck, RTS, CTS, management, group, and AP-address data exclusion;
 - A-MPDU subframe bytes;
 - repeated identical data attempt counted twice;
-- NSS1/MCS9 and NSS2/MCS11 separation;
-- non-HE, wrong width, wrong GI, multiple non-null SU PSDUs, and invalid duration rejection.
+- 20/40/80 MHz, NSS1/MCS9, and NSS2/MCS11 separation;
+- non-HE, width outside the 80 MHz operating channel, wrong GI, multiple non-null SU PSDUs, and invalid duration rejection.
 
 Each test names the wrong production mutation it catches and uses literal expectations.
 
@@ -172,7 +173,7 @@ const auto mcs = mode.GetMcsValue();
 const auto rate = mode.GetDataRate(txVector, staId);
 ```
 
-Require HE modulation, 80 MHz, and 3200 ns. Calculate complete PPDU airtime once. Keep profile accumulation and interval splitting independent of JSON/output types.
+Require HE SU modulation, a 20/40/80 MHz actual width, and 3200 ns. Calculate complete PPDU airtime once. Keep profile accumulation and interval splitting independent of JSON/output types.
 
 - [ ] **Step 5: Run GREEN and style**
 
@@ -222,7 +223,7 @@ Add valid station/BSS/default fixtures and reject:
 - version 1;
 - missing/extra/reordered v2 keys;
 - malformed profile entries;
-- duplicate/unsorted NSS/MCS keys;
+- duplicate/unsorted width/NSS/MCS keys;
 - non-finite/negative bytes, airtime, rates, shares, or gaps;
 - zero NSS, MCS above 11, and impossible populated station/BSS role combinations.
 
@@ -319,7 +320,7 @@ Expected: failures because benchmark statistics still consume v1 accumulators an
 
 - [ ] **Step 4: Implement profile derivation and benchmark validation**
 
-Sort output profiles by `(nss, mcs)`. Compute dominant selection with the spec tie-break. Use scaled floating tolerance only for proportional long-double sums; retain exact integer attempt comparisons. Populate station and BSS roles without duplicating runner formulas.
+Sort output profiles by `(channel_width_mhz, nss, mcs)`. Compute dominant selection with the spec tie-break. Use scaled floating tolerance only for proportional long-double sums; retain exact integer attempt comparisons. Populate station and BSS roles without duplicating runner formulas.
 
 - [ ] **Step 5: Remove obsolete access tracking**
 
@@ -369,7 +370,7 @@ def apply_matching_baseline(
 ) -> tuple[BssCsvRow, ...]: ...
 ```
 
-- Produces: deterministic compact `NSSx_MCSy` profile rendering from structured JSON.
+- Produces: deterministic compact `Wx_NSSy_MCSz` profile rendering from structured JSON.
 - Produces: subset dependency expansion into requested, executed, and
   auto-included matching-baseline ID tuples.
 

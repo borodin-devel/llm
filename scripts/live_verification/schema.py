@@ -9,7 +9,8 @@ from live_verification.common import (
     AP_IDENTITY_KEYS, CATEGORY_KEYS, CONFIGURATION_KEYS, MEASUREMENT_SEMANTICS,
     ROOT_KEYS, STA_IDENTITY_KEYS, VALIDATION_KEYS, WINDOW_KEYS, LiveTraceError,
     expect_boolean, expect_finite_number, expect_list, expect_nonnegative_integer,
-    expect_object_keys, expect_string, fail, is_nonnegative_integer, reject_removed_keys,
+    expect_object_keys, expect_ordered_object_keys, expect_string, fail, is_nonnegative_integer,
+    reject_removed_keys,
     validate_ordered_unique,
 )
 from live_verification.schema_categories import validate_entity_categories
@@ -192,7 +193,7 @@ def _validate_entity(record, kind, inventory, known_nodes, source_path, json_pat
     for key in keys:
         if record[key] != inventory_identity[key]:
             fail(source_path, f"{json_path}.{key}", "does not match inventory")
-    validate_entity_categories(record, known_nodes, source_path, json_path)
+    validate_entity_categories(record, kind, known_nodes, source_path, json_path)
     return identity
 
 
@@ -222,9 +223,9 @@ def validate_output_document(
     """Validate one parsed output document and return its live metrics."""
     source_path = Path(source_path)
     reject_removed_keys(document, source_path, "$")
-    expect_object_keys(document, ROOT_KEYS, source_path, "$")
-    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
-        fail(source_path, "$.schema_version", "expected integer 1")
+    expect_ordered_object_keys(document, ROOT_KEYS, source_path, "$")
+    if type(document["schema_version"]) is not int or document["schema_version"] != 2:
+        fail(source_path, "$.schema_version", "expected integer 2")
     semantics = document["measurement_semantics"]
     expect_object_keys(semantics, set(MEASUREMENT_SEMANTICS), source_path, "$.measurement_semantics")
     for key, expected_value in MEASUREMENT_SEMANTICS.items():

@@ -1,6 +1,5 @@
 #include "topology.h"
 
-#include "access-tracking-sta-wifi-mac.h"
 #include "bss-link-filter.h"
 #include "log.h"
 #include "rssi-placement.h"
@@ -418,7 +417,7 @@ BuildSaturatedTcpTopology(const SaturatedTcpConfig& config)
         WifiMacHelper accessPointMac;
         accessPointMac.SetType("ns3::ApWifiMac", "Ssid", SsidValue(ssid));
         WifiMacHelper stationMac;
-        stationMac.SetType("ns3::AccessTrackingStaWifiMac",
+        stationMac.SetType("ns3::StaWifiMac",
                            "Ssid",
                            SsidValue(ssid),
                            "ActiveProbing",

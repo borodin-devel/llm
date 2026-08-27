@@ -1,4 +1,3 @@
-#include "../../examples/saturated-tcp/access-tracking-sta-wifi-mac.h"
 #include "../../examples/saturated-tcp/bss-link-filter.h"
 #include "../../examples/saturated-tcp/topology.h"
 #include "../llm-test-suite.h"
@@ -18,6 +17,7 @@
 #include "ns3/propagation-loss-model.h"
 #include "ns3/simulator.h"
 #include "ns3/socket.h"
+#include "ns3/sta-wifi-mac.h"
 #include "ns3/udp-socket-factory.h"
 #include "ns3/wifi-acknowledgment.h"
 #include "ns3/wifi-mpdu.h"
@@ -311,9 +311,9 @@ SaturatedTcpTopologyAttributesTestCase::DoRun()
 
         const auto stationDevice = GetStationDevice(topology, bssIndex, 0);
         NS_TEST_ASSERT_MSG_NE(stationDevice, nullptr, "Station device is not Wi-Fi");
-        NS_TEST_ASSERT_MSG_NE(DynamicCast<AccessTrackingStaWifiMac>(stationDevice->GetMac()),
-                              nullptr,
-                              "Station does not use AccessTrackingStaWifiMac");
+        NS_TEST_ASSERT_MSG_EQ(stationDevice->GetMac()->GetInstanceTypeId().GetName(),
+                              "ns3::StaWifiMac",
+                              "Station does not use ordinary StaWifiMac");
         const std::array<Ptr<WifiNetDevice>, 2> wifiDevices{bss.accessPointDevice, stationDevice};
         for (const auto& device : wifiDevices)
         {
@@ -598,8 +598,8 @@ SaturatedTcpCochannelTopologyTestCase::DoRun()
         NS_TEST_ASSERT_MSG_GT(downlinkReceived.at(bssIndex),
                               0,
                               "Routed server-to-STA UDP delivery failed");
-        const auto stationMac = DynamicCast<AccessTrackingStaWifiMac>(
-            GetStationDevice(topology, bssIndex, 0)->GetMac());
+        const auto stationMac =
+            DynamicCast<StaWifiMac>(GetStationDevice(topology, bssIndex, 0)->GetMac());
         NS_TEST_ASSERT_MSG_EQ(stationMac->IsAssociated(),
                               true,
                               "Station did not associate with its own AP");

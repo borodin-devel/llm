@@ -14,16 +14,17 @@
 namespace ns3
 {
 
-/** NSS/MCS identity for one fixed-invariant data transmission profile. */
+/** Channel-width/NSS/MCS identity for one data transmission profile. */
 struct DataTxProfileKey
 {
-    uint8_t nss; ///< Number of spatial streams.
-    uint8_t mcs; ///< HE MCS index.
+    uint16_t channelWidthMhz; ///< Actual data TxVector channel width in MHz.
+    uint8_t nss;              ///< Number of spatial streams.
+    uint8_t mcs;              ///< HE MCS index.
 
     auto operator<=>(const DataTxProfileKey&) const = default; ///< Compare profile keys.
 };
 
-/** Raw station-transmitted data totals for one NSS/MCS profile and interval. */
+/** Raw station-transmitted data totals for one width/NSS/MCS profile and interval. */
 struct DataTxProfileAccumulator
 {
     long double transmittedPsduBytes{0.0L}; ///< Attributed data PSDU bytes.
@@ -40,7 +41,7 @@ struct DataTxProfileAccumulator
     void Merge(const DataTxProfileAccumulator& other);
 };
 
-/** Ordered raw NSS/MCS profiles for one station and interval. */
+/** Ordered raw channel-width/NSS/MCS profiles for one station and interval. */
 using DataTxProfileMap = std::map<DataTxProfileKey, DataTxProfileAccumulator>;
 
 /** Collect station-transmitted unicast data profiles by fixed window. */

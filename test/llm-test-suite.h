@@ -27,8 +27,6 @@ std::vector<ns3::TestCase*> CreateScenarioRunPathTestCases();
 std::vector<ns3::TestCase*> CreateScenarioTopologyTestCases();
 std::vector<ns3::TestCase*> CreateSaturatedTcpConfigTestCases();
 std::vector<ns3::TestCase*> CreateSaturatedTcpPropagationTestCases();
-std::vector<ns3::TestCase*> CreateSaturatedTcpAccessWaitTestCases();
-std::vector<ns3::TestCase*> CreateSaturatedTcpStaPhyMetricTestCases();
 std::vector<ns3::TestCase*> CreateSaturatedTcpBenchmarkOutputTestCases();
 std::vector<ns3::TestCase*> CreateSaturatedTcpTrafficTestCases();
 std::vector<ns3::TestCase*> CreateSaturatedTcpTopologyTestCases();

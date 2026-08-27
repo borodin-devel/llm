@@ -15,11 +15,18 @@ ROOT_KEYS = (
     "experiment_metadata",
 )
 
-PHY_KEYS = (
-    "average_theoretical_phy_rate_mbps",
-    "average_practical_phy_rate_mbps",
-    "channel_efficiency",
-    "contention_fraction",
+STATION_PHY_KEYS = (
+    "dominant_data_phy_rate_mbps",
+    "dominant_data_profile_share",
+    "effective_phy_rate_mbps",
+    "data_tx_rate_over_interval_mbps",
+    "data_tx_opportunity_gap_fraction",
+)
+
+BSS_PHY_KEYS = (
+    "mean_dominant_data_phy_rate_mbps",
+    "mean_effective_phy_rate_mbps",
+    "aggregate_data_tx_rate_over_interval_mbps",
 )
 
 VALIDATION_KEYS = (
@@ -38,7 +45,7 @@ def validate_and_cleanup(output_path: pathlib.Path) -> None:
     try:
         document = json.loads(output_path.read_text(encoding="utf-8"))
         assert tuple(document) == ROOT_KEYS
-        assert document.get("schema_version") == 1
+        assert document.get("schema_version") == 2
         assert document.get("statistics_window_ms") == 10
         assert len(document.get("windows")) == 100
 
@@ -49,11 +56,16 @@ def validate_and_cleanup(output_path: pathlib.Path) -> None:
         overall = document.get("overall")
         assert len(overall.get("access_points")) == 3
         assert len(overall.get("stations")) == 3
-        assert all(
-            all(entity.get("phy_stats").get(key) is not None for key in PHY_KEYS)
-            for group in ("access_points", "stations")
-            for entity in overall.get(group)
-        )
+        for entity in overall.get("stations"):
+            phy = entity.get("phy_stats")
+            assert all(phy.get(key) is not None for key in STATION_PHY_KEYS)
+            assert phy.get("data_tx_profile")
+            assert all(phy.get(key) is None for key in BSS_PHY_KEYS)
+        for entity in overall.get("access_points"):
+            phy = entity.get("phy_stats")
+            assert all(phy.get(key) is None for key in STATION_PHY_KEYS)
+            assert phy.get("data_tx_profile") == []
+            assert all(phy.get(key) is not None for key in BSS_PHY_KEYS)
 
         benchmark = (
             document.get("experiment_metadata").get("configuration").get("benchmark")

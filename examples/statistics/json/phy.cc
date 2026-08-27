@@ -91,48 +91,67 @@ WriteDirectionJson(JsonWriter& writer, const PhyDirectionOutput& direction)
     writer.EndObject();
 }
 
+void
+WriteOptionalDouble(JsonWriter& writer, const std::optional<double>& value)
+{
+    if (value)
+    {
+        writer.Value(*value);
+    }
+    else
+    {
+        writer.Null();
+    }
+}
+
+void
+WriteDataTxProfileJson(JsonWriter& writer, const DataTxProfileOutput& profile)
+{
+    writer.BeginObject();
+    writer.Key("channel_width_mhz");
+    writer.Value(profile.channelWidthMhz);
+    writer.Key("nss");
+    writer.Value(profile.nss);
+    writer.Key("mcs");
+    writer.Value(profile.mcs);
+    writer.Key("transmitted_psdu_bytes");
+    writer.Value(profile.transmittedPsduBytes);
+    writer.Key("ppdu_attempt_count");
+    writer.Value(profile.ppduAttemptCount);
+    writer.Key("ppdu_airtime_us");
+    writer.Value(profile.ppduAirtimeUs);
+    writer.EndObject();
+}
+
 } // namespace
 
 void
 WritePhyCategoryJson(JsonWriter& writer, const PhyCategoryOutput& category)
 {
     writer.BeginObject();
-    writer.Key("average_theoretical_phy_rate_mbps");
-    if (category.averageTheoreticalPhyRateMbps)
+    writer.Key("dominant_data_phy_rate_mbps");
+    WriteOptionalDouble(writer, category.dominantDataPhyRateMbps);
+    writer.Key("dominant_data_profile_share");
+    WriteOptionalDouble(writer, category.dominantDataProfileShare);
+    writer.Key("effective_phy_rate_mbps");
+    WriteOptionalDouble(writer, category.effectivePhyRateMbps);
+    writer.Key("data_tx_rate_over_interval_mbps");
+    WriteOptionalDouble(writer, category.dataTxRateOverIntervalMbps);
+    writer.Key("data_tx_opportunity_gap_fraction");
+    WriteOptionalDouble(writer, category.dataTxOpportunityGapFraction);
+    writer.Key("data_tx_profile");
+    writer.BeginArray();
+    for (const auto& profile : category.dataTxProfile)
     {
-        writer.Value(*category.averageTheoreticalPhyRateMbps);
+        WriteDataTxProfileJson(writer, profile);
     }
-    else
-    {
-        writer.Null();
-    }
-    writer.Key("average_practical_phy_rate_mbps");
-    if (category.averagePracticalPhyRateMbps)
-    {
-        writer.Value(*category.averagePracticalPhyRateMbps);
-    }
-    else
-    {
-        writer.Null();
-    }
-    writer.Key("channel_efficiency");
-    if (category.channelEfficiency)
-    {
-        writer.Value(*category.channelEfficiency);
-    }
-    else
-    {
-        writer.Null();
-    }
-    writer.Key("contention_fraction");
-    if (category.contentionFraction)
-    {
-        writer.Value(*category.contentionFraction);
-    }
-    else
-    {
-        writer.Null();
-    }
+    writer.EndArray();
+    writer.Key("mean_dominant_data_phy_rate_mbps");
+    WriteOptionalDouble(writer, category.meanDominantDataPhyRateMbps);
+    writer.Key("mean_effective_phy_rate_mbps");
+    WriteOptionalDouble(writer, category.meanEffectivePhyRateMbps);
+    writer.Key("aggregate_data_tx_rate_over_interval_mbps");
+    WriteOptionalDouble(writer, category.aggregateDataTxRateOverIntervalMbps);
     writer.Key("busy_time_us");
     writer.Value(category.busyTimeUs);
     writer.Key("channel_utilization_percent");

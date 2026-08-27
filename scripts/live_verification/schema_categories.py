@@ -3,20 +3,27 @@
 from __future__ import annotations
 
 from live_verification.common import (
-    APP_AGENT_KEYS, APP_KEYS, APP_PEER_KEYS, DIRECTIONS, GENERAL_KEYS, MAC_KEYS,
-    MAC_PEER_KEYS, MAC_REASON_KEYS, PHY_DIRECTION_KEYS, PHY_KEYS, PHY_PEER_KEYS,
+    APP_AGENT_KEYS, APP_KEYS, APP_PEER_KEYS, DATA_TX_PROFILE_KEYS, DIRECTIONS, GENERAL_KEYS,
+    MAC_KEYS, MAC_PEER_KEYS, MAC_REASON_KEYS, PHY_DIRECTION_KEYS, PHY_KEYS, PHY_PEER_KEYS,
     SAMPLE_KEYS, TCP_CONNECTION_KEYS, TCP_KEYS, expect_finite_number, expect_list,
     expect_nonnegative_integer, expect_object_keys, expect_optional_finite_number,
-    expect_optional_nonnegative_integer, expect_string, fail, is_nonnegative_integer,
-    validate_integer_fields, validate_optional_number_fields, validate_ordered_unique,
+    expect_optional_nonnegative_integer, expect_ordered_object_keys, expect_string, fail,
+    is_nonnegative_integer, validate_integer_fields, validate_optional_number_fields,
+    validate_ordered_unique,
 )
 
 
-BENCHMARK_PHY_RATE_KEYS = {
-    "average_theoretical_phy_rate_mbps", "average_practical_phy_rate_mbps",
-}
-BENCHMARK_PHY_FRACTION_KEYS = {"channel_efficiency", "contention_fraction"}
-PHY_CATEGORY_KEYS = PHY_KEYS | BENCHMARK_PHY_RATE_KEYS | BENCHMARK_PHY_FRACTION_KEYS
+STATION_PHY_RATE_KEYS = (
+    "dominant_data_phy_rate_mbps", "effective_phy_rate_mbps",
+    "data_tx_rate_over_interval_mbps",
+)
+BSS_PHY_RATE_KEYS = (
+    "mean_dominant_data_phy_rate_mbps", "mean_effective_phy_rate_mbps",
+    "aggregate_data_tx_rate_over_interval_mbps",
+)
+STATION_PHY_FIELDS = STATION_PHY_RATE_KEYS + (
+    "dominant_data_profile_share", "data_tx_opportunity_gap_fraction",
+)
 
 
 def _validate_sample_distribution(value, source_path, json_path):
@@ -273,7 +280,95 @@ def _validate_phy_direction(value, known_nodes, source_path, json_path):
     )
 
 
-def validate_entity_categories(record, known_nodes, source_path, json_path):
+def _validate_data_tx_profile(profiles, source_path, json_path):
+    expect_list(profiles, source_path, json_path)
+    for index, profile in enumerate(profiles):
+        profile_path = f"{json_path}[{index}]"
+        expect_ordered_object_keys(profile, DATA_TX_PROFILE_KEYS, source_path, profile_path)
+        expect_nonnegative_integer(
+            profile["channel_width_mhz"],
+            source_path,
+            f"{profile_path}.channel_width_mhz",
+            positive=True,
+        )
+        if profile["channel_width_mhz"] not in {20, 40, 80}:
+            fail(
+                source_path,
+                f"{profile_path}.channel_width_mhz",
+                "expected 20, 40, or 80",
+            )
+        expect_nonnegative_integer(profile["nss"], source_path, f"{profile_path}.nss", positive=True)
+        expect_nonnegative_integer(
+            profile["mcs"], source_path, f"{profile_path}.mcs", maximum=11
+        )
+        expect_finite_number(
+            profile["transmitted_psdu_bytes"],
+            source_path,
+            f"{profile_path}.transmitted_psdu_bytes",
+        )
+        expect_nonnegative_integer(
+            profile["ppdu_attempt_count"], source_path, f"{profile_path}.ppdu_attempt_count"
+        )
+        expect_finite_number(
+            profile["ppdu_airtime_us"], source_path, f"{profile_path}.ppdu_airtime_us"
+        )
+    validate_ordered_unique(
+        profiles,
+        lambda profile: (
+            profile["channel_width_mhz"], profile["nss"], profile["mcs"]
+        ),
+        source_path,
+        json_path,
+        "width/NSS/MCS profile",
+    )
+
+
+def _validate_data_tx_roles(phy, kind, source_path, phy_path):
+    for field in STATION_PHY_RATE_KEYS + BSS_PHY_RATE_KEYS:
+        expect_optional_finite_number(phy[field], source_path, f"{phy_path}.{field}")
+    share = phy["dominant_data_profile_share"]
+    if share is not None:
+        expect_finite_number(share, source_path, f"{phy_path}.dominant_data_profile_share", positive=True, maximum=1.0)
+    gap = phy["data_tx_opportunity_gap_fraction"]
+    expect_optional_finite_number(
+        gap, source_path, f"{phy_path}.data_tx_opportunity_gap_fraction", maximum=1.0
+    )
+    _validate_data_tx_profile(phy["data_tx_profile"], source_path, f"{phy_path}.data_tx_profile")
+
+    if kind == "station":
+        for field in BSS_PHY_RATE_KEYS:
+            if phy[field] is not None:
+                fail(source_path, f"{phy_path}.{field}", "BSS aggregate is populated on station")
+        if phy["data_tx_profile"]:
+            if any(phy[field] is None for field in STATION_PHY_FIELDS):
+                fail(source_path, phy_path, "populated station profile has undefined data metrics")
+        else:
+            for field in (
+                "dominant_data_phy_rate_mbps", "dominant_data_profile_share",
+                "effective_phy_rate_mbps", "data_tx_opportunity_gap_fraction",
+            ):
+                if phy[field] is not None:
+                    fail(source_path, f"{phy_path}.{field}", "station metric exists without profile")
+            interval_rate = phy["data_tx_rate_over_interval_mbps"]
+            if interval_rate is not None and interval_rate != 0:
+                fail(
+                    source_path,
+                    f"{phy_path}.data_tx_rate_over_interval_mbps",
+                    "profile-free station interval rate is not zero",
+                )
+        return
+
+    for field in STATION_PHY_FIELDS:
+        if phy[field] is not None:
+            fail(source_path, f"{phy_path}.{field}", "station metric is populated on BSS")
+    if phy["data_tx_profile"]:
+        fail(source_path, f"{phy_path}.data_tx_profile", "BSS contains a station profile")
+    aggregate = phy["aggregate_data_tx_rate_over_interval_mbps"]
+    if aggregate is None and any(phy[field] is not None for field in BSS_PHY_RATE_KEYS[:2]):
+        fail(source_path, phy_path, "BSS means exist without aggregate interval rate")
+
+
+def validate_entity_categories(record, kind, known_nodes, source_path, json_path):
     """Validate all fixed category and direction records for one entity."""
     validators = {
         "general_stats": (GENERAL_KEYS, _validate_general_direction),
@@ -296,11 +391,8 @@ def validate_entity_categories(record, known_nodes, source_path, json_path):
 
     phy = record["phy_stats"]
     phy_path = f"{json_path}.phy_stats"
-    expect_object_keys(phy, PHY_CATEGORY_KEYS, source_path, phy_path)
-    validate_optional_number_fields(phy, BENCHMARK_PHY_RATE_KEYS, source_path, phy_path)
-    validate_optional_number_fields(
-        phy, BENCHMARK_PHY_FRACTION_KEYS, source_path, phy_path, maximum=1.0
-    )
+    expect_ordered_object_keys(phy, PHY_KEYS, source_path, phy_path)
+    _validate_data_tx_roles(phy, kind, source_path, phy_path)
     expect_nonnegative_integer(phy["busy_time_us"], source_path, f"{phy_path}.busy_time_us")
     expect_optional_finite_number(
         phy["channel_utilization_percent"], source_path,

@@ -108,9 +108,10 @@ ExtractDataTxProfileContribution(Mac48Address transmitterAddress,
     {
         throw std::invalid_argument("qualifying data TX vector must use HE modulation");
     }
-    if (txVector.GetChannelWidth() != MHz_u{80})
+    const auto channelWidth = txVector.GetChannelWidth();
+    if (channelWidth != MHz_u{20} && channelWidth != MHz_u{40} && channelWidth != MHz_u{80})
     {
-        throw std::invalid_argument("qualifying data TX vector must use 80 MHz");
+        throw std::invalid_argument("qualifying data TX vector width must be 20, 40, or 80 MHz");
     }
     if (txVector.GetGuardInterval() != NanoSeconds(3200))
     {
@@ -126,7 +127,7 @@ ExtractDataTxProfileContribution(Mac48Address transmitterAddress,
     {
         throw std::invalid_argument("qualifying data PPDU duration must be positive");
     }
-    return DataTxProfileContribution{{nss, mcs},
+    return DataTxProfileContribution{{static_cast<uint16_t>(channelWidth), nss, mcs},
                                      static_cast<long double>(qualifyingBytes),
                                      ppduAirtimeNs,
                                      static_cast<long double>(rate)};

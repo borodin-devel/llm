@@ -45,9 +45,7 @@ build_lib_example(
     saturated-tcp/config-json.cc
     saturated-tcp/bss-link-filter.cc
     saturated-tcp/rssi-placement.cc
-    saturated-tcp/access-tracking-sta-wifi-mac.cc
-    saturated-tcp/access-wait-tracker.cc
-    saturated-tcp/sta-phy-metrics.cc
+    saturated-tcp/data-tx-metrics.cc
     saturated-tcp/benchmark-statistics.cc
     saturated-tcp/output.cc
     saturated-tcp/saturated-tcp-sender.cc

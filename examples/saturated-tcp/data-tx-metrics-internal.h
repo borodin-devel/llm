@@ -11,7 +11,7 @@ namespace ns3
 /** Extracted raw contribution of one qualifying single-user data PPDU. */
 struct DataTxProfileContribution
 {
-    DataTxProfileKey key;             ///< Actual NSS/MCS profile key.
+    DataTxProfileKey key;             ///< Actual channel-width/NSS/MCS profile key.
     long double transmittedPsduBytes; ///< Qualifying transmitted PSDU bytes.
     int64_t ppduAirtimeNs;            ///< Complete PPDU duration in nanoseconds.
     long double nominalRateBps;       ///< Actual nominal user rate.

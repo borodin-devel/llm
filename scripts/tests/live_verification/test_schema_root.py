@@ -12,6 +12,40 @@ from live_verification.schema import load_output_document, validate_output_docum
 from tests.live_verification.fixtures import add_second_bss, entity, valid_document
 
 
+def populate_station_phy(phy):
+    """Populate one hand-checked station-side data TX profile."""
+    phy["dominant_data_phy_rate_mbps"] = 960.8
+    phy["dominant_data_profile_share"] = 0.75
+    phy["effective_phy_rate_mbps"] = 720.6
+    phy["data_tx_rate_over_interval_mbps"] = 180.15
+    phy["data_tx_opportunity_gap_fraction"] = 0.75
+    phy["data_tx_profile"] = [
+        {
+            "channel_width_mhz": 20,
+            "nss": 1,
+            "mcs": 9,
+            "transmitted_psdu_bytes": 100.5,
+            "ppdu_attempt_count": 2,
+            "ppdu_airtime_us": 40.25,
+        },
+        {
+            "channel_width_mhz": 80,
+            "nss": 2,
+            "mcs": 11,
+            "transmitted_psdu_bytes": 300.75,
+            "ppdu_attempt_count": 4,
+            "ppdu_airtime_us": 120.5,
+        },
+    ]
+
+
+def populate_bss_phy(phy):
+    """Populate one hand-checked BSS-side data TX aggregate."""
+    phy["mean_dominant_data_phy_rate_mbps"] = 960.8
+    phy["mean_effective_phy_rate_mbps"] = 720.6
+    phy["aggregate_data_tx_rate_over_interval_mbps"] = 180.15
+
+
 class LiveTraceSchemaRootTest(unittest.TestCase):
     def setUp(self):
         self.trace = "contrib/llm/traces/1W_high_load_1s.json"
@@ -46,64 +80,159 @@ class LiveTraceSchemaRootTest(unittest.TestCase):
         self.assertIsNone(distribution["average_us"])
         validate_output_document(document, self.source, self.trace)
 
-    def test_accepts_null_benchmark_phy_fields(self):
+    def test_accepts_station_bss_and_ordinary_phy_roles(self):
         document = valid_document(self.trace)
-        phy = document["windows"][0]["access_points"][0]["phy_stats"]
-        for field in (
-            "average_theoretical_phy_rate_mbps",
-            "average_practical_phy_rate_mbps",
-            "channel_efficiency",
-            "contention_fraction",
-        ):
-            phy[field] = None
+        populate_bss_phy(document["windows"][0]["access_points"][0]["phy_stats"])
+        populate_station_phy(document["windows"][0]["stations"][0]["phy_stats"])
         validate_output_document(document, self.source, self.trace)
 
-    def test_rejects_missing_benchmark_phy_fields(self):
-        for field in (
-            "average_theoretical_phy_rate_mbps",
-            "average_practical_phy_rate_mbps",
-            "channel_efficiency",
-            "contention_fraction",
-        ):
-            with self.subTest(field=field):
-                document = valid_document(self.trace)
-                del document["windows"][0]["access_points"][0]["phy_stats"][field]
-                self.assert_document_error(document, ".phy_stats")
+    def test_rejects_version_one_and_reordered_root(self):
+        document = valid_document(self.trace)
+        document["schema_version"] = 1
+        self.assert_document_error(document, "$.schema_version")
 
-    def test_rejects_invalid_benchmark_phy_field_types(self):
-        mutations = (
-            ("average_theoretical_phy_rate_mbps", {}),
-            ("average_practical_phy_rate_mbps", "720.6"),
-            ("channel_efficiency", {}),
-            ("contention_fraction", "0.2"),
-        )
-        for field, invalid in mutations:
+        document = valid_document(self.trace)
+        document["schema_version"] = document.pop("schema_version")
+        self.assert_document_error(document, "$")
+
+    def test_rejects_missing_extra_and_reordered_v2_phy_fields(self):
+        document = valid_document(self.trace)
+        del document["windows"][0]["access_points"][0]["phy_stats"][
+            "dominant_data_phy_rate_mbps"
+        ]
+        self.assert_document_error(document, ".phy_stats")
+
+        document = valid_document(self.trace)
+        document["windows"][0]["access_points"][0]["phy_stats"]["legacy"] = None
+        self.assert_document_error(document, ".phy_stats")
+
+        document = valid_document(self.trace)
+        phy = document["windows"][0]["access_points"][0]["phy_stats"]
+        phy["dominant_data_phy_rate_mbps"] = phy.pop("dominant_data_phy_rate_mbps")
+        self.assert_document_error(document, ".phy_stats")
+
+    def test_rejects_malformed_and_reordered_profile_entries(self):
+        document = valid_document(self.trace)
+        phy = document["windows"][0]["stations"][0]["phy_stats"]
+        populate_station_phy(phy)
+        del phy["data_tx_profile"][0]["ppdu_attempt_count"]
+        self.assert_document_error(document, ".data_tx_profile[0]")
+
+        document = valid_document(self.trace)
+        phy = document["windows"][0]["stations"][0]["phy_stats"]
+        populate_station_phy(phy)
+        entry = phy["data_tx_profile"][0]
+        entry["nss"] = entry.pop("nss")
+        self.assert_document_error(document, ".data_tx_profile[0]")
+
+        for field, invalid in (
+            ("channel_width_mhz", 20.0),
+            ("nss", 1.0),
+            ("mcs", True),
+            ("transmitted_psdu_bytes", "100.5"),
+            ("ppdu_attempt_count", 2.0),
+            ("ppdu_airtime_us", None),
+        ):
             with self.subTest(field=field, invalid=invalid):
                 document = valid_document(self.trace)
-                document["windows"][0]["access_points"][0]["phy_stats"][field] = invalid
-                self.assert_document_error(document, f".phy_stats.{field}")
+                phy = document["windows"][0]["stations"][0]["phy_stats"]
+                populate_station_phy(phy)
+                phy["data_tx_profile"][0][field] = invalid
+                self.assert_document_error(document, f".{field}")
 
-    def test_rejects_nonfinite_benchmark_phy_fields(self):
-        fields = (
-            "average_theoretical_phy_rate_mbps",
-            "average_practical_phy_rate_mbps",
-            "channel_efficiency",
-            "contention_fraction",
-        )
-        for field in fields:
+    def test_rejects_duplicate_and_unsorted_profile_keys(self):
+        for name, mutate in (
+            (
+                "duplicate",
+                lambda profile: profile[1].update(
+                    channel_width_mhz=profile[0]["channel_width_mhz"],
+                    nss=profile[0]["nss"],
+                    mcs=profile[0]["mcs"],
+                ),
+            ),
+            ("unsorted", lambda profile: profile.reverse()),
+        ):
+            with self.subTest(name=name):
+                document = valid_document(self.trace)
+                phy = document["windows"][0]["stations"][0]["phy_stats"]
+                populate_station_phy(phy)
+                mutate(phy["data_tx_profile"])
+                self.assert_document_error(document, ".data_tx_profile[1]")
+
+    def test_rejects_invalid_profile_ranges(self):
+        for field, invalid in (
+            ("channel_width_mhz", 10),
+            ("channel_width_mhz", 160),
+            ("nss", 0),
+            ("mcs", 12),
+            ("transmitted_psdu_bytes", -0.1),
+            ("ppdu_attempt_count", -1),
+            ("ppdu_airtime_us", -0.1),
+        ):
+            with self.subTest(field=field, invalid=invalid):
+                document = valid_document(self.trace)
+                phy = document["windows"][0]["stations"][0]["phy_stats"]
+                populate_station_phy(phy)
+                phy["data_tx_profile"][0][field] = invalid
+                self.assert_document_error(document, f".{field}")
+
+        for field in ("transmitted_psdu_bytes", "ppdu_airtime_us"):
             for invalid in (float("inf"), float("-inf"), float("nan")):
                 with self.subTest(field=field, invalid=invalid):
                     document = valid_document(self.trace)
-                    document["windows"][0]["access_points"][0]["phy_stats"][field] = invalid
-                    self.assert_document_error(document, f".phy_stats.{field}")
+                    phy = document["windows"][0]["stations"][0]["phy_stats"]
+                    populate_station_phy(phy)
+                    phy["data_tx_profile"][0][field] = invalid
+                    self.assert_document_error(document, f".{field}")
 
-    def test_rejects_out_of_range_benchmark_phy_fractions(self):
-        for field in ("channel_efficiency", "contention_fraction"):
-            for invalid in (-0.01, 1.01):
+    def test_rejects_invalid_data_rate_share_and_gap_ranges(self):
+        station_fields = (
+            "dominant_data_phy_rate_mbps",
+            "dominant_data_profile_share",
+            "effective_phy_rate_mbps",
+            "data_tx_rate_over_interval_mbps",
+            "data_tx_opportunity_gap_fraction",
+        )
+        bss_fields = (
+            "mean_dominant_data_phy_rate_mbps",
+            "mean_effective_phy_rate_mbps",
+            "aggregate_data_tx_rate_over_interval_mbps",
+        )
+        for field in station_fields + bss_fields:
+            for invalid in (-0.1, float("inf"), float("-inf"), float("nan")):
                 with self.subTest(field=field, invalid=invalid):
                     document = valid_document(self.trace)
-                    document["windows"][0]["access_points"][0]["phy_stats"][field] = invalid
-                    self.assert_document_error(document, f".phy_stats.{field}")
+                    if field in station_fields:
+                        phy = document["windows"][0]["stations"][0]["phy_stats"]
+                        populate_station_phy(phy)
+                    else:
+                        phy = document["windows"][0]["access_points"][0]["phy_stats"]
+                        populate_bss_phy(phy)
+                    phy[field] = invalid
+                    self.assert_document_error(document, f".{field}")
+
+        for field, invalid in (
+            ("dominant_data_profile_share", 0.0),
+            ("dominant_data_profile_share", 1.01),
+            ("data_tx_opportunity_gap_fraction", 1.01),
+        ):
+            with self.subTest(field=field, invalid=invalid):
+                document = valid_document(self.trace)
+                phy = document["windows"][0]["stations"][0]["phy_stats"]
+                populate_station_phy(phy)
+                phy[field] = invalid
+                self.assert_document_error(document, f".{field}")
+
+    def test_rejects_impossible_station_and_bss_role_population(self):
+        document = valid_document(self.trace)
+        station_phy = document["windows"][0]["stations"][0]["phy_stats"]
+        station_phy["aggregate_data_tx_rate_over_interval_mbps"] = 1.0
+        self.assert_document_error(document, ".aggregate_data_tx_rate_over_interval_mbps")
+
+        document = valid_document(self.trace)
+        bss_phy = document["windows"][0]["access_points"][0]["phy_stats"]
+        bss_phy["data_tx_rate_over_interval_mbps"] = 1.0
+        self.assert_document_error(document, ".data_tx_rate_over_interval_mbps")
 
     def test_accepts_sparse_full_windows_and_last_partial_window(self):
         document = valid_document(self.trace)

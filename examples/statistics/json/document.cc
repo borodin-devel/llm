@@ -66,7 +66,7 @@ WriteExperimentHierarchyJson(std::ostream& output,
     JsonWriter writer(output);
     writer.BeginObject();
     writer.Key("schema_version");
-    writer.Value(1);
+    writer.Value(2);
     writer.Key("measurement_semantics");
     sections.writeMeasurementSemantics(writer);
     writer.Key("statistics_window_ms");

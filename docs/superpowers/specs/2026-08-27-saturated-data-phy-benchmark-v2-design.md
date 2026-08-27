@@ -5,7 +5,7 @@
 Replace the saturated benchmark's blended data/control PHY metrics with a
 data-only model that answers three separate questions:
 
-1. Which HE NSS/MCS profile carried most station-transmitted data bytes?
+1. Which HE channel-width/NSS/MCS profile carried most station-transmitted data bytes?
 2. How efficiently were transmitted data bytes packed into the station's own
    data PPDU airtime?
 3. How much transmitted-data rate remained when the denominator was the full
@@ -45,9 +45,10 @@ HE guard interval: 3200 ns
 RTS/CTS threshold: 0 bytes
 ```
 
-Both values are explicit TOML/CLI/configuration-metadata fields. Every
-qualifying data `WifiTxVector` must be HE, 80 MHz, and 3200 ns. A violation is
-a scenario error rather than an implicit profile variant.
+Both values are explicit TOML/CLI/configuration-metadata fields. The operating
+channel remains 80 MHz. A qualifying data `WifiTxVector` must be HE SU with a
+3200 ns guard interval and an actual Minstrel-selected width of 20, 40, or 80
+MHz. Wider or otherwise invalid widths are scenario errors.
 
 ## Data-only transmission scope
 
@@ -79,16 +80,17 @@ of the byte count. Retransmissions count the repeated bytes again because the
 metrics intentionally describe gross attempted transmission volume, not
 unique payload or goodput.
 
-## Raw NSS/MCS profiles
+## Raw channel-width/NSS/MCS profiles
 
 The profile key is:
 
 ```text
-(nss, mcs)
+(channel_width_mhz, nss, mcs)
 ```
 
-HE, width, and guard interval are fixed scenario invariants and therefore are
-not repeated in the key. Each station/window key accumulates:
+HE SU and guard interval are fixed scenario invariants. Actual data TxVector
+width is part of the profile because Minstrel selects among widths permitted by
+the 80 MHz operating channel. Each station/window key accumulates:
 
 ```text
 transmitted_psdu_bytes
@@ -96,18 +98,19 @@ ppdu_attempt_count
 ppdu_airtime_ns
 ```
 
-One SU data PPDU contributes to one NSS/MCS key. Its complete PPDU airtime
+One SU data PPDU contributes to one width/NSS/MCS key. Its complete PPDU airtime
 comes from `WifiPhy::CalculateTxDuration`. Bytes and airtime are split
 proportionally when the PPDU crosses a 10 ms window or the one-second endpoint.
 The attempt count belongs to the window containing the PPDU start and appears
 exactly once in `overall`.
 
-Profiles serialize in ascending `(nss, mcs)` order. The dominant profile is
-selected by:
+Profiles serialize in ascending `(channel_width_mhz, nss, mcs)` order. The
+dominant profile is selected by:
 
 1. greatest attributed bytes;
 2. greatest nominal `GetDataRate` on an exact byte tie;
-3. ascending `(nss, mcs)` as the final deterministic tie-break.
+3. ascending `(channel_width_mhz, nss, mcs)` as the final deterministic
+   tie-break.
 
 ## Station-derived fields
 
@@ -115,7 +118,7 @@ For positive attributed data bytes and data PPDU airtime:
 
 ```text
 dominant_data_phy_rate_mbps =
-  GetDataRate(dominant NSS/MCS, BW 80 MHz, GI 3200 ns)
+  GetDataRate(dominant width/NSS/MCS, GI 3200 ns)
   / 1,000,000
 ```
 
@@ -227,6 +230,7 @@ Each profile entry is an ordered object:
 
 ```json
 {
+  "channel_width_mhz": 80,
   "nss": 2,
   "mcs": 11,
   "transmitted_psdu_bytes": 100500.0,
@@ -334,10 +338,10 @@ delimiter, UTF-8 BOM, CRLF, decimal dots, and deterministic matrix order.
 Nonexistent station blocks are empty. An existing inactive station has numeric
 `0.0` interval rate and otherwise empty fields.
 
-`sta_i_tx_profile` uses ascending NSS/MCS order:
+`sta_i_tx_profile` uses ascending width/NSS/MCS order:
 
 ```text
-NSS1_MCS9:bytes=100,ppdus=2,airtime_us=40|NSS2_MCS11:bytes=100500,ppdus=120,airtime_us=900
+W20_NSS1_MCS9:bytes=100,ppdus=2,airtime_us=40|W80_NSS2_MCS11:bytes=100500,ppdus=120,airtime_us=900
 ```
 
 The Python validator builds this string from structured JSON; C++ does not

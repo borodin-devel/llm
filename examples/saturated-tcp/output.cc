@@ -12,6 +12,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -23,7 +24,6 @@ namespace
 
 constexpr double METRIC_TOLERANCE = 1e-9; ///< Relative benchmark validation tolerance.
 
-/** Reject a false benchmark-summary invariant. */
 void
 Require(bool condition, const std::string& message)
 {
@@ -33,7 +33,6 @@ Require(bool condition, const std::string& message)
     }
 }
 
-/** Compare finite public values with the benchmark relative tolerance. */
 bool
 NearlyEqual(double left, double right)
 {
@@ -41,75 +40,33 @@ NearlyEqual(double left, double right)
     return std::abs(left - right) <= METRIC_TOLERANCE * scale;
 }
 
-/** Validate one optional non-negative finite value. */
 void
-ValidateOptionalRate(const std::optional<double>& value, const char* name)
+ValidateOptionalNonnegative(const std::optional<double>& value, const std::string& name)
 {
     if (value)
     {
-        Require(std::isfinite(*value) && *value >= 0.0,
-                std::string(name) + " must be finite and non-negative");
+        Require(std::isfinite(*value) && *value >= 0.0, name + " must be finite and non-negative");
     }
 }
 
-/** Validate the four benchmark PHY fields for one station or AP. */
 void
-ValidateMetricFields(const PhyCategoryOutput& phy, const char* entity)
+ClearBenchmarkFields(PhyCategoryOutput& phy)
 {
-    ValidateOptionalRate(phy.averageTheoreticalPhyRateMbps, "theoretical PHY rate");
-    ValidateOptionalRate(phy.averagePracticalPhyRateMbps, "practical PHY rate");
-    Require(phy.averageTheoreticalPhyRateMbps.has_value() ==
-                phy.averagePracticalPhyRateMbps.has_value(),
-            std::string(entity) + " theoretical and practical rate presence differs");
-    if (phy.averageTheoreticalPhyRateMbps)
-    {
-        const double theoretical = *phy.averageTheoreticalPhyRateMbps;
-        const double practical = *phy.averagePracticalPhyRateMbps;
-        const double scale = std::max({1.0, theoretical, practical});
-        Require(practical - theoretical <= METRIC_TOLERANCE * scale,
-                std::string(entity) + " practical PHY rate exceeds theoretical rate");
-        if (theoretical > 0.0)
-        {
-            Require(phy.channelEfficiency.has_value(),
-                    std::string(entity) + " channel efficiency is undefined");
-            Require(NearlyEqual(*phy.channelEfficiency, practical / theoretical),
-                    std::string(entity) + " channel efficiency does not reproduce its rates");
-        }
-        else
-        {
-            Require(practical == 0.0 && !phy.channelEfficiency,
-                    std::string(entity) + " zero theoretical rate has invalid efficiency");
-        }
-    }
-    else
-    {
-        Require(!phy.channelEfficiency,
-                std::string(entity) + " channel efficiency exists without PHY rates");
-    }
-
-    if (phy.channelEfficiency)
-    {
-        Require(std::isfinite(*phy.channelEfficiency) &&
-                    *phy.channelEfficiency >= -METRIC_TOLERANCE &&
-                    *phy.channelEfficiency <= 1.0 + METRIC_TOLERANCE,
-                std::string(entity) + " channel efficiency is outside [0, 1]");
-    }
-    Require(phy.contentionFraction.has_value(),
-            std::string(entity) + " contention fraction is undefined");
-    Require(std::isfinite(*phy.contentionFraction) &&
-                *phy.contentionFraction >= -METRIC_TOLERANCE &&
-                *phy.contentionFraction <= 1.0 + METRIC_TOLERANCE,
-            std::string(entity) + " contention fraction is outside [0, 1]");
+    phy.dominantDataPhyRateMbps.reset();
+    phy.dominantDataProfileShare.reset();
+    phy.effectivePhyRateMbps.reset();
+    phy.dataTxRateOverIntervalMbps.reset();
+    phy.dataTxOpportunityGapFraction.reset();
+    phy.dataTxProfile.clear();
+    phy.meanDominantDataPhyRateMbps.reset();
+    phy.meanEffectivePhyRateMbps.reset();
+    phy.aggregateDataTxRateOverIntervalMbps.reset();
 }
 
-/** Serialize entity statistics after removing the four benchmark fields. */
 std::string
 SerializeNonBenchmarkStatistics(EntityStatisticsOutput statistics)
 {
-    statistics.phyStats.averageTheoreticalPhyRateMbps.reset();
-    statistics.phyStats.averagePracticalPhyRateMbps.reset();
-    statistics.phyStats.channelEfficiency.reset();
-    statistics.phyStats.contentionFraction.reset();
+    ClearBenchmarkFields(statistics.phyStats);
     std::ostringstream output;
     JsonWriter writer(output);
     writer.BeginObject();
@@ -119,150 +76,136 @@ SerializeNonBenchmarkStatistics(EntityStatisticsOutput statistics)
     return output.str();
 }
 
-/** Determine whether a default sample distribution has any derived value present. */
-bool
-HasDerivedValue(const SampleDistributionOutput& distribution)
-{
-    return distribution.averageUs || distribution.standardDeviationUs || distribution.minimumUs ||
-           distribution.maximumUs;
-}
-
-/** Determine whether unrelated top-level optional fields are present. */
-bool
-HasUnrelatedOptionalValue(const EntityStatisticsOutput& statistics)
-{
-    const auto hasGeneral = [](const GeneralDirectionOutput& direction) {
-        return direction.averageTransmissionDurationUs ||
-               direction.transmissionDurationStandardDeviationUs ||
-               direction.minimumTransmissionDurationUs || direction.maximumTransmissionDurationUs ||
-               direction.effectiveThroughputMbps ||
-               HasDerivedValue(direction.applicationToPhyDelay);
-    };
-    const auto hasApp = [](const AppDirectionOutput& direction) {
-        return direction.acceptedThroughputMbps || direction.receivedThroughputMbps ||
-               HasDerivedValue(direction.receiveInterArrivalTime);
-    };
-    const auto hasMac = [](const MacDirectionOutput& direction) {
-        return direction.estimatedTransmitThroughputMbps ||
-               direction.estimatedReceiveThroughputMbps;
-    };
-    const auto hasPhy = [](const PhyDirectionOutput& direction) {
-        return direction.averageDataRateMbps || direction.throughputMbps;
-    };
-    return hasGeneral(statistics.generalStats.uplink) ||
-           hasGeneral(statistics.generalStats.downlink) || hasApp(statistics.appStats.uplink) ||
-           hasApp(statistics.appStats.downlink) || hasMac(statistics.macStats.uplink) ||
-           hasMac(statistics.macStats.downlink) || statistics.phyStats.channelUtilizationPercent ||
-           hasPhy(statistics.phyStats.uplink) || hasPhy(statistics.phyStats.downlink);
-}
-
-/** Require every non-benchmark entity category and PHY field to remain default. */
 void
-ValidateDefaultCategories(const EntityStatisticsOutput& statistics, const char* entity)
+ValidateDefaultCategories(const EntityStatisticsOutput& statistics, const std::string& entity)
 {
     static const std::string defaults = SerializeNonBenchmarkStatistics({});
-    Require(!HasUnrelatedOptionalValue(statistics) &&
-                SerializeNonBenchmarkStatistics(statistics) == defaults,
-            std::string(entity) + " contains non-default unrelated statistics");
+    Require(SerializeNonBenchmarkStatistics(statistics) == defaults,
+            entity + " contains non-default unrelated statistics");
 }
 
-/** Compare optional metric values exactly within public output tolerance. */
 void
-RequireOptionalEqual(const std::optional<double>& actual,
-                     const std::optional<double>& expected,
-                     const char* name)
+ValidateStationMetrics(const PhyCategoryOutput& phy,
+                       double intervalDurationMs,
+                       const std::string& entity)
 {
-    Require(actual.has_value() == expected.has_value(),
-            std::string("AP ") + name + " presence does not match station arithmetic");
-    if (actual)
+    Require(!phy.meanDominantDataPhyRateMbps && !phy.meanEffectivePhyRateMbps &&
+                !phy.aggregateDataTxRateOverIntervalMbps,
+            entity + " contains BSS aggregate fields");
+    for (const auto* value : {&phy.dominantDataPhyRateMbps,
+                              &phy.dominantDataProfileShare,
+                              &phy.effectivePhyRateMbps,
+                              &phy.dataTxRateOverIntervalMbps,
+                              &phy.dataTxOpportunityGapFraction})
     {
-        Require(NearlyEqual(*actual, *expected),
-                std::string("AP ") + name + " does not match station arithmetic");
+        ValidateOptionalNonnegative(*value, entity + " station metric");
     }
+    if (phy.dataTxProfile.empty())
+    {
+        Require(!phy.dominantDataPhyRateMbps && !phy.dominantDataProfileShare &&
+                    !phy.effectivePhyRateMbps && phy.dataTxRateOverIntervalMbps &&
+                    *phy.dataTxRateOverIntervalMbps == 0.0 && !phy.dataTxOpportunityGapFraction,
+                entity + " empty profile does not use the null/null/null/zero/null shape");
+        return;
+    }
+    Require(phy.dominantDataPhyRateMbps && phy.dominantDataProfileShare &&
+                phy.effectivePhyRateMbps && phy.dataTxRateOverIntervalMbps &&
+                phy.dataTxOpportunityGapFraction,
+            entity + " populated profile has undefined derived fields");
+    Require(*phy.dominantDataPhyRateMbps > 0.0, entity + " dominant data PHY rate is not positive");
+    Require(*phy.dominantDataProfileShare > 0.0 && *phy.dominantDataProfileShare <= 1.0,
+            entity + " dominant profile share is outside (0, 1]");
+    Require(*phy.dataTxOpportunityGapFraction <= 1.0,
+            entity + " opportunity gap is outside [0, 1]");
+
+    double totalBytes = 0.0;
+    double totalAirtimeUs = 0.0;
+    double dominantBytes = -1.0;
+    std::optional<std::tuple<uint16_t, uint8_t, uint8_t>> previous;
+    for (const auto& profile : phy.dataTxProfile)
+    {
+        const std::tuple key{profile.channelWidthMhz, profile.nss, profile.mcs};
+        Require((profile.channelWidthMhz == 20 || profile.channelWidthMhz == 40 ||
+                 profile.channelWidthMhz == 80) &&
+                    profile.nss > 0 && profile.mcs <= 11,
+                entity + " profile width, NSS, or MCS is outside its range");
+        Require(!previous || *previous < key, entity + " profiles are duplicated or out of order");
+        previous = key;
+        Require(std::isfinite(profile.transmittedPsduBytes) && profile.transmittedPsduBytes >= 0.0,
+                entity + " profile bytes are invalid");
+        Require(std::isfinite(profile.ppduAirtimeUs) && profile.ppduAirtimeUs >= 0.0,
+                entity + " profile airtime is invalid");
+        totalBytes += profile.transmittedPsduBytes;
+        totalAirtimeUs += profile.ppduAirtimeUs;
+        dominantBytes = std::max(dominantBytes, profile.transmittedPsduBytes);
+    }
+    Require(totalBytes > 0.0 && totalAirtimeUs > 0.0,
+            entity + " populated profile has non-positive totals");
+    const double expectedShare = dominantBytes / totalBytes;
+    const double expectedEffective = totalBytes * 8.0 / totalAirtimeUs;
+    const double intervalUs = intervalDurationMs * 1000.0;
+    const double expectedIntervalRate = totalBytes * 8.0 / intervalUs;
+    const double expectedGap = 1.0 - totalAirtimeUs / intervalUs;
+    Require(NearlyEqual(*phy.dominantDataProfileShare, expectedShare),
+            entity + " dominant share does not reproduce profile bytes");
+    Require(NearlyEqual(*phy.effectivePhyRateMbps, expectedEffective),
+            entity + " effective rate does not reproduce profile bytes and airtime");
+    Require(NearlyEqual(*phy.dataTxRateOverIntervalMbps, expectedIntervalRate),
+            entity + " interval rate does not reproduce profile bytes");
+    Require(NearlyEqual(*phy.dataTxOpportunityGapFraction, expectedGap),
+            entity + " opportunity gap does not reproduce profile airtime");
 }
 
-/** Derive expected AP fields from station DTOs and the complete BSS station count. */
-StationPhyMetricOutput
-BuildExpectedAccessPointMetrics(const std::vector<const StationStatisticsOutput*>& stations,
-                                std::size_t stationCount)
+PhyCategoryOutput
+ExpectedBssMetrics(const std::vector<const StationStatisticsOutput*>& stations)
 {
-    long double theoreticalSum = 0.0L;
-    long double practicalSum = 0.0L;
-    long double contentionSum = 0.0L;
-    std::size_t theoreticalCount = 0;
-    std::size_t practicalCount = 0;
+    std::vector<PhyCategoryOutput> values;
+    values.reserve(stations.size());
     for (const auto* station : stations)
     {
-        const auto& phy = station->statistics.phyStats;
-        if (phy.averageTheoreticalPhyRateMbps)
-        {
-            theoreticalSum += *phy.averageTheoreticalPhyRateMbps;
-            ++theoreticalCount;
-        }
-        if (phy.averagePracticalPhyRateMbps)
-        {
-            practicalSum += *phy.averagePracticalPhyRateMbps;
-            ++practicalCount;
-        }
-        contentionSum += *phy.contentionFraction;
+        values.push_back(station->statistics.phyStats);
     }
-
-    StationPhyMetricOutput expected;
-    if (theoreticalCount > 0)
-    {
-        expected.averageTheoreticalPhyRateMbps =
-            static_cast<double>(theoreticalSum / theoreticalCount);
-    }
-    if (practicalCount > 0)
-    {
-        expected.averagePracticalPhyRateMbps = static_cast<double>(practicalSum / practicalCount);
-    }
-    if (expected.averageTheoreticalPhyRateMbps && expected.averagePracticalPhyRateMbps &&
-        *expected.averageTheoreticalPhyRateMbps > 0.0)
-    {
-        expected.channelEfficiency =
-            *expected.averagePracticalPhyRateMbps / *expected.averageTheoreticalPhyRateMbps;
-    }
-    if (stationCount > 0)
-    {
-        expected.contentionFraction = static_cast<double>(contentionSum / stationCount);
-    }
-    return expected;
+    return DeriveBssDataTxMetrics(values);
 }
 
-/** Validate an AP DTO against its station-derived arithmetic. */
 void
-ValidateAccessPointMetrics(const AccessPointStatisticsOutput& accessPoint,
-                           const std::vector<const StationStatisticsOutput*>& stations,
-                           std::size_t stationCount)
+ValidateBssMetrics(const PhyCategoryOutput& phy,
+                   const std::vector<const StationStatisticsOutput*>& stations,
+                   const std::string& entity)
 {
-    ValidateDefaultCategories(accessPoint.statistics, "AP");
-    ValidateMetricFields(accessPoint.statistics.phyStats, "AP");
-    const auto expected = BuildExpectedAccessPointMetrics(stations, stationCount);
-    const auto& actual = accessPoint.statistics.phyStats;
-    RequireOptionalEqual(actual.averageTheoreticalPhyRateMbps,
-                         expected.averageTheoreticalPhyRateMbps,
-                         "theoretical PHY rate");
-    RequireOptionalEqual(actual.averagePracticalPhyRateMbps,
-                         expected.averagePracticalPhyRateMbps,
-                         "practical PHY rate");
-    RequireOptionalEqual(actual.channelEfficiency, expected.channelEfficiency, "efficiency");
-    RequireOptionalEqual(actual.contentionFraction,
-                         expected.contentionFraction,
-                         "contention fraction");
+    Require(!phy.dominantDataPhyRateMbps && !phy.dominantDataProfileShare &&
+                !phy.effectivePhyRateMbps && !phy.dataTxRateOverIntervalMbps &&
+                !phy.dataTxOpportunityGapFraction && phy.dataTxProfile.empty(),
+            entity + " contains station-role fields");
+    ValidateOptionalNonnegative(phy.meanDominantDataPhyRateMbps, entity + " dominant mean");
+    ValidateOptionalNonnegative(phy.meanEffectivePhyRateMbps, entity + " effective mean");
+    ValidateOptionalNonnegative(phy.aggregateDataTxRateOverIntervalMbps,
+                                entity + " aggregate interval rate");
+    const auto expected = ExpectedBssMetrics(stations);
+    const auto compare = [&entity](const auto& actual, const auto& wanted, const char* name) {
+        Require(actual.has_value() == wanted.has_value(),
+                entity + " " + name + " presence differs");
+        if (actual)
+        {
+            Require(NearlyEqual(*actual, *wanted), entity + " " + name + " differs");
+        }
+    };
+    compare(phy.meanDominantDataPhyRateMbps, expected.meanDominantDataPhyRateMbps, "dominant mean");
+    compare(phy.meanEffectivePhyRateMbps, expected.meanEffectivePhyRateMbps, "effective mean");
+    compare(phy.aggregateDataTxRateOverIntervalMbps,
+            expected.aggregateDataTxRateOverIntervalMbps,
+            "aggregate interval rate");
 }
 
-/** Validate an access point output identity against inventory. */
 void
 ValidateAccessPointIdentity(const AccessPointStatisticsOutput& output,
                             const ExperimentEntityIdentity& identity)
 {
     Require(output.accessPointId == identity.accessPointId && output.nodeId == identity.nodeId &&
                 output.nodeLabel == identity.nodeLabel && output.ipv4 == identity.ipv4,
-            "AP output identity does not match inventory");
+            "access point output does not match inventory");
 }
 
-/** Validate a station output identity against inventory. */
 void
 ValidateStationIdentity(const StationStatisticsOutput& output,
                         const ExperimentEntityIdentity& identity)
@@ -270,10 +213,9 @@ ValidateStationIdentity(const StationStatisticsOutput& output,
     Require(output.accessPointId == identity.accessPointId &&
                 output.stationIndex == identity.stationIndex && output.nodeId == identity.nodeId &&
                 output.nodeLabel == identity.nodeLabel && output.ipv4 == identity.ipv4,
-            "station output identity does not match inventory");
+            "station output does not match inventory");
 }
 
-/** Require all eight shared validation flags to be true. */
 void
 ValidateFlags(const ExperimentValidationOutput& validation)
 {
@@ -283,37 +225,33 @@ ValidateFlags(const ExperimentValidationOutput& validation)
     Require(validation.macPeerTotalsConsistent, "MAC peer totals are inconsistent");
     Require(validation.phyPeerTotalsConsistent, "PHY peer totals are inconsistent");
     Require(validation.apStationSenderTotalsConsistent,
-            "AP and station sender totals are inconsistent");
+            "AP/station sender totals are inconsistent");
     Require(validation.overallMatchesWindows, "overall does not match merged windows");
     Require(validation.uniquePhyPayloadWithinTaggedPayload,
             "unique PHY payload exceeds tagged payload");
 }
 
-/** Validate inventory shape and return station identities by BSS/index. */
-std::map<std::pair<uint32_t, uint32_t>, const ExperimentEntityIdentity*>
+using StationIdentityMap = std::map<std::pair<uint32_t, uint32_t>, const ExperimentEntityIdentity*>;
+
+StationIdentityMap
 ValidateInventory(const UnifiedExperimentSummary& summary, const SaturatedTcpConfig& config)
 {
     Require(summary.accessPointInventory.size() == 3,
             "benchmark inventory must contain exactly three access points");
-    Require(summary.stationInventory.size() ==
-                3 * static_cast<std::size_t>(config.benchmark.stationCountPerBss),
-            "station inventory does not match benchmark.sta_count_per_bss");
-
+    Require(summary.stationInventory.size() == 3 * config.benchmark.stationCountPerBss,
+            "benchmark station inventory size differs from configuration");
     std::set<uint32_t> nodeIds;
-    std::set<std::string> ipv4Addresses;
-    for (uint32_t accessPointId = 0; accessPointId < 3; ++accessPointId)
+    std::set<std::string> addresses;
+    for (uint32_t index = 0; index < 3; ++index)
     {
-        const auto& identity = summary.accessPointInventory.at(accessPointId);
+        const auto& identity = summary.accessPointInventory.at(index);
         Require(identity.kind == ExperimentEntityKind::ACCESS_POINT &&
-                    identity.accessPointId == accessPointId && !identity.stationIndex,
-                "access point inventory order or kind is invalid");
-        Require(nodeIds.insert(identity.nodeId).second,
-                "inventory contains a duplicate node identifier");
-        Require(ipv4Addresses.insert(identity.ipv4).second,
-                "inventory contains a duplicate IPv4 address");
+                    identity.accessPointId == index && !identity.stationIndex,
+                "access point inventory is out of order");
+        Require(nodeIds.insert(identity.nodeId).second && addresses.insert(identity.ipv4).second,
+                "inventory contains a duplicate AP identity");
     }
-
-    std::map<std::pair<uint32_t, uint32_t>, const ExperimentEntityIdentity*> stations;
+    StationIdentityMap stations;
     std::size_t position = 0;
     for (uint32_t accessPointId = 0; accessPointId < 3; ++accessPointId)
     {
@@ -324,209 +262,159 @@ ValidateInventory(const UnifiedExperimentSummary& summary, const SaturatedTcpCon
             Require(identity.kind == ExperimentEntityKind::STATION &&
                         identity.accessPointId == accessPointId &&
                         identity.stationIndex == stationIndex,
-                    "station inventory order, parent, or index is invalid");
-            Require(nodeIds.insert(identity.nodeId).second,
-                    "inventory contains a duplicate node identifier");
-            Require(ipv4Addresses.insert(identity.ipv4).second,
-                    "inventory contains a duplicate IPv4 address");
+                    "station inventory is out of order");
+            Require(nodeIds.insert(identity.nodeId).second &&
+                        addresses.insert(identity.ipv4).second,
+                    "inventory contains a duplicate station identity");
             stations.emplace(std::pair{accessPointId, stationIndex}, &identity);
         }
     }
     return stations;
 }
 
-/** Validate one sparse benchmark window. */
 void
 ValidateWindow(const ExperimentWindowOutput& window,
                const UnifiedExperimentSummary& summary,
-               const SaturatedTcpConfig& config,
-               const std::map<std::pair<uint32_t, uint32_t>, const ExperimentEntityIdentity*>&
-                   stationInventory)
+               const StationIdentityMap& inventory)
 {
     Require(window.windowIndex < 1000 / summary.statisticsWindowMs,
             "window index exceeds the one-second epoch");
     Require(NearlyEqual(window.windowStartMs,
-                        static_cast<double>(window.windowIndex) * summary.statisticsWindowMs),
-            "window start does not match its index");
-    Require(NearlyEqual(window.windowDurationMs, summary.statisticsWindowMs),
-            "window duration does not match statistics_window_ms");
-    Require(!window.stations.empty(), "sparse window contains no station activity");
-
-    std::map<uint32_t, std::vector<const StationStatisticsOutput*>> stationsByAccessPoint;
-    std::optional<std::pair<uint32_t, uint32_t>> previousStation;
+                        static_cast<double>(window.windowIndex) * summary.statisticsWindowMs) &&
+                NearlyEqual(window.windowDurationMs, summary.statisticsWindowMs),
+            "window position or duration is invalid");
+    Require(!window.stations.empty(), "sparse window contains no station data profile");
+    std::map<uint32_t, std::vector<const StationStatisticsOutput*>> byAccessPoint;
+    std::optional<std::pair<uint32_t, uint32_t>> previous;
     for (const auto& station : window.stations)
     {
-        const auto key = std::pair{station.accessPointId, station.stationIndex};
-        const auto identity = stationInventory.find(key);
-        Require(identity != stationInventory.end(), "window station is absent from inventory");
-        Require(!previousStation || *previousStation < key,
-                "window stations are duplicated or out of order");
-        previousStation = key;
+        const std::pair key{station.accessPointId, station.stationIndex};
+        const auto identity = inventory.find(key);
+        Require(identity != inventory.end() && (!previous || *previous < key),
+                "window stations are absent, duplicated, or out of order");
+        previous = key;
         ValidateStationIdentity(station, *identity->second);
         ValidateDefaultCategories(station.statistics, "window station");
-        ValidateMetricFields(station.statistics.phyStats, "window station");
-        Require(station.statistics.phyStats.averageTheoreticalPhyRateMbps.has_value() ||
-                    *station.statistics.phyStats.contentionFraction > 0.0,
-                "window emitted a station without PPDU or contention activity");
-        stationsByAccessPoint[station.accessPointId].push_back(&station);
+        ValidateStationMetrics(station.statistics.phyStats,
+                               window.windowDurationMs,
+                               "window station");
+        Require(!station.statistics.phyStats.dataTxProfile.empty(),
+                "sparse window contains an inactive station");
+        byAccessPoint[station.accessPointId].push_back(&station);
     }
-
-    Require(window.accessPoints.size() == stationsByAccessPoint.size(),
-            "window AP set does not match active station parents");
-    std::size_t accessPointPosition = 0;
-    for (const auto& accessPointIdentity : summary.accessPointInventory)
+    Require(window.accessPoints.size() == byAccessPoint.size(),
+            "window BSS parents do not match active stations");
+    std::size_t position = 0;
+    for (const auto& identity : summary.accessPointInventory)
     {
-        const auto activeStations = stationsByAccessPoint.find(accessPointIdentity.accessPointId);
-        if (activeStations == stationsByAccessPoint.end())
+        const auto stations = byAccessPoint.find(identity.accessPointId);
+        if (stations == byAccessPoint.end())
         {
             continue;
         }
-        const auto& accessPoint = window.accessPoints.at(accessPointPosition++);
-        ValidateAccessPointIdentity(accessPoint, accessPointIdentity);
-        ValidateAccessPointMetrics(accessPoint,
-                                   activeStations->second,
-                                   config.benchmark.stationCountPerBss);
+        const auto& accessPoint = window.accessPoints.at(position++);
+        ValidateAccessPointIdentity(accessPoint, identity);
+        ValidateDefaultCategories(accessPoint.statistics, "window BSS");
+        ValidateBssMetrics(accessPoint.statistics.phyStats, stations->second, "window BSS");
     }
 }
 
-/** Validate dense overall entity shape and BSS arithmetic. */
 void
-ValidateOverall(const UnifiedExperimentSummary& summary,
-                const SaturatedTcpConfig& config,
-                const std::map<std::pair<uint32_t, uint32_t>, const ExperimentEntityIdentity*>&
-                    stationInventory)
+ValidateOverall(const UnifiedExperimentSummary& summary, const StationIdentityMap& inventory)
 {
     Require(summary.overall.stations.size() == summary.stationInventory.size(),
             "overall station output is not dense");
     Require(summary.overall.accessPoints.size() == summary.accessPointInventory.size(),
-            "overall AP output is not dense");
-
-    std::map<uint32_t, std::vector<const StationStatisticsOutput*>> stationsByAccessPoint;
+            "overall BSS output is not dense");
+    std::map<uint32_t, std::vector<const StationStatisticsOutput*>> byAccessPoint;
     for (std::size_t index = 0; index < summary.overall.stations.size(); ++index)
     {
         const auto& station = summary.overall.stations.at(index);
-        const auto& identity = summary.stationInventory.at(index);
-        ValidateStationIdentity(station, identity);
-        Require(stationInventory.contains({station.accessPointId, station.stationIndex}),
+        ValidateStationIdentity(station, summary.stationInventory.at(index));
+        Require(inventory.contains({station.accessPointId, station.stationIndex}),
                 "overall station is absent from inventory");
         ValidateDefaultCategories(station.statistics, "overall station");
-        ValidateMetricFields(station.statistics.phyStats, "overall station");
-        stationsByAccessPoint[station.accessPointId].push_back(&station);
+        ValidateStationMetrics(station.statistics.phyStats, 1000.0, "overall station");
+        byAccessPoint[station.accessPointId].push_back(&station);
     }
     for (std::size_t index = 0; index < summary.overall.accessPoints.size(); ++index)
     {
         const auto& accessPoint = summary.overall.accessPoints.at(index);
-        const auto& identity = summary.accessPointInventory.at(index);
-        ValidateAccessPointIdentity(accessPoint, identity);
-        ValidateAccessPointMetrics(accessPoint,
-                                   stationsByAccessPoint.at(accessPoint.accessPointId),
-                                   config.benchmark.stationCountPerBss);
+        ValidateAccessPointIdentity(accessPoint, summary.accessPointInventory.at(index));
+        ValidateDefaultCategories(accessPoint.statistics, "overall BSS");
+        ValidateBssMetrics(accessPoint.statistics.phyStats,
+                           byAccessPoint.at(accessPoint.accessPointId),
+                           "overall BSS");
     }
 }
 
-/** Validate public overall values against the sparse station windows. */
 void
-ValidateOverallAgainstWindows(const UnifiedExperimentSummary& summary)
+ValidateOverallProfiles(const UnifiedExperimentSummary& summary)
 {
     using StationKey = std::pair<uint32_t, uint32_t>;
-
-    struct WindowMetric
-    {
-        double durationMs;              ///< Window duration in milliseconds.
-        const PhyCategoryOutput* value; ///< Station PHY fields in that window.
-    };
-
-    std::map<StationKey, std::vector<WindowMetric>> metricsByStation;
+    using ProfileKey = std::tuple<uint16_t, uint8_t, uint8_t>;
+    std::map<StationKey, std::map<ProfileKey, DataTxProfileOutput>> merged;
     for (const auto& window : summary.windows)
     {
         for (const auto& station : window.stations)
         {
-            metricsByStation[{station.accessPointId, station.stationIndex}].push_back(
-                {window.windowDurationMs, &station.statistics.phyStats});
-        }
-    }
-
-    for (const auto& station : summary.overall.stations)
-    {
-        const StationKey key{station.accessPointId, station.stationIndex};
-        const auto windows = metricsByStation.find(key);
-
-        long double expectedContention = 0.0L;
-        std::optional<double> minimumTheoretical;
-        std::optional<double> maximumTheoretical;
-        std::optional<double> minimumPractical;
-        std::optional<double> maximumPractical;
-        if (windows != metricsByStation.end())
-        {
-            for (const auto& window : windows->second)
+            auto& profiles = merged[{station.accessPointId, station.stationIndex}];
+            for (const auto& profile : station.statistics.phyStats.dataTxProfile)
             {
-                expectedContention +=
-                    *window.value->contentionFraction * window.durationMs / 1000.0L;
-                if (window.value->averageTheoreticalPhyRateMbps)
-                {
-                    const double theoretical = *window.value->averageTheoreticalPhyRateMbps;
-                    const double practical = *window.value->averagePracticalPhyRateMbps;
-                    minimumTheoretical = minimumTheoretical
-                                             ? std::min(*minimumTheoretical, theoretical)
-                                             : theoretical;
-                    maximumTheoretical = maximumTheoretical
-                                             ? std::max(*maximumTheoretical, theoretical)
-                                             : theoretical;
-                    minimumPractical =
-                        minimumPractical ? std::min(*minimumPractical, practical) : practical;
-                    maximumPractical =
-                        maximumPractical ? std::max(*maximumPractical, practical) : practical;
-                }
+                auto& total = profiles[{profile.channelWidthMhz, profile.nss, profile.mcs}];
+                total.channelWidthMhz = profile.channelWidthMhz;
+                total.nss = profile.nss;
+                total.mcs = profile.mcs;
+                total.transmittedPsduBytes += profile.transmittedPsduBytes;
+                total.ppduAttemptCount += profile.ppduAttemptCount;
+                total.ppduAirtimeUs += profile.ppduAirtimeUs;
             }
         }
-
-        const auto& overall = station.statistics.phyStats;
-        Require(overall.averageTheoreticalPhyRateMbps.has_value() == minimumTheoretical.has_value(),
-                "overall station rate presence does not match window PPDU observations");
-        if (overall.averageTheoreticalPhyRateMbps)
+    }
+    for (const auto& station : summary.overall.stations)
+    {
+        const auto expected = merged.find({station.accessPointId, station.stationIndex});
+        const auto& actual = station.statistics.phyStats.dataTxProfile;
+        const std::size_t expectedSize = expected == merged.end() ? 0 : expected->second.size();
+        Require(actual.size() == expectedSize,
+                "overall station profile keys do not reproduce sparse windows");
+        if (expected == merged.end())
         {
-            Require(*overall.averageTheoreticalPhyRateMbps >=
-                            *minimumTheoretical -
-                                METRIC_TOLERANCE * std::max(1.0, *minimumTheoretical) &&
-                        *overall.averageTheoreticalPhyRateMbps <=
-                            *maximumTheoretical +
-                                METRIC_TOLERANCE * std::max(1.0, *maximumTheoretical),
-                    "overall theoretical PHY rate is outside its window range");
-            Require(*overall.averagePracticalPhyRateMbps >=
-                            *minimumPractical -
-                                METRIC_TOLERANCE * std::max(1.0, *minimumPractical) &&
-                        *overall.averagePracticalPhyRateMbps <=
-                            *maximumPractical + METRIC_TOLERANCE * std::max(1.0, *maximumPractical),
-                    "overall practical PHY rate is outside its window range");
+            continue;
         }
-        Require(NearlyEqual(*overall.contentionFraction, static_cast<double>(expectedContention)),
-                "overall contention does not reproduce sparse windows");
+        std::size_t index = 0;
+        for (const auto& [key, wanted] : expected->second)
+        {
+            const auto& value = actual.at(index++);
+            Require(std::tuple{value.channelWidthMhz, value.nss, value.mcs} == key &&
+                        NearlyEqual(value.transmittedPsduBytes, wanted.transmittedPsduBytes) &&
+                        value.ppduAttemptCount == wanted.ppduAttemptCount &&
+                        NearlyEqual(value.ppduAirtimeUs, wanted.ppduAirtimeUs),
+                    "overall station profile values do not reproduce sparse windows");
+        }
     }
 }
 
-/** Validate the complete benchmark summary before any output begins. */
 void
 ValidateBenchmarkSummary(const UnifiedExperimentSummary& summary, const SaturatedTcpConfig& config)
 {
     ValidateSaturatedTcpConfig(config);
     Require(summary.statisticsWindowMs == config.statistics.windowMs,
-            "statistics_window_ms does not match effective configuration");
-    const auto stationInventory = ValidateInventory(summary, config);
-
-    std::optional<uint64_t> previousWindowIndex;
+            "statistics_window_ms does not match configuration");
+    const auto inventory = ValidateInventory(summary, config);
+    std::optional<uint64_t> previousWindow;
     for (const auto& window : summary.windows)
     {
-        Require(!previousWindowIndex || *previousWindowIndex < window.windowIndex,
+        Require(!previousWindow || *previousWindow < window.windowIndex,
                 "windows are duplicated or out of order");
-        previousWindowIndex = window.windowIndex;
-        ValidateWindow(window, summary, config, stationInventory);
+        previousWindow = window.windowIndex;
+        ValidateWindow(window, summary, inventory);
     }
-    ValidateOverall(summary, config, stationInventory);
-    ValidateOverallAgainstWindows(summary);
+    ValidateOverall(summary, inventory);
+    ValidateOverallProfiles(summary);
     ValidateFlags(summary.validation);
 }
 
-/** Remove a newly created partial output and throw its original failure. */
 [[noreturn]] void
 CleanupOwnedOutputAndThrow(std::ofstream& output,
                            const std::string& outputPath,
@@ -565,7 +453,6 @@ WriteExclusiveJsonFile(const std::string& outputPath, const JsonBodyWriter& writ
         throw std::runtime_error("cannot exclusively create saturated TCP output: '" + outputPath +
                                  "'");
     }
-
     try
     {
         writeBody(output);
@@ -614,19 +501,21 @@ WriteSaturatedMeasurementSemantics(JsonWriter& writer)
     writer.Key("access_point_role");
     writer.Value("station-derived BSS aggregate");
     writer.Key("station_role");
-    writer.Value("per-station transmitted PPDU detail");
+    writer.Value("per-station transmitted data PPDU detail");
     writer.Key("parent_child_duplication");
     writer.Value("intentional");
     writer.Key("phy_observation_scope");
-    writer.Value("qualifying station-transmitted PPDUs");
+    writer.Value("qualifying station-transmitted unicast data PPDUs");
     writer.Key("phy_rate_source");
-    writer.Value("actual WifiTxVector and complete PPDU airtime");
-    writer.Key("phy_practical_rate");
-    writer.Value("qualifying PSDU bits per complete PPDU airtime");
-    writer.Key("contention_fraction");
-    writer.Value("unioned station EDCA waiting time per interval");
+    writer.Value("actual fixed-invariant WifiTxVector NSS and MCS");
+    writer.Key("effective_phy_rate");
+    writer.Value("transmitted data PSDU bits per data PPDU airtime");
+    writer.Key("data_tx_rate_over_interval");
+    writer.Value("transmitted data PSDU bits per statistics interval");
+    writer.Key("data_tx_opportunity_gap");
+    writer.Value("time outside station data PPDU airtime");
     writer.Key("sparse_window_absence");
-    writer.Value("zero station PPDU and contention activity");
+    writer.Value("zero station data profile activity");
     writer.Key("undefined_derived_values");
     writer.Null();
     writer.EndObject();
