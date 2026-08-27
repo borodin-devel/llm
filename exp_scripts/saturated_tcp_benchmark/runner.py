@@ -367,6 +367,7 @@ def _run_process(
     *,
     resource_capability: ResourceCapability | None = None,
     resource_callback: Callable[[ResourceMeasurement], None] | None = None,
+    deferred_resource_errors: list[BaseException] | None = None,
 ) -> int:
     """Run one command in a dedicated group and leave no live descendants."""
     process = process_factory(
@@ -442,6 +443,11 @@ def _run_process(
                     primary_error.add_note(
                         f"secondary process resource retention failure: {secondary_error}"
                     )
+                elif deferred_resource_errors is not None and not isinstance(
+                    secondary_error,
+                    (KeyboardInterrupt, SystemExit),
+                ):
+                    deferred_resource_errors.append(secondary_error)
                 elif secondary_error is retention_error:
                     raise
                 else:
@@ -649,6 +655,37 @@ def _child_failure(
                     f"{label} tail (last {DIAGNOSTIC_TAIL_BYTES} bytes):\n{tail}"
                 )
     return RunnerError("\n".join(details))
+
+
+def _attach_deferred_resource_errors(
+    primary_error: BaseException,
+    deferred_errors: list[BaseException],
+) -> None:
+    for deferred_error in deferred_errors:
+        primary_error.add_note(
+            f"secondary process resource retention failure: {deferred_error}"
+        )
+
+
+def _raise_deferred_resource_errors(
+    deferred_errors: list[BaseException],
+    command: Sequence[str],
+    stdout_path: Path,
+    stderr_path: Path,
+) -> None:
+    if not deferred_errors:
+        return
+    failure = _child_failure(
+        str(deferred_errors[0]),
+        command,
+        stdout_path,
+        stderr_path,
+    )
+    for deferred_error in deferred_errors[1:]:
+        failure.add_note(
+            f"additional process resource retention failure: {deferred_error}"
+        )
+    raise failure from deferred_errors[0]
 
 
 def _publish_resource_document(
@@ -862,6 +899,7 @@ def run_benchmark(
             stdout_path = attempt_directory / "stdout.log"
             stderr_path = attempt_directory / "stderr.log"
             resource_usage_path = attempt_directory / "resource_usage.json"
+            deferred_resource_errors: list[BaseException] = []
 
             command = build_ns3_command(
                 ns3,
@@ -955,6 +993,7 @@ def run_benchmark(
                             PROCESS_TIMEOUT_SECONDS,
                             resource_capability=resource_capability,
                             resource_callback=retain_attempt_resource,
+                            deferred_resource_errors=deferred_resource_errors,
                         )
                     finally:
                         _require_attempt_hierarchy(
@@ -1015,12 +1054,17 @@ def run_benchmark(
                         "attempt stderr log",
                         stderr_identity,
                     )
-                raise _child_failure(
+                failure = _child_failure(
                     str(error),
                     command,
                     stdout_path,
                     stderr_path,
-                ) from error
+                )
+                _attach_deferred_resource_errors(
+                    failure,
+                    deferred_resource_errors,
+                )
+                raise failure from error
 
             _require_attempt_hierarchy(
                 root,
@@ -1053,20 +1097,30 @@ def run_benchmark(
                 stderr_identity,
             )
             if return_code != 0:
-                raise _child_failure(
+                failure = _child_failure(
                     f"benchmark process failed with return code {return_code}",
                     command,
                     stdout_path,
                     stderr_path,
                 )
+                _attach_deferred_resource_errors(
+                    failure,
+                    deferred_resource_errors,
+                )
+                raise failure
             try:
                 _require_regular_file_no_follow(
                     output_path, attempt_directory, "benchmark output"
                 )
             except RunnerError as error:
-                raise _child_failure(
+                failure = _child_failure(
                     str(error), command, stdout_path, stderr_path
-                ) from error
+                )
+                _attach_deferred_resource_errors(
+                    failure,
+                    deferred_resource_errors,
+                )
+                raise failure from error
 
             expected_configuration = _expected_configuration(
                 loaded,
@@ -1082,12 +1136,23 @@ def run_benchmark(
                     expected_configuration=expected_configuration,
                 )
             except OutputValidationError as error:
-                raise _child_failure(
+                failure = _child_failure(
                     f"benchmark output validation failed: {error}",
                     command,
                     stdout_path,
                     stderr_path,
-                ) from error
+                )
+                _attach_deferred_resource_errors(
+                    failure,
+                    deferred_resource_errors,
+                )
+                raise failure from error
+            _raise_deferred_resource_errors(
+                deferred_resource_errors,
+                command,
+                stdout_path,
+                stderr_path,
+            )
             _require_attempt_hierarchy(
                 root,
                 run_parent,

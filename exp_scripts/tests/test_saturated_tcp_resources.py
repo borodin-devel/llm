@@ -62,6 +62,24 @@ def _process_group_exists(process_group_id: int) -> bool:
     return True
 
 
+def _cleanup_real_process(
+    process: subprocess.Popen,
+    monitor: ProcessTreeResourceMonitor | None,
+) -> None:
+    if process.poll() is None or _process_group_exists(process.pid):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if process.poll() is None:
+        process.wait(timeout=1.0)
+    if monitor is not None:
+        try:
+            monitor.finish(process.returncode)
+        except ResourceError:
+            pass
+
+
 class ProcParserTest(unittest.TestCase):
     """Catch unit, traversal, race, and diagnostic errors in proc parsing."""
 
@@ -273,13 +291,15 @@ class LiveProcessMonitorTest(unittest.TestCase):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            monitor = ProcessTreeResourceMonitor(
-                process.pid,
-                detect_resource_capability(),
-                sample_interval_ms=100,
-            )
-            monitor.start()
+            monitor = None
+            monitor_finished = False
             try:
+                monitor = ProcessTreeResourceMonitor(
+                    process.pid,
+                    detect_resource_capability(),
+                    sample_interval_ms=100,
+                )
+                monitor.start()
                 deadline = time.monotonic() + 2.0
                 while not child_pid_path.exists() and time.monotonic() < deadline:
                     time.sleep(0.01)
@@ -291,13 +311,12 @@ class LiveProcessMonitorTest(unittest.TestCase):
                 )
                 exit_code = process.wait(timeout=2.0)
                 measurement = monitor.finish(exit_code)
+                monitor_finished = True
             finally:
-                if process.poll() is None or _process_group_exists(process.pid):
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    process.wait(timeout=1.0)
+                _cleanup_real_process(
+                    process,
+                    None if monitor_finished else monitor,
+                )
 
             self.assertEqual(
                 measurement.usage.sample_interval_ms,
@@ -317,15 +336,22 @@ class LiveProcessMonitorTest(unittest.TestCase):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        monitor = ProcessTreeResourceMonitor(process.pid, detect_resource_capability())
-        monitor.start()
+        monitor = None
+        monitor_finished = False
         try:
+            monitor = ProcessTreeResourceMonitor(
+                process.pid,
+                detect_resource_capability(),
+            )
+            monitor.start()
             exit_code = process.wait(timeout=1.0)
             measurement = monitor.finish(exit_code)
+            monitor_finished = True
         finally:
-            if process.poll() is None:
-                process.kill()
-                process.wait(timeout=1.0)
+            _cleanup_real_process(
+                process,
+                None if monitor_finished else monitor,
+            )
 
         self.assertEqual(measurement.usage.exit_code, 0)
         self.assertGreaterEqual(measurement.usage.peak_rss_bytes, 0)
@@ -364,6 +390,30 @@ class LiveProcessMonitorTest(unittest.TestCase):
 
         self.assertEqual(measurement.usage.peak_rss_bytes, 7_168)
         self.assertEqual(measurement.minimum_mem_available_bytes, 768_000)
+
+    def test_synchronous_start_error_remains_an_error_at_finish(self) -> None:
+        with TemporaryDirectory() as directory:
+            proc_root = Path(directory) / "proc"
+            proc_root.mkdir()
+            _write_process(proc_root, 400, rss_kb=None)
+            meminfo = proc_root / "meminfo"
+            meminfo.write_text(
+                "MemTotal: 1000 kB\nMemAvailable: 750 kB\n",
+                encoding="ascii",
+            )
+            capability = resources.ResourceCapability(
+                monitor_mode="linux_proc",
+                proc_root=proc_root,
+                meminfo_path=meminfo,
+                initial_memory_snapshot=MemorySnapshot(1_024_000, 768_000),
+                diagnostic="test",
+            )
+            monitor = ProcessTreeResourceMonitor(400, capability)
+
+            with self.assertRaisesRegex(ResourceError, "VmRSS"):
+                monitor.start()
+            with self.assertRaisesRegex(ResourceError, "VmRSS"):
+                monitor.finish(1)
 
 
 class ResourcePublicationTest(unittest.TestCase):
@@ -407,7 +457,7 @@ class ResourcePublicationTest(unittest.TestCase):
             self.assertTrue(output_path.is_symlink())
             self.assertEqual(outside.read_text(encoding="ascii"), '{"sentinel":true}')
 
-    def test_refuses_temp_name_substitution_without_publishing_symlink(self) -> None:
+    def test_no_proc_publication_refuses_temp_name_substitution(self) -> None:
         document = {"schema_version": 1, "peak_rss_bytes": 4096}
         with TemporaryDirectory() as directory, TemporaryDirectory() as outside_directory:
             parent = Path(directory)
@@ -415,8 +465,12 @@ class ResourcePublicationTest(unittest.TestCase):
             outside = Path(outside_directory) / "outside.json"
             outside.write_text('{"sentinel":true}', encoding="ascii")
             real_link = os.link
+            link_sources = []
 
             def substituting_link(source, destination, **kwargs):
+                link_sources.append(source)
+                if str(source).startswith("/proc/"):
+                    raise FileNotFoundError(errno.ENOENT, "proc is unavailable")
                 temporary = next(path for path in parent.iterdir() if path.name.endswith(".tmp"))
                 temporary.unlink()
                 temporary.symlink_to(outside)
@@ -430,6 +484,8 @@ class ResourcePublicationTest(unittest.TestCase):
 
             self.assertFalse(output_path.exists())
             self.assertFalse(output_path.is_symlink())
+            self.assertEqual(len(link_sources), 1)
+            self.assertFalse(str(link_sources[0]).startswith("/proc/"))
             self.assertEqual(outside.read_text(encoding="ascii"), '{"sentinel":true}')
 
     def test_rejects_replaced_parent_directory_identity(self) -> None:

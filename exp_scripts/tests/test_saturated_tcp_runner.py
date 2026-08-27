@@ -17,6 +17,7 @@ import time
 import unittest
 from unittest import mock
 
+from saturated_tcp_benchmark import resources
 from saturated_tcp_benchmark import runner
 from saturated_tcp_benchmark.matrix import ExperimentConfiguration, build_matrix
 from saturated_tcp_benchmark.runner import (
@@ -132,6 +133,16 @@ def _process_group_exists(process_group_id: int) -> bool:
     except ProcessLookupError:
         return False
     return True
+
+
+def _cleanup_real_process_group(process: subprocess.Popen) -> None:
+    if process.poll() is None or _process_group_exists(process.pid):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if process.poll() is None:
+        process.wait(timeout=1.0)
 
 
 def create_fake_ns3_root(directory: str) -> Path:
@@ -578,37 +589,41 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                     processes.append(process)
                     return process
 
-                original_start = runner.ProcessTreeResourceMonitor.start
+                original_start = resources.threading.Thread.start
 
-                def start_then_fail(monitor):
-                    original_start(monitor)
+                def start_then_fail(thread):
+                    original_start(thread)
                     raise start_error
 
-                with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
-                    with (
-                        mock.patch.object(
-                            runner.ProcessTreeResourceMonitor,
-                            "start",
-                            new=start_then_fail,
-                        ),
-                        self.assertRaises(expected_error),
-                    ):
-                        runner._run_process(
-                            process_factory,
-                            [sys.executable, "-c", "import time; time.sleep(30)"],
-                            temporary,
-                            stdout,
-                            stderr,
-                            2.0,
-                            resource_capability=runner.detect_resource_capability(),
-                        )
+                try:
+                    with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
+                        with (
+                            mock.patch.object(
+                                resources.threading.Thread,
+                                "start",
+                                new=start_then_fail,
+                            ),
+                            self.assertRaises(expected_error),
+                        ):
+                            runner._run_process(
+                                process_factory,
+                                [sys.executable, "-c", "import time; time.sleep(30)"],
+                                temporary,
+                                stdout,
+                                stderr,
+                                2.0,
+                                resource_capability=runner.detect_resource_capability(),
+                            )
 
-                self.assertEqual(len(processes), 1)
-                self.assertIsNotNone(
-                    processes[0].poll(),
-                    "start failure leaked direct child",
-                )
-                self.assertFalse(_process_group_exists(processes[0].pid))
+                    self.assertEqual(len(processes), 1)
+                    self.assertIsNotNone(
+                        processes[0].poll(),
+                        "start failure leaked direct child",
+                    )
+                    self.assertFalse(_process_group_exists(processes[0].pid))
+                finally:
+                    for process in processes:
+                        _cleanup_real_process_group(process)
 
     def test_primary_failures_survive_overlapping_resource_retention_errors(self) -> None:
         configuration = build_matrix()[0]
@@ -667,6 +682,41 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                             resource_capability=fallback_resource_capability(directory),
                             output=StringIO(),
                         )
+                self.assertEqual(outside.read_text(encoding="ascii"), '{"sentinel":true}')
+
+    def test_attempt_collision_is_secondary_to_nonzero_and_invalid_output(self) -> None:
+        configuration = build_matrix()[0]
+        cases = ("nonzero", "invalid")
+        for case in cases:
+            with self.subTest(case=case), TemporaryDirectory() as directory:
+                root = create_fake_ns3_root(directory)
+                run_directory = root / "run" / f"scripted_exp_attempt_primary_{case}"
+                attempt_directory = run_directory / "experiment_001/attempt_1"
+                outside = Path(directory) / "outside.json"
+                outside.write_text('{"sentinel":true}', encoding="ascii")
+
+                def failing_process(command, **kwargs):
+                    (attempt_directory / "resource_usage.json").symlink_to(outside)
+                    if case == "invalid":
+                        (attempt_directory / "output.json").write_text("{}", encoding="utf-8")
+                        return _FakeProcess(0)
+                    return _FakeProcess(7)
+
+                diagnostic = (
+                    "return code 7"
+                    if case == "nonzero"
+                    else "output validation failed"
+                )
+                with self.assertRaisesRegex(RunnerError, diagnostic):
+                    run_benchmark(
+                        ns3_root=root,
+                        config_path=DEFAULT_CONFIG,
+                        timestamp=f"attempt_primary_{case}",
+                        configurations=(configuration,),
+                        process_factory=failing_process,
+                        resource_capability=fallback_resource_capability(directory),
+                        output=StringIO(),
+                    )
                 self.assertEqual(outside.read_text(encoding="ascii"), '{"sentinel":true}')
 
     def test_process_failures_stop_with_no_rows_for_failed_attempt(self) -> None:
@@ -1078,12 +1128,19 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
             )
             stdout_path = temporary / "stdout.log"
             stderr_path = temporary / "stderr.log"
+            processes = []
+
+            def process_factory(command, **kwargs):
+                process = subprocess.Popen(command, **kwargs)
+                processes.append(process)
+                return process
+
             started = time.monotonic()
             try:
                 with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
                     with self.assertRaisesRegex(RunnerError, "timed out"):
                         runner._run_process(
-                            subprocess.Popen,
+                            process_factory,
                             [sys.executable, "-c", parent],
                             temporary,
                             stdout,
@@ -1098,6 +1155,8 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                     self, _stored_test_process_identity(identity_path)
                 )
             finally:
+                for process in processes:
+                    _cleanup_real_process_group(process)
                 _cleanup_test_process(identity_path)
 
     def test_wrapper_exit_kills_term_ignoring_child_after_logs_close(self) -> None:
@@ -1126,12 +1185,19 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
             )
             stdout_path = temporary / "stdout.log"
             stderr_path = temporary / "stderr.log"
+            processes = []
+
+            def process_factory(command, **kwargs):
+                process = subprocess.Popen(command, **kwargs)
+                processes.append(process)
+                return process
+
             started = time.monotonic()
             try:
                 with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
                     with self.assertRaisesRegex(RunnerError, "descendant"):
                         runner._run_process(
-                            subprocess.Popen,
+                            process_factory,
                             [sys.executable, "-c", parent],
                             temporary,
                             stdout,
@@ -1146,6 +1212,8 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                     self, _stored_test_process_identity(identity_path)
                 )
             finally:
+                for process in processes:
+                    _cleanup_real_process_group(process)
                 _cleanup_test_process(identity_path)
 
     def test_sigint_kills_real_term_ignoring_process_tree(self) -> None:
@@ -1168,9 +1236,11 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                 f"subprocess.Popen([sys.executable, '-c', {grandchild!r}]);"
                 "time.sleep(30)"
             )
+            processes = []
 
             def interrupting_factory(command, **kwargs):
                 process = subprocess.Popen(command, **kwargs)
+                processes.append(process)
                 deadline = time.monotonic() + 1.0
                 while not identity_path.exists() and time.monotonic() < deadline:
                     time.sleep(0.01)
@@ -1196,6 +1266,8 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                     self, _stored_test_process_identity(identity_path)
                 )
             finally:
+                for process in processes:
+                    _cleanup_real_process_group(process)
                 _cleanup_test_process(identity_path)
 
     def test_unsupported_mu_stops_before_creating_output(self) -> None:

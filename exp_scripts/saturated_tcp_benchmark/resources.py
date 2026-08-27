@@ -366,7 +366,12 @@ class ProcessTreeResourceMonitor:
         self._started_at = time.monotonic()
         if self._capability.sequential_only:
             return
-        self._sample()
+        try:
+            self._sample()
+        except BaseException as error:
+            self._error = error
+            self._stop.set()
+            raise
         self._thread = threading.Thread(
             target=self._run,
             name=f"resource-monitor-{self._root_pid}",
@@ -430,7 +435,9 @@ def publish_json_exclusive(
         f".{output_path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
     )
     temporary_descriptor: int | None = None
+    destination_descriptor: int | None = None
     temporary_identity: tuple[int, int] | None = None
+    publication_created = False
     try:
         temporary_descriptor = os.open(
             temporary_name,
@@ -455,30 +462,46 @@ def publish_json_exclusive(
         temporary_identity = (temporary_status.st_dev, temporary_status.st_ino)
         if not stat.S_ISREG(temporary_status.st_mode):
             raise ResourceError(f"resource temporary file is not regular: {output_path}")
+        os.link(
+            temporary_name,
+            output_path.name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        publication_created = True
         try:
-            os.link(
-                f"/proc/self/fd/{temporary_descriptor}",
+            destination_descriptor = os.open(
                 output_path.name,
-                dst_dir_fd=parent_descriptor,
-                follow_symlinks=True,
+                os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=parent_descriptor,
             )
-        except FileNotFoundError as error:
+        except OSError as error:
             raise ResourceError(
                 f"resource temporary identity changed during publication: {output_path}"
             ) from error
-        destination_status = os.stat(
-            output_path.name,
-            dir_fd=parent_descriptor,
-            follow_symlinks=False,
-        )
+        destination_status = os.fstat(destination_descriptor)
         if (
             not stat.S_ISREG(destination_status.st_mode)
             or (destination_status.st_dev, destination_status.st_ino)
             != temporary_identity
         ):
-            raise ResourceError(f"published resource identity mismatch: {output_path}")
+            raise ResourceError(
+                f"resource temporary identity changed during publication: {output_path}"
+            )
         os.fsync(parent_descriptor)
+    except BaseException:
+        if publication_created:
+            try:
+                os.unlink(output_path.name, dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                pass
+            else:
+                os.fsync(parent_descriptor)
+        raise
     finally:
+        if destination_descriptor is not None:
+            os.close(destination_descriptor)
         if temporary_descriptor is not None:
             os.close(temporary_descriptor)
         try:
