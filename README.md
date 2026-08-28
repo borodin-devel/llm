@@ -1066,6 +1066,8 @@ Run commands from the outer ns-3 root:
 ./ns3 run "saturated-tcp-scenario --config contrib/llm/config/saturated_tcp_config.toml"
 python3 contrib/llm/exp_scripts/saturated_tcp_experiment.py
 python3 contrib/llm/exp_scripts/saturated_tcp_experiment.py \
+  --traffic-warmup-seconds 10
+python3 contrib/llm/exp_scripts/saturated_tcp_experiment.py \
   --experiment-ids 19 --jobs 1 --memory-reserve-percent 20
 python3 contrib/llm/exp_scripts/baseline_warmup_experiment.py \
   --jobs 0 --memory-reserve-percent 20
@@ -1076,14 +1078,16 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
 ```
 
 The first command runs the default 5-STA, high-RSSI, isolated, UL, SU case.
-The second runs the complete resource-aware matrix. The third requests only
-ID 19; its matching one-STA baseline ID is included automatically. The fourth
-runs all 18 single-STA baseline coordinates with 0, 1, 5, and 10 second
+The second runs the complete resource-aware matrix with the TOML warm-up. The
+third runs that complete matrix with a fixed 10-second warm-up while preserving
+the complete-matrix resource and audit contract. The fourth requests only ID
+19; its matching one-STA baseline ID is included automatically. The fifth runs
+all 18 single-STA baseline coordinates with 0, 1, 5, and 10 second
 warm-ups at `rng_run = 1`. It retains four independently audited raw runs and
 writes a timestamped 216-row Excel-compatible CSV under `run/`; `--output`
 selects another exclusive path. The accepted repository result is
 `traces/baseline_warmup_results.csv`. Its extra identity column is
-`traffic_warmup_seconds`. The fifth command audits a retained run read-only.
+`traffic_warmup_seconds`. The sixth command audits a retained run read-only.
 The normal runner fixes `rng_seed = 12345`, sets `rng_run` to the
 repetition-attempt number, and never averages repetitions.
 
@@ -1094,6 +1098,11 @@ With the default single repetition, the honest SU-only matrix is exactly:
   = 126 ns-3 runs
 126 runs * 3 BSS rows = 378 CSV rows
 ```
+
+The checked-in `traces/saturated_tcp_benchmark_results.csv` is the accepted
+complete-matrix run with `traffic_warmup_seconds = 10`, `rng_seed = 12345`,
+and `rng_run = 1`. The primary CSV keeps its fixed 193-column schema; the
+warm-up provenance is retained in every raw `output.json` and documented here.
 
 ### Runner output, retention, and fixed Excel CSV
 
@@ -1165,7 +1174,9 @@ bss_competition_overhead_vs_single_sta =
 
 The one-STA row is `0.0`; a zero baseline is empty. Results are signed and not
 clamped. Because the aggregate counts retransmission bytes, this is not TCP
-goodput loss or pure contention, and in `dl` it covers STA TCP-ACK attempts.
+goodput loss or pure contention, and in `dl` it covers STA TCP-ACK attempts. A
+tiny but nonzero baseline can therefore produce a very large negative value;
+that is denominator sensitivity, not a percentage bounded to `[-1, 1]`.
 
 There is exactly one CSV with exactly 193 fixed columns: nine identity
 columns, four BSS columns, and six columns for each station index 0 through

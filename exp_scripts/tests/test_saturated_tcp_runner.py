@@ -340,6 +340,59 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
             ],
         )
 
+    def test_runner_uses_toml_warmup_but_preserves_explicit_configurations(self) -> None:
+        base = build_matrix()[0]
+        with TemporaryDirectory() as directory:
+            root = create_fake_ns3_root(directory)
+            toml_path = root / "warmup.toml"
+            toml_path.write_text(
+                DEFAULT_CONFIG.read_text(encoding="utf-8").replace(
+                    "traffic_warmup_seconds = 0",
+                    "traffic_warmup_seconds = 5",
+                ),
+                encoding="utf-8",
+            )
+
+            for name, config_path, expected_configuration, selection in (
+                (
+                    "toml",
+                    toml_path,
+                    replace(base, traffic_warmup_seconds=5),
+                    {"experiment_ids": (1,)},
+                ),
+                (
+                    "explicit",
+                    DEFAULT_CONFIG,
+                    replace(base, traffic_warmup_seconds=7),
+                    {"configurations": (replace(base, traffic_warmup_seconds=7),)},
+                ),
+            ):
+                run_directory = root / "run" / f"scripted_exp_{name}"
+
+                def fake_process(command, **kwargs):
+                    self.assertIn(
+                        f"--benchmark-traffic-warmup-seconds={expected_configuration.traffic_warmup_seconds}",
+                        shlex.split(command[-1]),
+                    )
+                    attempt_directory = run_directory / "experiment_001/attempt_1"
+                    write_valid_output(
+                        attempt_directory / "output.json",
+                        expected_configuration,
+                        attempt_directory,
+                    )
+                    return _FakeProcess(0)
+
+                result = run_benchmark(
+                    ns3_root=root,
+                    config_path=config_path,
+                    timestamp=name,
+                    process_factory=fake_process,
+                    resource_capability=fallback_resource_capability(directory),
+                    output=StringIO(),
+                    **selection,
+                )
+                self.assertEqual(result, run_directory)
+
     def test_runs_one_process_at_a_time_and_publishes_before_the_next(self) -> None:
         configurations = build_matrix()[:2]
         timestamp = "20260827_120000"
@@ -564,6 +617,10 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
             process_calls = []
 
             def fake_process(command, **kwargs):
+                self.assertIn(
+                    "--benchmark-traffic-warmup-seconds=10",
+                    shlex.split(command[-1]),
+                )
                 attempt_directory = Path(
                     next(
                         argument.split("=", 1)[1]
@@ -599,6 +656,11 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                 *,
                 expected_configuration,
             ):
+                self.assertEqual(configuration.traffic_warmup_seconds, 10)
+                self.assertEqual(
+                    expected_configuration["benchmark"]["traffic_warmup_seconds"],
+                    10,
+                )
                 metric = StationCsvMetrics(100.0, 1.0, 50.0, 1.0, 0.98, "profile")
                 stations = (
                     (metric,) * configuration.sta_count_per_bss
@@ -628,6 +690,7 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                     ns3_root=root,
                     config_path=DEFAULT_CONFIG,
                     timestamp=timestamp,
+                    traffic_warmup_seconds=10,
                     process_factory=fake_process,
                     resource_capability=fallback_resource_capability(directory),
                     output=StringIO(),
@@ -643,6 +706,8 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                 [published[index][0] for index in range(1, 379, 3)],
                 [str(experiment_id) for experiment_id in range(1, 127)],
             )
+            summary = read_json(run_directory / "resource_summary.json")
+            self.assertIs(summary["complete_matrix"], True)
 
     def test_csv_fsync_failure_rolls_back_the_uncommitted_three_row_batch(self) -> None:
         configuration = build_matrix()[0]
@@ -1070,6 +1135,15 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
             with self.subTest(invalid=invalid):
                 with self.assertRaises(ValueError):
                     runner.parse_experiment_ids(invalid)
+        self.assertEqual(runner._parse_traffic_warmup_seconds("0"), 0)
+        self.assertEqual(
+            runner._parse_traffic_warmup_seconds("4294967295"),
+            4294967295,
+        )
+        for invalid in ("-1", "true", "1.5", "4294967296"):
+            with self.subTest(warmup=invalid):
+                with self.assertRaises(ValueError):
+                    runner._parse_traffic_warmup_seconds(invalid)
 
         with mock.patch.object(
             runner,
@@ -1084,6 +1158,8 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                     "4",
                     "--memory-reserve-percent",
                     "25",
+                    "--traffic-warmup-seconds",
+                    "10",
                     "--experiment-ids",
                     "19,37,126",
                 ],
@@ -1095,6 +1171,7 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
         keyword_arguments = run.call_args.kwargs
         self.assertEqual(keyword_arguments["jobs"], 4)
         self.assertEqual(keyword_arguments["memory_reserve_percent"], 25)
+        self.assertEqual(keyword_arguments["traffic_warmup_seconds"], 10)
         self.assertEqual(keyword_arguments["experiment_ids"], (19, 37, 126))
 
     def test_subset_auto_includes_baseline_and_records_exact_manifest(self) -> None:
@@ -3353,6 +3430,19 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                     output=StringIO(),
                 )
             self.assertFalse((root / "run/scripted_exp_mu").exists())
+
+            for invalid in (-1, True, 1 << 32):
+                with self.subTest(traffic_warmup_seconds=invalid):
+                    with self.assertRaisesRegex(RunnerError, "traffic_warmup_seconds"):
+                        run_benchmark(
+                            ns3_root=root,
+                            config_path=DEFAULT_CONFIG,
+                            timestamp="invalid_warmup",
+                            traffic_warmup_seconds=invalid,
+                            process_factory=lambda *args, **kwargs: self.fail("process started"),
+                            output=StringIO(),
+                        )
+            self.assertFalse((root / "run/scripted_exp_invalid_warmup").exists())
 
     def test_sigint_returns_nonzero_and_retains_created_state(self) -> None:
         with TemporaryDirectory() as directory:

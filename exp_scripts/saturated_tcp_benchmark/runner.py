@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
 import os
@@ -1449,6 +1449,7 @@ def run_benchmark(
     timestamp: str | None = None,
     configurations: Iterable[ExperimentConfiguration] | None = None,
     experiment_ids: Iterable[int] | None = None,
+    traffic_warmup_seconds: int | None = None,
     jobs: int = 0,
     memory_reserve_percent: int = DEFAULT_MEMORY_RESERVE_PERCENT,
     process_factory: Callable[..., object] = subprocess.Popen,
@@ -1474,6 +1475,30 @@ def run_benchmark(
     resolved_config = _resolve_config_path(config_path, root)
     loaded = load_runner_configuration(resolved_config)
     selection = _select_run(configurations, experiment_ids)
+    if traffic_warmup_seconds is not None:
+        if (
+            type(traffic_warmup_seconds) is not int
+            or not 0 <= traffic_warmup_seconds <= _UINT32_MAX
+        ):
+            raise RunnerError("traffic_warmup_seconds must be a uint32 integer")
+        selected_warmup_seconds = traffic_warmup_seconds
+    elif configurations is None:
+        selected_warmup_seconds = loaded.effective_configuration["benchmark"][
+            "traffic_warmup_seconds"
+        ]
+    else:
+        selected_warmup_seconds = None
+    if selected_warmup_seconds is not None:
+        selection = replace(
+            selection,
+            configurations=tuple(
+                replace(
+                    configuration,
+                    traffic_warmup_seconds=selected_warmup_seconds,
+                )
+                for configuration in selection.configurations
+            ),
+        )
     try:
         ResourceScheduler(1, memory_reserve_percent)
     except SchedulerError as error:
@@ -2040,6 +2065,16 @@ def _parse_memory_reserve_percent(value: str) -> int:
     return reserve
 
 
+def _parse_traffic_warmup_seconds(value: str) -> int:
+    try:
+        warmup_seconds = int(value, 10)
+    except ValueError as error:
+        raise ValueError("traffic warm-up seconds must be a uint32 integer") from error
+    if not 0 <= warmup_seconds <= _UINT32_MAX:
+        raise ValueError("traffic warm-up seconds must be a uint32 integer")
+    return warmup_seconds
+
+
 def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the resource-aware saturated TCP benchmark matrix.",
@@ -2075,6 +2110,12 @@ def _argument_parser() -> argparse.ArgumentParser:
         metavar="LIST",
         help="comma-separated development subset; matching one-STA baselines are automatic",
     )
+    parser.add_argument(
+        "--traffic-warmup-seconds",
+        type=_parse_traffic_warmup_seconds,
+        default=None,
+        help="fixed saturated traffic warm-up for every selected configuration",
+    )
     return parser
 
 
@@ -2099,6 +2140,7 @@ def main(
             config_path=arguments.config,
             timestamp=timestamp_factory(),
             experiment_ids=arguments.experiment_ids,
+            traffic_warmup_seconds=arguments.traffic_warmup_seconds,
             jobs=arguments.jobs,
             memory_reserve_percent=arguments.memory_reserve_percent,
             process_factory=process_factory,
