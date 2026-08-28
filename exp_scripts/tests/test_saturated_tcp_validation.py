@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import json
 import math
 from pathlib import Path
@@ -65,6 +66,7 @@ def make_effective_configuration(
             "interference_mode": configuration.interference_mode,
             "traffic_mode": configuration.traffic_mode,
             "mimo_mode": configuration.mimo_mode,
+            "traffic_warmup_seconds": configuration.traffic_warmup_seconds,
         },
         "wifi": {
             "band": "5GHz",
@@ -420,6 +422,23 @@ class SaturatedTcpValidationTest(unittest.TestCase):
         self.assertIsNone(rows[2].mean_dominant_data_phy_rate_mbps)
         self.assertIsNone(rows[2].mean_effective_phy_rate_mbps)
         self.assertEqual(rows[2].aggregate_data_tx_rate_over_interval_mbps, 0.0)
+
+    def test_nonzero_traffic_warmup_is_preserved_in_validated_rows(self) -> None:
+        configuration = replace(self.configuration, traffic_warmup_seconds=10)
+        document, effective = make_output_document(configuration)
+
+        rows = validate_output_document(
+            document,
+            configuration,
+            repetition_attempt=1,
+            expected_configuration=effective,
+            source_path="warmup.json",
+        )
+
+        self.assertEqual(
+            {row.configuration.traffic_warmup_seconds for row in rows},
+            {10},
+        )
 
     def test_fully_idle_output_may_have_no_sparse_windows(self) -> None:
         document = deepcopy(self.document)

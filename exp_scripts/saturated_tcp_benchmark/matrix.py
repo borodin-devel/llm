@@ -25,6 +25,7 @@ class ExperimentConfiguration:
     interference_mode: str
     traffic_mode: str
     mimo_mode: str
+    traffic_warmup_seconds: int = 0
 
 
 @dataclass(frozen=True)

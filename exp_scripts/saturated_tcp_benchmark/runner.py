@@ -87,6 +87,7 @@ _CONFIGURATION_KEYS = {
         "interference_mode",
         "traffic_mode",
         "mimo_mode",
+        "traffic_warmup_seconds",
     ),
     "wifi": (
         "band",
@@ -122,6 +123,7 @@ _DEFAULT_EFFECTIVE_CONFIGURATION: dict[str, object] = {
         "interference_mode": "isolated",
         "traffic_mode": "ul",
         "mimo_mode": "su",
+        "traffic_warmup_seconds": 0,
     },
     "wifi": {
         "band": "5GHz",
@@ -230,6 +232,15 @@ def load_runner_configuration(config_path: str | Path) -> RunnerConfiguration:
             f"invalid saturated script.repetitions in {path}: expected uint32 in "
             f"[1, {_UINT32_MAX}]"
         )
+    traffic_warmup_seconds = effective["benchmark"]["traffic_warmup_seconds"]
+    if (
+        type(traffic_warmup_seconds) is not int
+        or not 0 <= traffic_warmup_seconds <= _UINT32_MAX
+    ):
+        raise RunnerError(
+            f"invalid saturated benchmark.traffic_warmup_seconds in {path}: "
+            f"expected uint32 in [0, {_UINT32_MAX}]"
+        )
     return RunnerConfiguration(repetitions=repetitions, effective_configuration=effective)
 
 
@@ -254,6 +265,11 @@ def _validate_requested_configurations(
             raise RunnerError("benchmark interference_mode is outside the fixed matrix")
         if configuration.traffic_mode not in TRAFFIC_MODES:
             raise RunnerError("benchmark traffic_mode is outside the fixed matrix")
+        if (
+            type(configuration.traffic_warmup_seconds) is not int
+            or not 0 <= configuration.traffic_warmup_seconds <= _UINT32_MAX
+        ):
+            raise RunnerError("benchmark traffic_warmup_seconds must be a uint32 integer")
         if isinstance(configuration.experiment_id, bool) or configuration.experiment_id <= 0:
             raise RunnerError("benchmark experiment_id must be a positive integer")
         experiment_ids.append(configuration.experiment_id)
@@ -288,6 +304,7 @@ def build_ns3_command(
         f"--benchmark-interference-mode={configuration.interference_mode}",
         f"--benchmark-traffic-mode={configuration.traffic_mode}",
         f"--benchmark-mimo-mode={configuration.mimo_mode}",
+        f"--benchmark-traffic-warmup-seconds={configuration.traffic_warmup_seconds}",
         f"--simulation-rng-seed={RNG_SEED}",
         f"--simulation-rng-run={repetition_attempt}",
         f"--general-run-folder={run_directory}",
@@ -327,6 +344,7 @@ def _expected_configuration(
             "interference_mode": configuration.interference_mode,
             "traffic_mode": configuration.traffic_mode,
             "mimo_mode": configuration.mimo_mode,
+            "traffic_warmup_seconds": configuration.traffic_warmup_seconds,
         }
     )
     return expected

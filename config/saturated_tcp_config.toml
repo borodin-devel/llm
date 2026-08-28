@@ -15,6 +15,7 @@ rssi_range = "high"
 interference_mode = "isolated"
 traffic_mode = "ul"
 mimo_mode = "su"
+traffic_warmup_seconds = 0
 
 [wifi]
 band = "5GHz"

@@ -106,6 +106,9 @@ SaturatedTcpConfigDefaultsTestCase::DoRun()
                           SaturatedTrafficMode::UL,
                           "Wrong traffic mode");
     NS_TEST_ASSERT_MSG_EQ(config.benchmark.mimoMode, SaturatedMimoMode::SU, "Wrong MIMO mode");
+    NS_TEST_ASSERT_MSG_EQ(config.benchmark.trafficWarmupSeconds,
+                          0,
+                          "Traffic warm-up is not disabled by default");
     NS_TEST_ASSERT_MSG_EQ(config.wifi.band, "5GHz", "Wrong band");
     NS_TEST_ASSERT_MSG_EQ(config.wifi.channelNumber, 42, "Wrong channel number");
     NS_TEST_ASSERT_MSG_EQ(config.wifi.bandwidthMhz, 80, "Wrong bandwidth");
@@ -193,6 +196,7 @@ SaturatedTcpConfigParsingTestCase::DoRun()
                                                "interference_mode = \"ap_only_cochannel\"\n"
                                                "traffic_mode = \"dl\"\n"
                                                "mimo_mode = \"su\"\n"
+                                               "traffic_warmup_seconds = 5\n"
                                                "[wifi]\n"
                                                "tx_power_dbm = 20.0\n"
                                                "guard_interval_ns = 3200\n"
@@ -205,6 +209,7 @@ SaturatedTcpConfigParsingTestCase::DoRun()
                                      "--benchmark-sta-count-per-bss",
                                      "30",
                                      "--simulation-rng-run=9",
+                                     "--benchmark-traffic-warmup-seconds=10",
                                      "--wifi-guard-interval-ns",
                                      "3200",
                                      "--wifi-rts-cts-threshold-bytes=0",
@@ -221,6 +226,9 @@ SaturatedTcpConfigParsingTestCase::DoRun()
     NS_TEST_ASSERT_MSG_EQ(config.benchmark.trafficMode,
                           SaturatedTrafficMode::UL_DL,
                           "Wrong traffic enum");
+    NS_TEST_ASSERT_MSG_EQ(config.benchmark.trafficWarmupSeconds,
+                          10,
+                          "CLI traffic warm-up override lost");
     NS_TEST_ASSERT_MSG_EQ_TOL(config.wifi.txPowerDbm, 20.0, 1e-12, "TOML float not loaded");
     NS_TEST_ASSERT_MSG_EQ(config.wifi.guardIntervalNs, 3200, "HE guard interval not loaded");
     NS_TEST_ASSERT_MSG_EQ(config.wifi.rtsCtsThresholdBytes, 0, "RTS/CTS threshold not loaded");
@@ -259,6 +267,8 @@ SaturatedTcpConfigParsingTestCase::DoRun()
                  "benchmark.rssi_range");
     CheckFailure({"--config", configPath.string(), "--benchmark-mimo-mode", "mu"},
                  "DL MU-MIMO is not supported");
+    CheckFailure({"--config", configPath.string(), "--benchmark-traffic-warmup-seconds", "-1"},
+                 "benchmark.traffic_warmup_seconds");
     CheckFailure({"--config", configPath.string(), "--tcp-wired-rate", "1.1Kbps"},
                  "10000000000 bps");
     CheckFailure({"--config", configPath.string(), "--tcp-wired-rate", "9Gbps"}, "10000000000 bps");
@@ -598,6 +608,7 @@ SaturatedTcpConfigJsonTestCase::DoRun()
     config.benchmark.rssiRange = SaturatedRssiRange::MEDIUM;
     config.benchmark.interferenceMode = SaturatedInterferenceMode::AP_ONLY_COCHANNEL;
     config.benchmark.trafficMode = SaturatedTrafficMode::UL_DL;
+    config.benchmark.trafficWarmupSeconds = 5;
 
     const auto text = WriteConfiguration(config);
     const auto document = nlohmann::ordered_json::parse(text);
@@ -615,7 +626,12 @@ SaturatedTcpConfigJsonTestCase::DoRun()
     CheckKeys(document.at("script"), {"repetitions"}, "script configuration");
     CheckKeys(document.at("simulation"), {"rng_seed", "rng_run"}, "simulation configuration");
     CheckKeys(document.at("benchmark"),
-              {"sta_count_per_bss", "rssi_range", "interference_mode", "traffic_mode", "mimo_mode"},
+              {"sta_count_per_bss",
+               "rssi_range",
+               "interference_mode",
+               "traffic_mode",
+               "mimo_mode",
+               "traffic_warmup_seconds"},
               "benchmark configuration");
 
     const std::vector<std::string> expectedWifiKeys{"band",
@@ -665,6 +681,9 @@ SaturatedTcpConfigJsonTestCase::DoRun()
                           "ul_dl",
                           "Wrong traffic spelling");
     NS_TEST_ASSERT_MSG_EQ(document.at("benchmark").at("mimo_mode"), "su", "Wrong MIMO spelling");
+    NS_TEST_ASSERT_MSG_EQ(document.at("benchmark").at("traffic_warmup_seconds"),
+                          5,
+                          "Wrong traffic warm-up metadata");
 
     config.general.runFolder.reset();
     const auto withoutFolder = nlohmann::json::parse(WriteConfiguration(config));

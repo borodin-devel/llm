@@ -57,6 +57,7 @@ _CONFIGURATION_KEYS = {
         "interference_mode",
         "traffic_mode",
         "mimo_mode",
+        "traffic_warmup_seconds",
     ),
     "wifi": (
         "band",
@@ -449,6 +450,7 @@ def _default_expected_configuration(
             "interference_mode": configuration.interference_mode,
             "traffic_mode": configuration.traffic_mode,
             "mimo_mode": configuration.mimo_mode,
+            "traffic_warmup_seconds": configuration.traffic_warmup_seconds,
         },
         "wifi": {
             "band": "5GHz",
@@ -973,6 +975,7 @@ def validate_output_document(
         "interference_mode": configuration.interference_mode,
         "traffic_mode": configuration.traffic_mode,
         "mimo_mode": configuration.mimo_mode,
+        "traffic_warmup_seconds": configuration.traffic_warmup_seconds,
     }
     if actual_configuration["benchmark"] != expected_benchmark:
         _fail(source_path, "$.experiment_metadata.configuration.benchmark", "wrong matrix metadata")

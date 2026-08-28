@@ -483,6 +483,30 @@ class DataTxMetricWindowOverallTestCase : public TestCase
         NS_TEST_ASSERT_MSG_EQ(overall.ppduAttemptCount,
                               2,
                               "Independent overall did not count each PPDU start exactly once");
+
+        StationDataTxMetricRecorder leadingBoundary(EPOCH_NS, 2 * EPOCH_NS, WINDOW_NS);
+        leadingBoundary.RegisterStation(7, STATION_ADDRESS);
+        Record(leadingBoundary, EPOCH_NS - PPDU_NS / 2, data);
+        const auto& leading = leadingBoundary.GetWindowProfiles(7).at(0).at({80, 1, 9});
+        NS_TEST_ASSERT_MSG_EQ(leading.transmittedPsduBytes,
+                              514.0L,
+                              "Leading measurement boundary did not clip proportional bytes");
+        NS_TEST_ASSERT_MSG_EQ(leading.ppduAirtimeNs,
+                              38'000,
+                              "Leading measurement boundary did not clip PPDU airtime");
+        NS_TEST_ASSERT_MSG_EQ(leading.ppduAttemptCount,
+                              0,
+                              "Pre-measurement PPDU start was counted inside the epoch");
+        const auto& leadingOverall = leadingBoundary.GetOverallProfiles(7).at({80, 1, 9});
+        NS_TEST_ASSERT_MSG_EQ(leadingOverall.transmittedPsduBytes,
+                              514.0L,
+                              "Leading-boundary overall bytes were not clipped");
+        NS_TEST_ASSERT_MSG_EQ(leadingOverall.ppduAirtimeNs,
+                              38'000,
+                              "Leading-boundary overall airtime was not clipped");
+        NS_TEST_ASSERT_MSG_EQ(leadingOverall.ppduAttemptCount,
+                              0,
+                              "Leading-boundary overall counted a pre-epoch PPDU start");
     }
 };
 

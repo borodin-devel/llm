@@ -350,6 +350,10 @@ GetSaturatedTcpConfigOptions()
             [](auto& c) -> auto& { return c.benchmark.mimoMode; },
             {{"su", SaturatedMimoMode::SU}, {"mu", SaturatedMimoMode::MU}},
             "Spatial transmission mode"),
+        MakeIntegerOption<uint32_t>(
+            "benchmark.traffic_warmup_seconds",
+            [](auto& c) -> auto& { return c.benchmark.trafficWarmupSeconds; },
+            "Saturated traffic time excluded from measurements"),
         MakeStringOption(
             "wifi.band",
             [](auto& c) -> auto& { return c.wifi.band; },

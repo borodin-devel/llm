@@ -121,7 +121,9 @@ def _ap_entity(bss_id: int, station_count: int, station_rate: float) -> dict[str
     }
 
 
-def _output_document(experiment_id: int, station_count: int) -> dict[str, object]:
+def _output_document(
+    experiment_id: int, station_count: int, traffic_warmup_seconds: int = 0
+) -> dict[str, object]:
     bytes_value = 1000.0 if station_count == 1 else 300.0
     attempts = 2 if station_count == 1 else 1
     airtime_us = 400.0 if station_count == 1 else 120.0
@@ -209,6 +211,7 @@ def _output_document(experiment_id: int, station_count: int) -> dict[str, object
                     "interference_mode": "isolated",
                     "traffic_mode": "ul",
                     "mimo_mode": "su",
+                    "traffic_warmup_seconds": traffic_warmup_seconds,
                 },
                 "wifi": {
                     "band": "5GHz",
@@ -409,6 +412,32 @@ class SaturatedTcpAuditTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def test_uniform_nonzero_warmup_is_accepted_but_mixed_run_is_rejected(self) -> None:
+        output_paths = sorted(self.run_directory.glob("experiment_*/attempt_1/output.json"))
+        for path in output_paths:
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["experiment_metadata"]["configuration"]["benchmark"][
+                "traffic_warmup_seconds"
+            ] = 10
+            path.write_text(json.dumps(document), encoding="utf-8")
+
+        uniform = self.audit()
+        self.assertTrue(uniform.ok, uniform.discrepancies)
+        self.assertEqual(uniform.traffic_warmup_seconds, 10)
+
+        document = json.loads(output_paths[0].read_text(encoding="utf-8"))
+        document["experiment_metadata"]["configuration"]["benchmark"][
+            "traffic_warmup_seconds"
+        ] = 5
+        output_paths[0].write_text(json.dumps(document), encoding="utf-8")
+
+        mixed = self.audit()
+        self.assertIsNone(mixed.traffic_warmup_seconds)
+        self.assertTrue(
+            any("warm-up" in item for item in mixed.discrepancies),
+            mixed.discrepancies,
+        )
+
     def audit(self):
         return audit_run_directory(self.run_directory)
 
@@ -424,6 +453,7 @@ class SaturatedTcpAuditTest(unittest.TestCase):
         self.assertEqual(report.stdout_log_count, 2)
         self.assertEqual(report.stderr_log_count, 2)
         self.assertEqual(report.null_csv_cell_count, 972)
+        self.assertEqual(report.traffic_warmup_seconds, 0)
         self.assertAlmostEqual(report.signed_baseline_minimum, -0.5)
         self.assertEqual(report.signed_baseline_maximum, 0.0)
         self.assertEqual(report.minimum_mem_available_percent, 64.0)

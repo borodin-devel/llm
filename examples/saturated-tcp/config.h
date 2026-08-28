@@ -107,6 +107,7 @@ struct SaturatedBenchmarkConfig
         SaturatedInterferenceMode::ISOLATED};                   ///< Inter-BSS interference mode.
     SaturatedTrafficMode trafficMode{SaturatedTrafficMode::UL}; ///< Traffic direction.
     SaturatedMimoMode mimoMode{SaturatedMimoMode::SU};          ///< Spatial mode.
+    uint32_t trafficWarmupSeconds{0}; ///< Saturated traffic time excluded from measurements.
 };
 
 /** Fixed 802.11ax radio configuration for the saturated benchmark. */

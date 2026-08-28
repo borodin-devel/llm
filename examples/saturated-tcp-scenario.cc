@@ -227,8 +227,10 @@ PrintConfiguration(const SaturatedTcpConfig& config)
     std::cout << "TCP/backhaul: " << config.tcp.congestionControl << ", segment "
               << config.tcp.segmentSizeBytes << " bytes, " << config.tcp.wiredRate << "/"
               << config.tcp.wiredDelay << '\n';
-    std::cout << "Statistics: exactly 1 s in " << config.statistics.windowMs << " ms windows; RNG "
-              << config.simulation.rngSeed << '/' << config.simulation.rngRun << std::endl;
+    std::cout << "Statistics: " << config.benchmark.trafficWarmupSeconds
+              << " s saturated traffic warm-up, then exactly 1 s in " << config.statistics.windowMs
+              << " ms windows; RNG " << config.simulation.rngSeed << '/' << config.simulation.rngRun
+              << std::endl;
 }
 
 /**
@@ -264,7 +266,8 @@ RunScenario(const SaturatedTcpConfig& config)
         RegisterStatistics(topology, statistics);
         SaturatedReadinessBarrier barrier(
             MakeCallback(&SaturatedTcpStatistics::Start, &statistics),
-            MakeCallback(&SaturatedTcpStatistics::Finalize, &statistics));
+            MakeCallback(&SaturatedTcpStatistics::Finalize, &statistics),
+            config.benchmark.trafficWarmupSeconds);
         const auto endpoints = BuildTrafficEndpoints(topology);
         const auto traffic = InstallSaturatedTcpTraffic(endpoints, config, barrier);
         barrier.FinalizeRegistration();

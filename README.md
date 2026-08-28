@@ -919,15 +919,24 @@ Each active direction gives every STA an independent TCP connection:
 The benchmark-specific sender connects without sending early, then fills the
 socket send buffer without a byte or data-rate limit. TCP uses
 `ns3::TcpHighSpeed`, 1460-byte segments, and 32 MiB send and receive buffers.
-Each buffer is exactly 33554432 bytes. The measured payload start is
-event-driven rather than a fixed traffic warm-up:
+Each buffer is exactly 33554432 bytes. Traffic start remains event-driven;
+measurement may follow a configured saturated-traffic warm-up:
 
 1. Install sinks at time zero, allow association to settle for one second,
    then stage TCP connection setup in stable flow order at 10 ms intervals.
 2. Wait until every STA is associated and every active sender is connected.
 3. Choose the first whole-second boundary strictly after complete readiness.
-4. Start all senders and metric collectors at that common epoch.
-5. Measure exactly one second, then stop, finalize, validate, and exit.
+4. Start all senders at that common traffic epoch.
+5. Arm the collectors with the future measurement epoch, then run saturated
+   traffic for `benchmark.traffic_warmup_seconds`. Warm-up-only PPDUs are
+   discarded, while a PPDU crossing the boundary is clipped proportionally.
+   Minstrel and TCP state are preserved.
+6. Open the measurement interval for exactly one second, then stop, finalize,
+   validate, and exit.
+
+The default warm-up is zero, which preserves measurement from the first
+payload transmission. A nonzero value intentionally warms both Minstrel and
+TCP; it is not a rate-control-only operation.
 
 An exhausted socket connection cohort is traced and retried after one second
 with a fresh socket using the same endpoints and TOS. A 400-second global
@@ -1041,6 +1050,7 @@ coordinates are:
 | `interference_mode` | `isolated`, `ap_only_cochannel` |
 | `traffic_mode` | `ul`, `dl`, `ul_dl` |
 | `mimo_mode` | `su` only |
+| `traffic_warmup_seconds` | Nonnegative whole seconds; default 0 |
 | `script.repetitions` | Positive attempt count; default 1 |
 
 The C++ executable records `script.repetitions` as metadata but still performs
@@ -1057,6 +1067,8 @@ Run commands from the outer ns-3 root:
 python3 contrib/llm/exp_scripts/saturated_tcp_experiment.py
 python3 contrib/llm/exp_scripts/saturated_tcp_experiment.py \
   --experiment-ids 19 --jobs 1 --memory-reserve-percent 20
+python3 contrib/llm/exp_scripts/baseline_warmup_experiment.py \
+  --jobs 0 --memory-reserve-percent 20
 python3 contrib/llm/exp_scripts/audit_saturated_tcp_results.py \
   run/scripted_exp_<timestamp>
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
@@ -1066,8 +1078,14 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
 The first command runs the default 5-STA, high-RSSI, isolated, UL, SU case.
 The second runs the complete resource-aware matrix. The third requests only
 ID 19; its matching one-STA baseline ID is included automatically. The fourth
-audits a retained run read-only. The runner fixes `rng_seed = 12345`, sets
-`rng_run` to the repetition-attempt number, and never averages repetitions.
+runs all 18 single-STA baseline coordinates with 0, 1, 5, and 10 second
+warm-ups at `rng_run = 1`. It retains four independently audited raw runs and
+writes a timestamped 216-row Excel-compatible CSV under `run/`; `--output`
+selects another exclusive path. The accepted repository result is
+`traces/baseline_warmup_results.csv`. Its extra identity column is
+`traffic_warmup_seconds`. The fifth command audits a retained run read-only.
+The normal runner fixes `rng_seed = 12345`, sets `rng_run` to the
+repetition-attempt number, and never averages repetitions.
 
 With the default single repetition, the honest SU-only matrix is exactly:
 
@@ -1596,6 +1614,7 @@ contrib/llm/
 |       `-- json/                     Streaming writer and hierarchy serializers
 |-- exp_scripts/
 |   |-- saturated_tcp_experiment.py  Resource-aware benchmark runner entry point
+|   |-- baseline_warmup_experiment.py Fixed 72-run baseline warm-up entry point
 |   |-- audit_saturated_tcp_results.py Independent retained-run audit entry point
 |   |-- saturated_tcp_benchmark/     Matrix, runner, audit, resources, validation, CSV
 |   `-- tests/                        Deterministic benchmark-runner tests

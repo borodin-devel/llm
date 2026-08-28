@@ -53,6 +53,10 @@ class SaturatedTcpMatrixTest(unittest.TestCase):
         )
 
         self.assertEqual(
+            {configuration.traffic_warmup_seconds for configuration in configurations},
+            {0},
+        )
+        self.assertEqual(
             tuple(
                 configuration.experiment_id
                 for configuration in configurations
@@ -134,6 +138,7 @@ class SaturatedTcpMatrixTest(unittest.TestCase):
 
     def test_boundaries_are_frozen_dataclasses(self) -> None:
         configuration = ExperimentConfiguration(1, 1, "high", "isolated", "ul", "su")
+        self.assertEqual(configuration.traffic_warmup_seconds, 0)
         attempt = ExperimentAttempt(configuration, 1, 1)
         with self.assertRaises((AttributeError, TypeError)):
             configuration.experiment_id = 2  # type: ignore[misc]

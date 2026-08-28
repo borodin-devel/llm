@@ -1,2 +1,4 @@
 /run/
 /output.json
+__pycache__/
+*.py[cod]

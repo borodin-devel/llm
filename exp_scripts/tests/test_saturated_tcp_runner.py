@@ -5,6 +5,7 @@ from __future__ import annotations
 import _thread
 import csv
 from concurrent.futures import Future, ThreadPoolExecutor as RealThreadPoolExecutor
+from dataclasses import replace
 from io import StringIO
 import json
 import os
@@ -226,6 +227,9 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
         loaded = load_runner_configuration(DEFAULT_CONFIG)
         self.assertEqual(loaded.repetitions, 1)
         self.assertEqual(loaded.effective_configuration["script"]["repetitions"], 1)
+        self.assertEqual(
+            loaded.effective_configuration["benchmark"]["traffic_warmup_seconds"], 0
+        )
         self.assertEqual(loaded.effective_configuration["wifi"]["guard_interval_ns"], 3200)
         self.assertEqual(
             loaded.effective_configuration["wifi"]["rts_cts_threshold_bytes"], 0
@@ -251,8 +255,41 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                 with self.assertRaisesRegex(RunnerError, "script.repetitions.*uint32"):
                     load_runner_configuration(config_path)
 
+    def test_traffic_warmup_parser_enforces_exact_uint32_range(self) -> None:
+        original = DEFAULT_CONFIG.read_text(encoding="utf-8")
+        with TemporaryDirectory() as directory:
+            maximum_path = Path(directory) / "maximum.toml"
+            maximum_path.write_text(
+                original.replace(
+                    "traffic_warmup_seconds = 0",
+                    "traffic_warmup_seconds = 4294967295",
+                ),
+                encoding="utf-8",
+            )
+            loaded = load_runner_configuration(maximum_path)
+            self.assertEqual(
+                loaded.effective_configuration["benchmark"]["traffic_warmup_seconds"],
+                4294967295,
+            )
+
+        for value in ("-1", "true", "4294967296"):
+            with self.subTest(value=value), TemporaryDirectory() as directory:
+                config_path = Path(directory) / "config.toml"
+                config_path.write_text(
+                    original.replace(
+                        "traffic_warmup_seconds = 0",
+                        f"traffic_warmup_seconds = {value}",
+                    ),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(
+                    RunnerError,
+                    "benchmark.traffic_warmup_seconds.*uint32",
+                ):
+                    load_runner_configuration(config_path)
+
     def test_builds_exact_ns3_command_and_deterministic_paths(self) -> None:
-        configuration = build_matrix()[0]
+        configuration = replace(build_matrix()[0], traffic_warmup_seconds=5)
         with TemporaryDirectory() as directory:
             root = create_fake_ns3_root(directory)
             attempt_directory = (
@@ -274,6 +311,7 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
             "--benchmark-interference-mode=isolated "
             "--benchmark-traffic-mode=ul "
             "--benchmark-mimo-mode=su "
+            "--benchmark-traffic-warmup-seconds=5 "
             "--simulation-rng-seed=12345 "
             "--simulation-rng-run=2 "
             f"--general-run-folder={attempt_directory} "
@@ -294,6 +332,7 @@ class SaturatedTcpRunnerTest(unittest.TestCase):
                 "--benchmark-interference-mode=isolated",
                 "--benchmark-traffic-mode=ul",
                 "--benchmark-mimo-mode=su",
+                "--benchmark-traffic-warmup-seconds=5",
                 "--simulation-rng-seed=12345",
                 "--simulation-rng-run=2",
                 f"--general-run-folder={attempt_directory}",

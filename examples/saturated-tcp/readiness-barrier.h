@@ -18,8 +18,8 @@ class SaturatedTcpSender;
  * Coordinate saturated TCP readiness and one exact measurement second.
  *
  * Each sender receives a registration-specific readiness callback. Once all
- * callbacks have fired, the barrier starts statistics and senders together at
- * the first whole-second boundary strictly after complete readiness.
+ * callbacks have fired, the barrier selects the first whole-second traffic
+ * boundary, arms statistics for the post-warm-up epoch, and starts all senders.
  */
 class SaturatedReadinessBarrier
 {
@@ -32,9 +32,11 @@ class SaturatedReadinessBarrier
      *
      * @param startStatistics Callback that resets and starts statistics.
      * @param finalizeStatistics Callback that finalizes statistics.
+     * @param trafficWarmupSeconds Saturated traffic time before statistics start.
      */
     SaturatedReadinessBarrier(StatisticsCallback startStatistics,
-                              StatisticsCallback finalizeStatistics);
+                              StatisticsCallback finalizeStatistics,
+                              uint32_t trafficWarmupSeconds = 0);
 
     /** Cancel any pending readiness, epoch, or finalization events. */
     ~SaturatedReadinessBarrier();
@@ -115,8 +117,11 @@ class SaturatedReadinessBarrier
      */
     void NotifyReady(uint32_t index);
 
-    /** Start statistics and every sender at the selected epoch. */
+    /** Start every sender at the selected traffic epoch. */
     void OpenBarrier();
+
+    /** Open the measurement interval after the configured traffic warm-up. */
+    void StartMeasurement();
 
     /** Stop senders, finalize statistics, and stop the simulator. */
     void FinalizeMeasurement();
@@ -127,13 +132,16 @@ class SaturatedReadinessBarrier
     std::vector<SenderRegistration> m_senders; ///< Ordered sender registrations.
     std::vector<ApplicationRegistration>
         m_applications;                      ///< All applications stopped at the endpoint.
-    StatisticsCallback m_startStatistics;    ///< Statistics epoch-start action.
+    StatisticsCallback m_startStatistics;    ///< Future-epoch statistics arm action.
     StatisticsCallback m_finalizeStatistics; ///< Statistics exact-endpoint action.
     EventId m_safetyEvent;                   ///< Fixed readiness safety timeout.
     EventId m_openEvent;                     ///< Scheduled common-epoch event.
+    EventId m_measurementStartEvent;         ///< Scheduled post-warm-up statistics event.
     EventId m_finalizeEvent;                 ///< Scheduled measurement-end event.
     uint32_t m_readySenderCount{0};          ///< Number of distinct ready registrations.
-    int64_t m_experimentStartNs{-1};         ///< Selected common epoch in nanoseconds.
+    uint32_t m_trafficWarmupSeconds{0};      ///< Traffic time excluded from statistics.
+    int64_t m_trafficStartNs{-1};            ///< Common sender-start epoch in nanoseconds.
+    int64_t m_experimentStartNs{-1};         ///< Measurement epoch in nanoseconds.
     bool m_registrationFinalized{false};     ///< Whether registration is locked.
     bool m_measurementComplete{false};       ///< Whether finalization completed.
 };

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import csv
 from io import StringIO
 import json
@@ -59,6 +59,7 @@ _CONFIGURATION_KEYS = {
         "interference_mode",
         "traffic_mode",
         "mimo_mode",
+        "traffic_warmup_seconds",
     ),
     "wifi": (
         "band",
@@ -209,6 +210,7 @@ class AuditReport:
     """Counts and independently derived extrema for one retained run."""
 
     run_directory: Path
+    traffic_warmup_seconds: int | None
     experiment_attempt_count: int
     output_json_count: int
     csv_data_row_count: int
@@ -233,6 +235,7 @@ class AuditReport:
         """Return an ordered JSON-compatible report."""
         return {
             "run_directory": str(self.run_directory),
+            "traffic_warmup_seconds": self.traffic_warmup_seconds,
             "experiment_attempt_count": self.experiment_attempt_count,
             "output_json_count": self.output_json_count,
             "csv_data_row_count": self.csv_data_row_count,
@@ -537,12 +540,24 @@ def _parse_attempt(
         minimum=1,
     )
     benchmark = actual["benchmark"]
+    traffic_warmup_seconds = _integer(
+        benchmark["traffic_warmup_seconds"],
+        path,
+        "benchmark.traffic_warmup_seconds",
+    )
+    if traffic_warmup_seconds > (1 << 32) - 1:
+        _fail(path, "benchmark.traffic_warmup_seconds exceeds uint32")
+    configuration = replace(
+        configuration,
+        traffic_warmup_seconds=traffic_warmup_seconds,
+    )
     expected_benchmark = {
         "sta_count_per_bss": configuration.sta_count_per_bss,
         "rssi_range": configuration.rssi_range,
         "interference_mode": configuration.interference_mode,
         "traffic_mode": configuration.traffic_mode,
         "mimo_mode": configuration.mimo_mode,
+        "traffic_warmup_seconds": configuration.traffic_warmup_seconds,
     }
     if not _exact_scalar_object(benchmark, expected_benchmark):
         _fail(path, "configuration does not match matrix coordinate")
@@ -1193,6 +1208,14 @@ def audit_run_directory(run_directory: str | Path) -> AuditReport:
             item.repetition_attempt,
         )
     )
+    warmup_values = {
+        attempt.configuration.traffic_warmup_seconds for attempt in parsed_attempts
+    }
+    observed_warmup_seconds = next(iter(warmup_values)) if len(warmup_values) == 1 else None
+    if len(warmup_values) > 1:
+        discrepancies.append(
+            f"{run}: output attempts use inconsistent traffic warm-up periods"
+        )
     _validate_declared_repetition_lattice(
         parsed_attempts,
         executed_ids,
@@ -1251,6 +1274,7 @@ def audit_run_directory(run_directory: str | Path) -> AuditReport:
     null_cells = sum(cell == "" for row in data_rows for cell in row)
     return AuditReport(
         run_directory=run,
+        traffic_warmup_seconds=observed_warmup_seconds,
         experiment_attempt_count=len(attempt_directories),
         output_json_count=len(output_paths),
         csv_data_row_count=len(data_rows),

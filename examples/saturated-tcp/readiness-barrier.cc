@@ -71,9 +71,11 @@ StopPacketSink(Ptr<PacketSink> sink)
 } // namespace
 
 SaturatedReadinessBarrier::SaturatedReadinessBarrier(StatisticsCallback startStatistics,
-                                                     StatisticsCallback finalizeStatistics)
+                                                     StatisticsCallback finalizeStatistics,
+                                                     uint32_t trafficWarmupSeconds)
     : m_startStatistics(std::move(startStatistics)),
-      m_finalizeStatistics(std::move(finalizeStatistics))
+      m_finalizeStatistics(std::move(finalizeStatistics)),
+      m_trafficWarmupSeconds(trafficWarmupSeconds)
 {
     NS_ABORT_MSG_IF(m_startStatistics.IsNull(),
                     "saturated TCP statistics start callback is not configured");
@@ -85,6 +87,7 @@ SaturatedReadinessBarrier::~SaturatedReadinessBarrier()
 {
     m_safetyEvent.Cancel();
     m_openEvent.Cancel();
+    m_measurementStartEvent.Cancel();
     m_finalizeEvent.Cancel();
     for (const auto& sender : m_senders)
     {
@@ -193,15 +196,19 @@ SaturatedReadinessBarrier::NotifyReady(uint32_t index)
 
     m_safetyEvent.Cancel();
     const int64_t nowNs = Simulator::Now().GetNanoSeconds();
-    NS_ABORT_MSG_IF(nowNs > std::numeric_limits<int64_t>::max() - MEASUREMENT_DURATION_NS,
+    const int64_t warmupNs = Seconds(m_trafficWarmupSeconds).GetNanoSeconds();
+    NS_ABORT_MSG_IF(nowNs > std::numeric_limits<int64_t>::max() - MEASUREMENT_DURATION_NS ||
+                        warmupNs >
+                            std::numeric_limits<int64_t>::max() - MEASUREMENT_DURATION_NS - nowNs,
                     "saturated TCP readiness epoch exceeds nanosecond range");
-    m_experimentStartNs = ((nowNs / MEASUREMENT_DURATION_NS) + 1) * MEASUREMENT_DURATION_NS;
+    m_trafficStartNs = ((nowNs / MEASUREMENT_DURATION_NS) + 1) * MEASUREMENT_DURATION_NS;
+    m_experimentStartNs = m_trafficStartNs + warmupNs;
     const int64_t experimentEndNs = m_experimentStartNs + MEASUREMENT_DURATION_NS;
     for (const auto& application : m_applications)
     {
         application.application->SetStopTime(NanoSeconds(experimentEndNs));
     }
-    m_openEvent = Simulator::Schedule(NanoSeconds(m_experimentStartNs - nowNs),
+    m_openEvent = Simulator::Schedule(NanoSeconds(m_trafficStartNs - nowNs),
                                       &SaturatedReadinessBarrier::OpenBarrier,
                                       this);
 }
@@ -209,13 +216,30 @@ SaturatedReadinessBarrier::NotifyReady(uint32_t index)
 void
 SaturatedReadinessBarrier::OpenBarrier()
 {
-    NS_ABORT_MSG_IF(Simulator::Now().GetNanoSeconds() != m_experimentStartNs,
+    NS_ABORT_MSG_IF(Simulator::Now().GetNanoSeconds() != m_trafficStartNs,
                     "saturated TCP readiness barrier opened outside its selected epoch");
     m_startStatistics(m_experimentStartNs);
+    if (m_trafficWarmupSeconds == 0)
+    {
+        StartMeasurement();
+    }
     for (const auto& sender : m_senders)
     {
         sender.startTraffic();
     }
+    if (m_trafficWarmupSeconds > 0)
+    {
+        m_measurementStartEvent = Simulator::Schedule(Seconds(m_trafficWarmupSeconds),
+                                                      &SaturatedReadinessBarrier::StartMeasurement,
+                                                      this);
+    }
+}
+
+void
+SaturatedReadinessBarrier::StartMeasurement()
+{
+    NS_ABORT_MSG_IF(Simulator::Now().GetNanoSeconds() != m_experimentStartNs,
+                    "saturated TCP statistics started outside the post-warm-up epoch");
     m_finalizeEvent =
         Simulator::Schedule(Seconds(1), &SaturatedReadinessBarrier::FinalizeMeasurement, this);
 }

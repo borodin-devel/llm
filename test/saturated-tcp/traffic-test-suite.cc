@@ -903,6 +903,76 @@ SaturatedReadinessBarrierEpochTestCase::SaturatedReadinessBarrierEpochTestCase()
 {
 }
 
+/**
+ * @ingroup tests
+ *
+ * Verify that saturated traffic runs before the exact measurement second.
+ */
+class SaturatedReadinessBarrierWarmupTestCase : public TestCase
+{
+  public:
+    /** Construct the traffic warm-up test. */
+    SaturatedReadinessBarrierWarmupTestCase();
+
+  private:
+    void DoRun() override;
+};
+
+SaturatedReadinessBarrierWarmupTestCase::SaturatedReadinessBarrierWarmupTestCase()
+    : TestCase("warm saturated traffic before starting the measurement second")
+{
+}
+
+void
+SaturatedReadinessBarrierWarmupTestCase::DoRun()
+{
+    Simulator::Destroy();
+    BarrierRecorder recorder;
+    SaturatedReadinessBarrier barrier(MakeCallback(&BarrierRecorder::StartStatistics, &recorder),
+                                      MakeCallback(&BarrierRecorder::FinalizeStatistics, &recorder),
+                                      5);
+
+    auto sender = CreateObject<SaturatedTcpSender>();
+    const auto readinessCallback =
+        barrier.RegisterSender(sender,
+                               MakeCallback(&BarrierRecorder::StartSender, &recorder).Bind(0),
+                               MakeCallback(&BarrierRecorder::StopSender, &recorder).Bind(0));
+    sender->SetReadyCallback(readinessCallback);
+    barrier.FinalizeRegistration();
+
+    Simulator::Schedule(MilliSeconds(1370), readinessCallback);
+    Simulator::Run();
+
+    constexpr int64_t trafficStartNs = 2'000'000'000;
+    constexpr int64_t measurementStartNs = 7'000'000'000;
+    constexpr int64_t measurementEndNs = 8'000'000'000;
+    NS_TEST_ASSERT_MSG_EQ(recorder.startTimesNs[0],
+                          trafficStartNs,
+                          "Traffic did not start at the common whole-second boundary");
+    NS_TEST_ASSERT_MSG_EQ(barrier.GetExperimentStartNs(),
+                          measurementStartNs,
+                          "Barrier reported the traffic epoch instead of the measurement epoch");
+    NS_TEST_ASSERT_MSG_EQ(recorder.statisticsStartTimeNs,
+                          trafficStartNs,
+                          "Statistics were not armed before a boundary-crossing PPDU could start");
+    NS_TEST_ASSERT_MSG_EQ(recorder.statisticsStartArgumentNs,
+                          measurementStartNs,
+                          "Statistics received the wrong post-warm-up epoch");
+    NS_TEST_ASSERT_MSG_EQ(recorder.stopTimesNs[0],
+                          measurementEndNs,
+                          "Sender did not run through the complete measurement second");
+    NS_TEST_ASSERT_MSG_EQ(recorder.statisticsEndTimeNs,
+                          measurementEndNs,
+                          "Measurement duration changed after adding traffic warm-up");
+    NS_TEST_ASSERT_MSG_EQ(recorder.order.front(),
+                          "statistics-start",
+                          "Sender started before the future measurement epoch was armed");
+    NS_TEST_ASSERT_MSG_EQ(recorder.order.back(),
+                          "statistics-finalize",
+                          "Statistics finalized before sender cleanup");
+    Simulator::Destroy();
+}
+
 void
 SaturatedReadinessBarrierEpochTestCase::DoRun()
 {
@@ -1553,6 +1623,7 @@ CreateSaturatedTcpTrafficTestCases()
             new SaturatedTcpSenderRetryCancellationTestCase,
             new SaturatedTcpSinkEndpointCleanupTestCase,
             new SaturatedReadinessBarrierEpochTestCase,
+            new SaturatedReadinessBarrierWarmupTestCase,
             new SaturatedReadinessBarrierLifetimeTestCase,
             new SaturatedReadinessBarrierEmptyTestCase,
             new SaturatedReadinessBarrierDuplicateTestCase,
